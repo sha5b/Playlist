@@ -80,7 +80,7 @@
 	});
 </script>
 
-<div class="space-y-6 max-w-2xl">
+<div class="flex-1 min-h-0 overflow-y-auto space-y-6 max-w-2xl">
 	<div>
 		<h1 class="text-3xl font-bold tracking-tight">Settings</h1>
 		<p class="text-muted-foreground mt-1">Configure your preferences</p>

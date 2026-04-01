@@ -37,7 +37,7 @@
 	});
 </script>
 
-<div class="space-y-6">
+<div class="flex-1 min-h-0 overflow-y-auto space-y-6">
 	<div class="flex items-center justify-between">
 		<div>
 			<h1 class="text-3xl font-bold tracking-tight">Playlists</h1>

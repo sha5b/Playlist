@@ -3,13 +3,13 @@
 	import { Separator } from '$lib/components/ui/separator';
 	import { Button } from '$lib/components/ui/button';
 	import * as Tooltip from '$lib/components/ui/tooltip';
-	import { Home, Search, Music, Disc, Users, ListMusic, Settings, PanelLeftClose, PanelLeft, LayoutDashboard } from 'lucide-svelte';
+	import { Home, Music, Disc, Users, ListMusic, Settings, PanelLeftClose, PanelLeft, LayoutDashboard, Download } from 'lucide-svelte';
 	import { ui } from '$lib/stores/ui.svelte';
+	import { downloadStore } from '$lib/stores/downloads.svelte';
 
 	const navItems = [
 		{ href: '/', label: 'Home', icon: Home },
 		{ href: '/manager', label: 'Manager', icon: LayoutDashboard },
-		{ href: '/search', label: 'Search', icon: Search },
 	];
 
 	const libraryItems = [
@@ -121,6 +121,37 @@
 		{/each}
 
 		<div class="flex-1"></div>
+
+		{#if downloadStore.activeCount > 0}
+			{#if collapsed}
+				<Tooltip.Root>
+					<Tooltip.Trigger>
+						<a
+							href="/manager"
+							class="flex items-center justify-center rounded-lg p-2 transition-colors text-primary"
+						>
+							<div class="relative">
+								<Download class="size-4 shrink-0 animate-pulse" />
+								<span class="absolute -top-1.5 -right-1.5 flex size-3.5 items-center justify-center rounded-full bg-primary text-[9px] font-bold text-primary-foreground">
+									{downloadStore.activeCount}
+								</span>
+							</div>
+						</a>
+					</Tooltip.Trigger>
+					<Tooltip.Content side="right">
+						{downloadStore.activeCount} downloading
+					</Tooltip.Content>
+				</Tooltip.Root>
+			{:else}
+				<a
+					href="/manager"
+					class="flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition-colors text-primary hover:bg-sidebar-accent/50"
+				>
+					<Download class="size-4 shrink-0 animate-pulse" />
+					<span class="flex-1">{downloadStore.activeCount} downloading</span>
+				</a>
+			{/if}
+		{/if}
 
 		<Separator class="my-2 bg-sidebar-border" />
 

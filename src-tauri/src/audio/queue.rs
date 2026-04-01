@@ -36,9 +36,10 @@ impl PlayQueue {
         let len = tracks.len();
         self.tracks = tracks;
         self.rebuild_order();
-        // Find where start_index ended up in the order
+        // Clamp start_index to valid range, then find its position in play order
+        let clamped = if len > 0 { start_index.min(len - 1) } else { 0 };
         self.position = if len > 0 {
-            self.order.iter().position(|&i| i == start_index).or(Some(0))
+            self.order.iter().position(|&i| i == clamped).or(Some(0))
         } else {
             None
         };

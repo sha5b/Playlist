@@ -428,7 +428,7 @@
 	const totalNewAcrossPlaylists = $derived(playlists.reduce((sum, p) => sum + p.new_count, 0));
 </script>
 
-<div class="space-y-6">
+<div class="flex-1 min-h-0 overflow-y-auto space-y-6">
 	<div>
 		<h1 class="text-3xl font-bold tracking-tight">Manager</h1>
 		<p class="text-muted-foreground mt-1">

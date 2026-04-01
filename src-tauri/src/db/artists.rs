@@ -19,32 +19,65 @@ pub fn find_or_create(conn: &Connection, name: &str) -> Result<i64, rusqlite::Er
     Ok(conn.last_insert_rowid())
 }
 
-pub fn get_artists(conn: &Connection, offset: i64, limit: i64) -> Result<(Vec<Artist>, i64), rusqlite::Error> {
-    let total: i64 = conn.query_row("SELECT COUNT(*) FROM artists", [], |row| row.get(0))?;
+pub fn update_image_if_missing(
+    conn: &Connection,
+    artist_id: i64,
+    image_path: &str,
+) -> Result<(), rusqlite::Error> {
+    conn.execute(
+        "UPDATE artists SET image_path = ?1 WHERE id = ?2 AND image_path IS NULL",
+        params![image_path, artist_id],
+    )?;
+    Ok(())
+}
 
-    let mut stmt = conn.prepare(
+pub fn get_artists(conn: &Connection, offset: i64, limit: i64, search: Option<&str>) -> Result<(Vec<Artist>, i64), rusqlite::Error> {
+    let (having_clause, pattern) = match search {
+        Some(q) if !q.trim().is_empty() => {
+            ("HAVING a.name LIKE ?3".to_string(), Some(format!("%{}%", q)))
+        }
+        _ => (String::new(), None),
+    };
+
+    let total: i64 = if let Some(ref p) = pattern {
+        conn.query_row(
+            "SELECT COUNT(*) FROM artists WHERE name LIKE ?1",
+            params![p],
+            |row| row.get(0),
+        )?
+    } else {
+        conn.query_row("SELECT COUNT(*) FROM artists", [], |row| row.get(0))?
+    };
+
+    let sql = format!(
         "SELECT a.id, a.name, a.sort_name, a.musicbrainz_id, a.image_path, a.bio,
                 COUNT(t.id) as track_count
          FROM artists a
          LEFT JOIN tracks t ON t.artist_id = a.id
          GROUP BY a.id
+         {}
          ORDER BY a.name COLLATE NOCASE
          LIMIT ?1 OFFSET ?2",
-    )?;
+        having_clause
+    );
 
-    let artists = stmt
-        .query_map(params![limit, offset], |row| {
-            Ok(Artist {
-                id: row.get(0)?,
-                name: row.get(1)?,
-                sort_name: row.get(2)?,
-                musicbrainz_id: row.get(3)?,
-                image_path: row.get(4)?,
-                bio: row.get(5)?,
-                track_count: row.get(6)?,
-            })
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
+    let mut stmt = conn.prepare(&sql)?;
+    let map_row = |row: &rusqlite::Row| -> rusqlite::Result<Artist> {
+        Ok(Artist {
+            id: row.get(0)?,
+            name: row.get(1)?,
+            sort_name: row.get(2)?,
+            musicbrainz_id: row.get(3)?,
+            image_path: row.get(4)?,
+            bio: row.get(5)?,
+            track_count: row.get(6)?,
+        })
+    };
+    let artists = if let Some(ref p) = pattern {
+        stmt.query_map(params![limit, offset, p], map_row)?
+    } else {
+        stmt.query_map(params![limit, offset], map_row)?
+    }.collect::<Result<Vec<_>, _>>()?;
 
     Ok((artists, total))
 }

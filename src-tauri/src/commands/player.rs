@@ -55,17 +55,55 @@ pub fn player_play_tracks(
     start_index: usize,
 ) -> Result<(), String> {
     log::info!("[player] player_play_tracks: {} tracks, start_index={}", track_ids.len(), start_index);
+    if track_ids.is_empty() {
+        return Ok(());
+    }
     let conn = db.lock().map_err(|e| {
         log::error!("[player] DB lock failed: {}", e);
         e.to_string()
     })?;
-    let mut tracks = Vec::new();
-    for id in &track_ids {
-        tracks.push(track_from_db(&conn, *id)?);
+    // Batch-load all tracks in one query, then reorder to match requested order
+    let placeholders: Vec<String> = (1..=track_ids.len()).map(|i| format!("?{}", i)).collect();
+    let sql = format!(
+        "SELECT t.id, t.title, a.name, al.title, t.duration_ms, t.file_path, t.cover_art_path
+         FROM tracks t
+         LEFT JOIN artists a ON t.artist_id = a.id
+         LEFT JOIN albums al ON t.album_id = al.id
+         WHERE t.id IN ({})",
+        placeholders.join(",")
+    );
+    let params: Vec<&dyn rusqlite::types::ToSql> = track_ids.iter().map(|id| id as &dyn rusqlite::types::ToSql).collect();
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let rows = stmt.query_map(params.as_slice(), |row| {
+        Ok(QueueTrack {
+            id: row.get(0)?,
+            title: row.get(1)?,
+            artist_name: row.get(2)?,
+            album_title: row.get(3)?,
+            duration_ms: row.get(4)?,
+            file_path: row.get(5)?,
+            cover_art_path: row.get(6)?,
+        })
+    }).map_err(|e| e.to_string())?;
+    let loaded: std::collections::HashMap<i64, QueueTrack> = rows
+        .filter_map(|r| r.ok())
+        .map(|t| (t.id, t))
+        .collect();
+    // Preserve original order from track_ids
+    let tracks: Vec<QueueTrack> = track_ids.iter()
+        .filter_map(|id| loaded.get(id).cloned())
+        .collect();
+    if tracks.is_empty() {
+        return Err("No valid tracks found".to_string());
     }
+    let clamped_index = start_index.min(tracks.len() - 1);
+    // Pre-decode the starting track on this thread (Tauri thread pool) so the
+    // audio thread can start playback instantly without blocking or stuttering.
+    let source = AudioEngine::decode_track(&tracks[clamped_index].file_path, engine.ffmpeg_path()).ok();
     engine.send(PlayerCommand::Play {
         tracks,
-        start_index,
+        start_index: clamped_index,
+        source,
     });
     Ok(())
 }

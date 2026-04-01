@@ -5,6 +5,8 @@
 	import DebugConsole from './DebugConsole.svelte';
 	import { player } from '$lib/stores/player.svelte';
 	import { depsStore } from '$lib/stores/deps.svelte';
+	import { libraryStore } from '$lib/stores/library.svelte';
+	import { downloadStore } from '$lib/stores/downloads.svelte';
 
 	let { children } = $props();
 
@@ -13,6 +15,8 @@
 	$effect(() => {
 		player.init();
 		depsStore.init();
+		libraryStore.init();
+		downloadStore.init();
 	});
 
 	function handleKeydown(e: KeyboardEvent) {
@@ -28,10 +32,8 @@
 <div class="flex h-screen w-screen flex-col">
 	<div class="flex flex-1 min-h-0">
 		<Sidebar />
-		<main class="flex-1 overflow-y-auto">
-			<div class="p-6">
-				{@render children()}
-			</div>
+		<main class="flex-1 flex flex-col min-h-0 overflow-hidden p-6">
+			{@render children()}
 		</main>
 		<QueuePanel />
 	</div>

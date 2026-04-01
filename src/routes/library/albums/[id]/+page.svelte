@@ -47,9 +47,26 @@
 	const totalDuration = $derived(
 		tracks.reduce((sum, t) => sum + (t.duration_ms ?? 0), 0)
 	);
+
+	const missingTracks = $derived.by(() => {
+		if (!album?.total_tracks || album.total_tracks <= tracks.length) return [];
+		const existing = new Set(
+			tracks.map((t) => `${t.disc_number ?? 1}:${t.track_number ?? 0}`)
+		);
+		const totalDiscs = album.total_discs ?? 1;
+		const missing: { track_number: number; disc_number: number }[] = [];
+		for (let d = 1; d <= totalDiscs; d++) {
+			for (let n = 1; n <= album.total_tracks; n++) {
+				if (!existing.has(`${d}:${n}`)) {
+					missing.push({ track_number: n, disc_number: d });
+				}
+			}
+		}
+		return missing;
+	});
 </script>
 
-<div class="space-y-6">
+<div class="flex-1 min-h-0 overflow-y-auto space-y-6">
 	<a
 		href="/library/albums"
 		class="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground transition-colors"
@@ -97,7 +114,7 @@
 			</div>
 		</div>
 
-		<TrackTable {tracks} />
+		<TrackTable {tracks} placeholders={missingTracks} />
 	{:else}
 		<p class="text-muted-foreground">Album not found.</p>
 	{/if}

@@ -6,6 +6,7 @@
 	import { FolderOpen, Music, Disc, Users, ListMusic, Loader2 } from 'lucide-svelte';
 	import { formatDurationLong, formatFileSize } from '$lib/utils/format';
 	import { toast } from 'svelte-sonner';
+	import { libraryStore } from '$lib/stores/library.svelte';
 	import type { LibraryStats } from '$lib/types';
 
 	let stats: LibraryStats | null = $state(null);
@@ -36,6 +37,7 @@
 	}
 
 	$effect(() => {
+		libraryStore.version;
 		loadStats();
 	});
 
@@ -47,7 +49,7 @@
 	]);
 </script>
 
-<div class="space-y-6">
+<div class="flex-1 min-h-0 overflow-y-auto space-y-6">
 	<div>
 		<h1 class="text-3xl font-bold tracking-tight">Home</h1>
 		<p class="text-muted-foreground mt-1">Welcome to Playlist</p>

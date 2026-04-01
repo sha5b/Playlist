@@ -47,13 +47,15 @@ export async function getTracks(
 	offset = 0,
 	limit = 50,
 	sortBy = 'date_added',
-	sortDir = 'desc'
+	sortDir = 'desc',
+	search?: string
 ): Promise<TrackPage> {
 	return invoke('library_get_tracks', {
 		offset,
 		limit,
 		sortBy,
 		sortDir,
+		search: search || null,
 	});
 }
 
@@ -77,12 +79,13 @@ export async function resetLibrary(deleteFiles = true): Promise<void> {
 
 export async function getAlbums(
 	offset = 0,
-	limit = 50
+	limit = 50,
+	search?: string
 ): Promise<[Album[], number]> {
-	const key = `albums:${offset}:${limit}`;
+	const key = `albums:${offset}:${limit}:${search || ''}`;
 	const cached = getCached<[Album[], number]>(key);
 	if (cached) return cached;
-	const result: [Album[], number] = await invoke('library_get_albums', { offset, limit });
+	const result: [Album[], number] = await invoke('library_get_albums', { offset, limit, search: search || null });
 	setCache(key, result);
 	return result;
 }
@@ -95,12 +98,13 @@ export async function getAlbum(id: number): Promise<Album | null> {
 
 export async function getArtists(
 	offset = 0,
-	limit = 50
+	limit = 50,
+	search?: string
 ): Promise<[Artist[], number]> {
-	const key = `artists:${offset}:${limit}`;
+	const key = `artists:${offset}:${limit}:${search || ''}`;
 	const cached = getCached<[Artist[], number]>(key);
 	if (cached) return cached;
-	const result: [Artist[], number] = await invoke('library_get_artists', { offset, limit });
+	const result: [Artist[], number] = await invoke('library_get_artists', { offset, limit, search: search || null });
 	setCache(key, result);
 	return result;
 }

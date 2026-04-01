@@ -51,7 +51,7 @@
 	}
 </script>
 
-<div class="space-y-6">
+<div class="flex-1 min-h-0 overflow-y-auto space-y-6">
 	<a
 		href="/library/artists"
 		class="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground transition-colors"

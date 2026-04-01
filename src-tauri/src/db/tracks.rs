@@ -8,14 +8,32 @@ pub fn get_tracks(
     limit: i64,
     sort_by: &str,
     sort_dir: &str,
+    search: Option<&str>,
 ) -> Result<TrackPage, rusqlite::Error> {
-    let total: i64 = conn.query_row("SELECT COUNT(*) FROM tracks", [], |row| row.get(0))?;
-
     let allowed_sort = match sort_by {
         "title" | "date_added" | "duration_ms" | "play_count" | "year" => sort_by,
         _ => "date_added",
     };
     let dir = if sort_dir == "asc" { "ASC" } else { "DESC" };
+
+    // When searching, use FTS for matching then apply sort/pagination
+    let (where_clause, count_sql, use_fts) = match search {
+        Some(q) if !q.trim().is_empty() => {
+            let fts_query = q.split_whitespace()
+                .map(|w| format!("{}*", w))
+                .collect::<Vec<_>>()
+                .join(" ");
+            (
+                format!("JOIN tracks_fts ON tracks_fts.rowid = t.id WHERE tracks_fts MATCH '{}'", fts_query.replace('\'', "''")),
+                format!("SELECT COUNT(*) FROM tracks_fts WHERE tracks_fts MATCH '{}'", fts_query.replace('\'', "''")),
+                true,
+            )
+        }
+        _ => (String::new(), "SELECT COUNT(*) FROM tracks".to_string(), false),
+    };
+    let _ = use_fts;
+
+    let total: i64 = conn.query_row(&count_sql, [], |row| row.get(0))?;
 
     let sql = format!(
         "SELECT t.id, t.title, t.duration_ms, t.track_number, t.disc_number,
@@ -26,9 +44,10 @@ pub fn get_tracks(
          FROM tracks t
          LEFT JOIN artists a ON t.artist_id = a.id
          LEFT JOIN albums al ON t.album_id = al.id
+         {}
          ORDER BY t.{} {}
          LIMIT ?1 OFFSET ?2",
-        allowed_sort, dir
+        where_clause, allowed_sort, dir
     );
 
     let mut stmt = conn.prepare(&sql)?;

@@ -49,9 +49,20 @@ pub fn run() {
 
             app.manage(Arc::new(pool));
 
+            // Resolve ffmpeg binary for audio transcoding (opus, wma, etc.)
+            let ffmpeg_path = {
+                let bin_dir = download::setup::get_bin_dir(app.handle());
+                let local = download::setup::get_ffmpeg_path(&bin_dir);
+                if local.exists() {
+                    Some(local.to_string_lossy().to_string())
+                } else {
+                    Some("ffmpeg".to_string()) // try system PATH
+                }
+            };
+
             // Initialize audio engine with event forwarding to frontend
             let handle = app.handle().clone();
-            let engine = audio::AudioEngine::new(Box::new(move |event| {
+            let engine = audio::AudioEngine::new(ffmpeg_path, Box::new(move |event| {
                 let _ = handle.emit("player-event", &event);
             }));
             app.manage(Arc::new(engine));

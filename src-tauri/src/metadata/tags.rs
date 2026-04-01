@@ -21,21 +21,22 @@ pub struct TagData {
     pub channels: Option<u8>,
     pub format: Option<String>,
     pub has_cover_art: bool,
+    pub total_tracks: Option<u32>,
+    pub total_discs: Option<u32>,
 }
 
-pub fn read_tags(path: &Path) -> Result<TagData, String> {
+
+/// Read tags and extract cover art in a single file read (avoids reading the file twice).
+pub fn read_tags_and_cover(path: &Path, cover_output_dir: &Path) -> Result<(TagData, Option<String>), String> {
     let tagged_file = Probe::open(path)
         .map_err(|e| format!("Failed to open file: {}", e))?
         .read()
         .map_err(|e| format!("Failed to read tags: {}", e))?;
 
+    // --- Extract tag data ---
     let properties = tagged_file.properties();
     let duration = properties.duration();
-
-    let format = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(|s| s.to_lowercase());
+    let format = path.extension().and_then(|e| e.to_str()).map(|s| s.to_lowercase());
 
     let mut data = TagData {
         duration_ms: Some(duration.as_millis() as u64),
@@ -46,10 +47,7 @@ pub fn read_tags(path: &Path) -> Result<TagData, String> {
         ..Default::default()
     };
 
-    // Try primary tag first, then any tag
-    let tag = tagged_file
-        .primary_tag()
-        .or_else(|| tagged_file.first_tag());
+    let tag = tagged_file.primary_tag().or_else(|| tagged_file.first_tag());
 
     if let Some(tag) = tag {
         data.title = tag.title().map(|s| s.to_string());
@@ -63,10 +61,10 @@ pub fn read_tags(path: &Path) -> Result<TagData, String> {
                 .and_then(|s| s.parse::<u32>().ok()));
         data.track_number = tag.track();
         data.disc_number = tag.disk();
+        data.total_tracks = tag.track_total();
+        data.total_discs = tag.disk_total();
         data.has_cover_art = !tag.pictures().is_empty();
 
-        // Try to get album artist from tag items
-        // lofty uses different item keys per format
         for item in tag.items() {
             let key_str = format!("{:?}", item.key());
             if key_str.contains("AlbumArtist") || key_str.contains("ALBUMARTIST") {
@@ -78,36 +76,20 @@ pub fn read_tags(path: &Path) -> Result<TagData, String> {
         }
     }
 
-    // Fallback: use filename as title if no title tag
     if data.title.is_none() {
-        data.title = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .map(|s| s.to_string());
+        data.title = path.file_stem().and_then(|s| s.to_str()).map(|s| s.to_string());
     }
 
-    Ok(data)
+    // --- Extract cover art from the same parsed file ---
+    let cover_path = extract_cover_from_tagged(&tagged_file, path, cover_output_dir);
+
+    Ok((data, cover_path))
 }
 
-pub fn extract_cover_art(path: &Path, output_dir: &Path) -> Result<Option<String>, String> {
-    let tagged_file = Probe::open(path)
-        .map_err(|e| format!("Failed to open file: {}", e))?
-        .read()
-        .map_err(|e| format!("Failed to read tags: {}", e))?;
-
-    let tag = tagged_file
-        .primary_tag()
-        .or_else(|| tagged_file.first_tag());
-
-    let tag = match tag {
-        Some(t) => t,
-        None => return Ok(None),
-    };
-
-    let picture = match tag.pictures().first() {
-        Some(p) => p,
-        None => return Ok(None),
-    };
+/// Extract cover art from an already-parsed TaggedFile (no second file read).
+fn extract_cover_from_tagged(tagged_file: &lofty::file::TaggedFile, source_path: &Path, output_dir: &Path) -> Option<String> {
+    let tag = tagged_file.primary_tag().or_else(|| tagged_file.first_tag())?;
+    let picture = tag.pictures().first()?;
 
     let ext = match picture.mime_type() {
         Some(lofty::picture::MimeType::Png) => "png",
@@ -116,19 +98,19 @@ pub fn extract_cover_art(path: &Path, output_dir: &Path) -> Result<Option<String
         _ => "jpg",
     };
 
-    std::fs::create_dir_all(output_dir).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(output_dir).ok()?;
 
-    // Use a hash of the file path as the cover art filename
-    let hash = simple_hash(path.to_string_lossy().as_ref());
+    let hash = simple_hash(source_path.to_string_lossy().as_ref());
     let cover_filename = format!("{:x}.{}", hash, ext);
     let cover_path = output_dir.join(&cover_filename);
 
     if !cover_path.exists() {
-        std::fs::write(&cover_path, picture.data()).map_err(|e| e.to_string())?;
+        std::fs::write(&cover_path, picture.data()).ok()?;
     }
 
-    Ok(Some(cover_path.to_string_lossy().to_string()))
+    Some(cover_path.to_string_lossy().to_string())
 }
+
 
 fn simple_hash(s: &str) -> u64 {
     let mut hash: u64 = 5381;

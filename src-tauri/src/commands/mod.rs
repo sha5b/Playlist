@@ -2,7 +2,7 @@ pub mod player;
 
 use std::sync::Arc;
 use rusqlite::params;
-use tauri::{Manager, State};
+use tauri::{Emitter, Manager, State};
 use walkdir::WalkDir;
 
 use crate::db::DbPool;
@@ -48,9 +48,10 @@ pub fn library_get_tracks(
     limit: i64,
     sort_by: String,
     sort_dir: String,
+    search: Option<String>,
 ) -> Result<TrackPage, String> {
     let conn = db.lock().map_err(|e| e.to_string())?;
-    crate::db::tracks::get_tracks(&conn, offset, limit, &sort_by, &sort_dir)
+    crate::db::tracks::get_tracks(&conn, offset, limit, &sort_by, &sort_dir, search.as_deref())
         .map_err(|e| e.to_string())
 }
 
@@ -145,9 +146,10 @@ pub fn library_get_albums(
     db: State<'_, Arc<DbPool>>,
     offset: i64,
     limit: i64,
+    search: Option<String>,
 ) -> Result<(Vec<Album>, i64), String> {
     let conn = db.lock().map_err(|e| e.to_string())?;
-    crate::db::albums::get_albums(&conn, offset, limit).map_err(|e| e.to_string())
+    crate::db::albums::get_albums(&conn, offset, limit, search.as_deref()).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -163,9 +165,10 @@ pub fn library_get_artists(
     db: State<'_, Arc<DbPool>>,
     offset: i64,
     limit: i64,
+    search: Option<String>,
 ) -> Result<(Vec<Artist>, i64), String> {
     let conn = db.lock().map_err(|e| e.to_string())?;
-    crate::db::artists::get_artists(&conn, offset, limit).map_err(|e| e.to_string())
+    crate::db::artists::get_artists(&conn, offset, limit, search.as_deref()).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -479,17 +482,14 @@ pub fn library_import_folder(
             continue;
         }
 
-        // Read tags
-        let tag_data = match tags::read_tags(file_path) {
-            Ok(d) => d,
+        // Read tags and cover art in a single file read
+        let (tag_data, cover_art_path) = match tags::read_tags_and_cover(file_path, &covers_dir) {
+            Ok((d, c)) => (d, c),
             Err(e) => {
                 log::warn!("Failed to read tags from {:?}: {}", file_path, e);
                 continue;
             }
         };
-
-        // Extract cover art
-        let cover_art_path = tags::extract_cover_art(file_path, &covers_dir).unwrap_or(None);
 
         // Find or create artist
         let artist_id = tag_data
@@ -511,6 +511,11 @@ pub fn library_import_folder(
 
         // Get file size
         let file_size = std::fs::metadata(file_path).map(|m| m.len() as i64).ok();
+
+        // Save values needed after INSERT (before they get moved into params)
+        let total_tracks_val = tag_data.total_tracks.map(|t| t as i64);
+        let total_discs_val = tag_data.total_discs.map(|d| d as i64);
+        let genre_for_album = tag_data.genre.clone();
 
         // Insert track
         let result = conn.execute(
@@ -542,6 +547,26 @@ pub fn library_import_folder(
             Ok(_) => {
                 fts_ids.push(conn.last_insert_rowid());
                 imported += 1;
+
+                // Propagate cover art to album and artist
+                if let Some(ref cover) = cover_art_path {
+                    if let Some(aid) = album_id {
+                        let _ = crate::db::albums::update_cover_art_if_missing(&conn, aid, cover);
+                    }
+                    if let Some(aid) = artist_id {
+                        let _ = crate::db::artists::update_image_if_missing(&conn, aid, cover);
+                    }
+                }
+                // Propagate album metadata from tags
+                if let Some(aid) = album_id {
+                    let _ = crate::db::albums::update_metadata_if_missing(
+                        &conn,
+                        aid,
+                        total_tracks_val,
+                        total_discs_val,
+                        genre_for_album.as_deref(),
+                    );
+                }
             }
             Err(e) => {
                 log::warn!("Failed to insert track {:?}: {}", file_path, e);
@@ -557,6 +582,9 @@ pub fn library_import_folder(
     conn.execute_batch("COMMIT").map_err(|e| e.to_string())?;
 
     log::info!("Imported {} tracks from {}", imported, path);
+    if imported > 0 {
+        let _ = app_handle.emit("library-updated", ());
+    }
     Ok(imported)
 }
 
@@ -633,7 +661,13 @@ pub async fn download_start_batch(
     format: Option<String>,
     quality: Option<String>,
 ) -> Result<Vec<Download>, String> {
-    let fmt = format.unwrap_or_else(|| "opus".to_string());
+    let default_format = {
+        let conn = db.lock().map_err(|e| e.to_string())?;
+        crate::db::settings::get_setting(&conn, "download_format")
+            .ok().flatten()
+            .unwrap_or_else(|| "mp3".to_string())
+    };
+    let fmt = format.unwrap_or(default_format);
     let qual = quality.unwrap_or_else(|| "best".to_string());
     let mut downloads = Vec::new();
 

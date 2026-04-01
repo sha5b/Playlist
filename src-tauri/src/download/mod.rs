@@ -409,6 +409,10 @@ async fn run_download(
                     track_id,
                 },
             );
+            // Notify frontend that the library has new content
+            if track_id.is_some() {
+                let _ = app_handle.emit("library-updated", ());
+            }
             if let Some(eid) = entry_id {
                 let _ = app_handle.emit(
                     "manager-entry-updated",
@@ -446,12 +450,14 @@ async fn import_downloaded_file(
     let covers_dir = app_handle.path().app_data_dir().ok()?.join("covers");
     let covers_dir_clone = covers_dir.clone();
     let (tag_data, cover_art_path) = tokio::task::spawn_blocking(move || {
-        let tag_data = tags::read_tags(&path_buf).unwrap_or_else(|e| {
-            log::warn!("Failed to read tags from downloaded file: {}", e);
-            tags::TagData::default()
-        });
-        let cover = tags::extract_cover_art(&path_buf, &covers_dir_clone).unwrap_or(None);
-        (tag_data, cover)
+        // Single file read for both tags and cover art (halves memory usage)
+        match tags::read_tags_and_cover(&path_buf, &covers_dir_clone) {
+            Ok((data, cover)) => (data, cover),
+            Err(e) => {
+                log::warn!("Failed to read tags from downloaded file: {}", e);
+                (tags::TagData::default(), None)
+            }
+        }
     }).await.ok()?;
 
     // Use file tags if available, fall back to download metadata from yt-dlp
@@ -479,6 +485,11 @@ async fn import_downloaded_file(
     });
 
     let file_size = std::fs::metadata(path).map(|m| m.len() as i64).ok();
+
+    // Save values needed after INSERT (before they get moved into params)
+    let total_tracks_val = tag_data.total_tracks.map(|t| t as i64);
+    let total_discs_val = tag_data.total_discs.map(|d| d as i64);
+    let genre_for_album = tag_data.genre.clone();
 
     let result = conn.execute(
         "INSERT INTO tracks (title, artist_id, album_id, album_artist, duration_ms,
@@ -510,6 +521,27 @@ async fn import_downloaded_file(
         Ok(_) => {
             let track_id = conn.last_insert_rowid();
             let _ = crate::db::tracks::update_fts(&conn, track_id);
+
+            // Propagate cover art to album and artist
+            if let Some(ref cover) = cover_art_path {
+                if let Some(aid) = album_id {
+                    let _ = crate::db::albums::update_cover_art_if_missing(&conn, aid, cover);
+                }
+                if let Some(aid) = artist_id {
+                    let _ = crate::db::artists::update_image_if_missing(&conn, aid, cover);
+                }
+            }
+            // Propagate album metadata from tags
+            if let Some(aid) = album_id {
+                let _ = crate::db::albums::update_metadata_if_missing(
+                    &conn,
+                    aid,
+                    total_tracks_val,
+                    total_discs_val,
+                    genre_for_album.as_deref(),
+                );
+            }
+
             log::info!(
                 "Imported downloaded track: {} (id={})",
                 title,

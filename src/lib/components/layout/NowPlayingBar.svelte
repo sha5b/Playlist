@@ -120,7 +120,7 @@
 				step={0.1}
 				class="flex-1"
 				disabled={!hasTrack}
-				onValueChange={handleProgressChange}
+				onValueCommit={handleProgressChange}
 			/>
 			<span class="text-[11px] text-muted-foreground w-10 tabular-nums">
 				{formatDuration(player.durationMs)}
