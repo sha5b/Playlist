@@ -1,32 +1,50 @@
 <script lang="ts">
 	import { Button } from '$lib/components/ui/button';
 	import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '$lib/components/ui/card';
-	import { greet, getLibraryStats } from '$lib/api/library';
+	import { getLibraryStats, importFolder } from '$lib/api/library';
+	import { open } from '@tauri-apps/plugin-dialog';
+	import { FolderOpen, Music, Disc, Users, ListMusic, Loader2 } from 'lucide-svelte';
+	import { formatDurationLong, formatFileSize } from '$lib/utils/format';
+	import { toast } from 'svelte-sonner';
 	import type { LibraryStats } from '$lib/types';
 
-	let greeting = $state('');
 	let stats: LibraryStats | null = $state(null);
-	let error = $state('');
-
-	async function handleGreet() {
-		try {
-			greeting = await greet('User');
-		} catch (e) {
-			error = String(e);
-		}
-	}
+	let importing = $state(false);
 
 	async function loadStats() {
 		try {
 			stats = await getLibraryStats();
 		} catch (e) {
-			error = String(e);
+			console.error('Failed to load stats:', e);
+		}
+	}
+
+	async function handleImportFolder() {
+		const selected = await open({ directory: true, multiple: false });
+		if (!selected) return;
+
+		importing = true;
+		try {
+			const count = await importFolder(selected);
+			toast.success(`Imported ${count} track${count !== 1 ? 's' : ''}`);
+			await loadStats();
+		} catch (e) {
+			toast.error(`Import failed: ${e}`);
+		} finally {
+			importing = false;
 		}
 	}
 
 	$effect(() => {
 		loadStats();
 	});
+
+	const statCards = $derived([
+		{ label: 'Tracks', value: stats?.total_tracks, icon: Music },
+		{ label: 'Albums', value: stats?.total_albums, icon: Disc },
+		{ label: 'Artists', value: stats?.total_artists, icon: Users },
+		{ label: 'Playlists', value: stats?.total_playlists, icon: ListMusic },
+	]);
 </script>
 
 <div class="space-y-6">
@@ -36,58 +54,58 @@
 	</div>
 
 	<div class="grid grid-cols-2 gap-4 md:grid-cols-4">
-		<Card>
-			<CardHeader class="pb-2">
-				<CardDescription>Tracks</CardDescription>
-				<CardTitle class="text-2xl tabular-nums">{stats?.total_tracks ?? '...'}</CardTitle>
-			</CardHeader>
-		</Card>
-		<Card>
-			<CardHeader class="pb-2">
-				<CardDescription>Albums</CardDescription>
-				<CardTitle class="text-2xl tabular-nums">{stats?.total_albums ?? '...'}</CardTitle>
-			</CardHeader>
-		</Card>
-		<Card>
-			<CardHeader class="pb-2">
-				<CardDescription>Artists</CardDescription>
-				<CardTitle class="text-2xl tabular-nums">{stats?.total_artists ?? '...'}</CardTitle>
-			</CardHeader>
-		</Card>
-		<Card>
-			<CardHeader class="pb-2">
-				<CardDescription>Playlists</CardDescription>
-				<CardTitle class="text-2xl tabular-nums">{stats?.total_playlists ?? '...'}</CardTitle>
-			</CardHeader>
-		</Card>
+		{#each statCards as card}
+			<Card>
+				<CardHeader class="flex flex-row items-center justify-between pb-2">
+					<CardDescription>{card.label}</CardDescription>
+					<card.icon class="size-4 text-muted-foreground" />
+				</CardHeader>
+				<CardContent>
+					<p class="text-2xl font-bold tabular-nums">{card.value ?? '...'}</p>
+				</CardContent>
+			</Card>
+		{/each}
 	</div>
 
-	<Card>
-		<CardHeader>
-			<CardTitle>Getting Started</CardTitle>
-			<CardDescription>Your library is empty. Import some music to get started.</CardDescription>
-		</CardHeader>
-		<CardContent class="flex gap-3">
-			<Button onclick={handleGreet}>
-				<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="size-4"><path d="M12 5v14"/><path d="M5 12h14"/></svg>
-				Test Connection
-			</Button>
-		</CardContent>
-	</Card>
-
-	{#if greeting}
+	{#if stats && stats.total_tracks > 0}
 		<Card>
-			<CardContent class="pt-6">
-				<p class="text-sm text-primary font-medium">{greeting}</p>
+			<CardHeader>
+				<CardTitle>Library</CardTitle>
+				<CardDescription>
+					{formatDurationLong(stats.total_duration_ms)} of music
+					 &middot; {formatFileSize(stats.total_size_bytes)}
+				</CardDescription>
+			</CardHeader>
+			<CardContent>
+				<Button variant="outline" onclick={handleImportFolder} disabled={importing}>
+					{#if importing}
+						<Loader2 class="size-4 animate-spin" />
+						Importing...
+					{:else}
+						<FolderOpen class="size-4" />
+						Import More Music
+					{/if}
+				</Button>
+			</CardContent>
+		</Card>
+	{:else}
+		<Card>
+			<CardHeader>
+				<CardTitle>Getting Started</CardTitle>
+				<CardDescription>Your library is empty. Import some music to get started.</CardDescription>
+			</CardHeader>
+			<CardContent class="flex gap-3 items-center">
+				<Button onclick={handleImportFolder} disabled={importing}>
+					{#if importing}
+						<Loader2 class="size-4 animate-spin" />
+						Importing...
+					{:else}
+						<FolderOpen class="size-4" />
+						Import Folder
+					{/if}
+				</Button>
 			</CardContent>
 		</Card>
 	{/if}
 
-	{#if error}
-		<Card class="border-destructive">
-			<CardContent class="pt-6">
-				<p class="text-sm text-destructive">{error}</p>
-			</CardContent>
-		</Card>
-	{/if}
 </div>

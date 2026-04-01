@@ -24,6 +24,15 @@ pub struct Track {
     pub play_count: i64,
     pub last_played_at: Option<String>,
     pub date_added: String,
+    // Denormalized for display
+    pub artist_name: Option<String>,
+    pub album_title: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TrackPage {
+    pub tracks: Vec<Track>,
+    pub total: i64,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -34,6 +43,7 @@ pub struct Artist {
     pub musicbrainz_id: Option<String>,
     pub image_path: Option<String>,
     pub bio: Option<String>,
+    pub track_count: i64,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -48,6 +58,8 @@ pub struct Album {
     pub total_discs: Option<i64>,
     pub musicbrainz_id: Option<String>,
     pub cover_art_path: Option<String>,
+    pub artist_name: Option<String>,
+    pub track_count: i64,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -65,6 +77,29 @@ pub struct Playlist {
     pub created_at: String,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct LibraryStats {
+    pub total_tracks: i64,
+    pub total_albums: i64,
+    pub total_artists: i64,
+    pub total_playlists: i64,
+    pub total_duration_ms: i64,
+    pub total_size_bytes: i64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SearchResults {
+    pub tracks: Vec<Track>,
+    pub albums: Vec<Album>,
+    pub artists: Vec<Artist>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PlaylistDetail {
+    pub playlist: Playlist,
+    pub tracks: Vec<Track>,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Download {
     pub id: i64,
@@ -77,17 +112,18 @@ pub struct Download {
     pub error_message: Option<String>,
     pub file_path: Option<String>,
     pub track_id: Option<i64>,
-    pub format: Option<String>,
-    pub quality: Option<String>,
+    pub playlist_id: Option<i64>,
+    pub format: String,
+    pub quality: String,
     pub created_at: String,
+    pub started_at: Option<String>,
+    pub completed_at: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct LibraryStats {
-    pub total_tracks: i64,
-    pub total_albums: i64,
-    pub total_artists: i64,
-    pub total_playlists: i64,
-    pub total_duration_ms: i64,
-    pub total_size_bytes: i64,
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct UrlInfo {
+    pub platform: String,
+    pub url_type: String,
+    pub clean_url: String,
+    pub title: Option<String>,
 }

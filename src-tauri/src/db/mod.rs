@@ -1,5 +1,11 @@
+pub mod albums;
+pub mod artists;
+pub mod downloads;
 pub mod migrations;
 pub mod models;
+pub mod playlists;
+pub mod settings;
+pub mod tracks;
 
 use rusqlite::Connection;
 use std::path::Path;

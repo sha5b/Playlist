@@ -1,0 +1,340 @@
+use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
+use tauri::{Emitter, Manager};
+use tokio::io::AsyncWriteExt;
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct DepsStatus {
+    pub ytdlp_available: bool,
+    pub ffmpeg_available: bool,
+    pub ytdlp_version: Option<String>,
+    pub ytdlp_path: Option<String>,
+    pub ffmpeg_path: Option<String>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct SetupProgress {
+    pub step: String,
+    pub status: String,
+    pub progress: f64,
+    pub message: String,
+}
+
+pub fn get_bin_dir(app_handle: &tauri::AppHandle) -> PathBuf {
+    app_handle
+        .path()
+        .app_data_dir()
+        .unwrap_or_else(|_| PathBuf::from("."))
+        .join("bin")
+}
+
+pub fn get_ytdlp_path(bin_dir: &Path) -> PathBuf {
+    if cfg!(windows) {
+        bin_dir.join("yt-dlp.exe")
+    } else {
+        bin_dir.join("yt-dlp")
+    }
+}
+
+pub fn get_ffmpeg_path(bin_dir: &Path) -> PathBuf {
+    if cfg!(windows) {
+        bin_dir.join("ffmpeg.exe")
+    } else {
+        bin_dir.join("ffmpeg")
+    }
+}
+
+/// Resolve the yt-dlp binary: local bin first, then PATH
+pub fn resolve_ytdlp(bin_dir: &Path) -> Option<String> {
+    let local = get_ytdlp_path(bin_dir);
+    if local.exists() {
+        return Some(local.to_string_lossy().to_string());
+    }
+    // Try PATH by checking if the command exists
+    None
+}
+
+/// Resolve ffmpeg directory (for --ffmpeg-location): local bin first
+pub fn resolve_ffmpeg_dir(bin_dir: &Path) -> Option<String> {
+    let local = get_ffmpeg_path(bin_dir);
+    if local.exists() {
+        return Some(bin_dir.to_string_lossy().to_string());
+    }
+    None
+}
+
+/// Check what dependencies are available
+pub async fn check_deps(bin_dir: &Path) -> DepsStatus {
+    // Check yt-dlp: local binary first, then PATH
+    let ytdlp_local = get_ytdlp_path(bin_dir);
+    let (ytdlp_available, ytdlp_version, ytdlp_path) = if ytdlp_local.exists() {
+        match super::ytdlp::check_available(&ytdlp_local.to_string_lossy()).await {
+            Ok(v) => (true, Some(v), Some(ytdlp_local.to_string_lossy().to_string())),
+            Err(_) => (false, None, None),
+        }
+    } else {
+        match super::ytdlp::check_available("yt-dlp").await {
+            Ok(v) => (true, Some(v), Some("yt-dlp".to_string())),
+            Err(_) => (false, None, None),
+        }
+    };
+
+    // Check ffmpeg: local binary first, then PATH
+    let ffmpeg_local = get_ffmpeg_path(bin_dir);
+    let (ffmpeg_available, ffmpeg_path) = if ffmpeg_local.exists() {
+        (true, Some(bin_dir.to_string_lossy().to_string()))
+    } else {
+        let result = tokio::process::Command::new("ffmpeg")
+            .arg("-version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .await;
+        match result {
+            Ok(s) if s.success() => (true, None),
+            _ => (false, None),
+        }
+    };
+
+    DepsStatus {
+        ytdlp_available,
+        ffmpeg_available,
+        ytdlp_version,
+        ytdlp_path,
+        ffmpeg_path,
+    }
+}
+
+/// Download and install missing dependencies
+pub async fn ensure_deps(bin_dir: &Path, app_handle: &tauri::AppHandle) -> Result<(), String> {
+    std::fs::create_dir_all(bin_dir)
+        .map_err(|e| format!("Failed to create bin directory: {}", e))?;
+
+    let status = check_deps(bin_dir).await;
+
+    // Download yt-dlp if needed
+    if !status.ytdlp_available {
+        emit_progress(app_handle, "yt-dlp", "downloading", 0.0, "Downloading yt-dlp...");
+
+        let url = ytdlp_download_url();
+        let dest = get_ytdlp_path(bin_dir);
+        download_file(&url, &dest, app_handle, "yt-dlp").await?;
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o755))
+                .map_err(|e| format!("Failed to set executable permission: {}", e))?;
+        }
+
+        // Verify it works
+        match super::ytdlp::check_available(&dest.to_string_lossy()).await {
+            Ok(v) => {
+                emit_progress(
+                    app_handle,
+                    "yt-dlp",
+                    "ready",
+                    100.0,
+                    &format!("yt-dlp {} ready", v),
+                );
+            }
+            Err(e) => {
+                let _ = std::fs::remove_file(&dest);
+                return Err(format!("Downloaded yt-dlp but it failed to run: {}", e));
+            }
+        }
+    }
+
+    // Download ffmpeg if needed
+    if !status.ffmpeg_available {
+        #[cfg(windows)]
+        {
+            emit_progress(
+                app_handle,
+                "ffmpeg",
+                "downloading",
+                0.0,
+                "Downloading ffmpeg...",
+            );
+
+            let url = ffmpeg_download_url();
+            let zip_path = bin_dir.join("ffmpeg.zip");
+            download_file(&url, &zip_path, app_handle, "ffmpeg").await?;
+
+            emit_progress(
+                app_handle,
+                "ffmpeg",
+                "extracting",
+                0.0,
+                "Extracting ffmpeg...",
+            );
+            extract_ffmpeg_zip(&zip_path, bin_dir).await?;
+
+            // Verify ffmpeg works
+            let ffmpeg_path = get_ffmpeg_path(bin_dir);
+            if !ffmpeg_path.exists() {
+                return Err("Failed to extract ffmpeg from archive".to_string());
+            }
+
+            emit_progress(app_handle, "ffmpeg", "ready", 100.0, "ffmpeg ready");
+        }
+
+        #[cfg(not(windows))]
+        {
+            return Err(
+                "ffmpeg not found. Install it with: brew install ffmpeg (macOS) or sudo apt install ffmpeg (Linux)"
+                    .to_string(),
+            );
+        }
+    }
+
+    emit_progress(app_handle, "complete", "ready", 100.0, "Setup complete");
+    Ok(())
+}
+
+fn ytdlp_download_url() -> String {
+    if cfg!(windows) {
+        "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe".to_string()
+    } else if cfg!(target_os = "macos") {
+        "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos".to_string()
+    } else {
+        "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux".to_string()
+    }
+}
+
+#[cfg(windows)]
+fn ffmpeg_download_url() -> String {
+    "https://github.com/yt-dlp/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip".to_string()
+}
+
+async fn download_file(
+    url: &str,
+    dest: &Path,
+    app_handle: &tauri::AppHandle,
+    step: &str,
+) -> Result<(), String> {
+    use futures_util::StreamExt;
+
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::limited(10))
+        .build()
+        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
+
+    let response = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| format!("Download request failed: {}", e))?;
+
+    if !response.status().is_success() {
+        return Err(format!("Download failed with status: {}", response.status()));
+    }
+
+    let total_size = response.content_length().unwrap_or(0);
+    let mut stream = response.bytes_stream();
+
+    let tmp_path = dest.with_extension("tmp");
+    let mut file = tokio::fs::File::create(&tmp_path)
+        .await
+        .map_err(|e| format!("Failed to create file: {}", e))?;
+
+    let mut downloaded: u64 = 0;
+    let mut last_emitted: f64 = -5.0;
+
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| format!("Download stream error: {}", e))?;
+        file.write_all(&chunk)
+            .await
+            .map_err(|e| format!("Failed to write chunk: {}", e))?;
+
+        downloaded += chunk.len() as u64;
+
+        if total_size > 0 {
+            let progress = (downloaded as f64 / total_size as f64) * 100.0;
+            if progress - last_emitted >= 2.0 {
+                last_emitted = progress;
+                let size_mb = downloaded as f64 / (1024.0 * 1024.0);
+                let total_mb = total_size as f64 / (1024.0 * 1024.0);
+                emit_progress(
+                    app_handle,
+                    step,
+                    "downloading",
+                    progress,
+                    &format!(
+                        "Downloading {}... {:.1} / {:.1} MB",
+                        step, size_mb, total_mb
+                    ),
+                );
+            }
+        }
+    }
+
+    file.flush().await.map_err(|e| format!("Flush failed: {}", e))?;
+    drop(file);
+
+    // Rename temp file to final destination
+    tokio::fs::rename(&tmp_path, dest)
+        .await
+        .map_err(|e| format!("Failed to finalize download: {}", e))?;
+
+    Ok(())
+}
+
+#[cfg(windows)]
+async fn extract_ffmpeg_zip(zip_path: &Path, bin_dir: &Path) -> Result<(), String> {
+    let zip_path = zip_path.to_path_buf();
+    let bin_dir = bin_dir.to_path_buf();
+
+    tokio::task::spawn_blocking(move || {
+        let file =
+            std::fs::File::open(&zip_path).map_err(|e| format!("Failed to open zip: {}", e))?;
+        let mut archive =
+            zip::ZipArchive::new(file).map_err(|e| format!("Invalid zip archive: {}", e))?;
+
+        let targets = ["ffmpeg.exe", "ffprobe.exe"];
+
+        for i in 0..archive.len() {
+            let mut entry = archive
+                .by_index(i)
+                .map_err(|e| format!("Zip entry error: {}", e))?;
+            let name = entry.name().to_string();
+
+            // Look for ffmpeg.exe and ffprobe.exe inside any bin/ directory
+            for target in &targets {
+                if name.ends_with(&format!("bin/{}", target)) {
+                    let out_path = bin_dir.join(target);
+                    let mut out_file = std::fs::File::create(&out_path)
+                        .map_err(|e| format!("Failed to create {}: {}", target, e))?;
+                    std::io::copy(&mut entry, &mut out_file)
+                        .map_err(|e| format!("Failed to extract {}: {}", target, e))?;
+                    log::info!("Extracted {} to {:?}", target, out_path);
+                }
+            }
+        }
+
+        // Clean up the zip file
+        let _ = std::fs::remove_file(&zip_path);
+
+        Ok::<(), String>(())
+    })
+    .await
+    .map_err(|e| format!("Extract task failed: {}", e))?
+}
+
+fn emit_progress(
+    app_handle: &tauri::AppHandle,
+    step: &str,
+    status: &str,
+    progress: f64,
+    message: &str,
+) {
+    let _ = app_handle.emit(
+        "setup-progress",
+        SetupProgress {
+            step: step.to_string(),
+            status: status.to_string(),
+            progress,
+            message: message.to_string(),
+        },
+    );
+}

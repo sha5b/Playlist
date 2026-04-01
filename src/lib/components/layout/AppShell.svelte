@@ -1,9 +1,14 @@
 <script lang="ts">
 	import Sidebar from './Sidebar.svelte';
 	import NowPlayingBar from './NowPlayingBar.svelte';
-	import { ScrollArea } from '$lib/components/ui/scroll-area';
+	import QueuePanel from './QueuePanel.svelte';
+	import { player } from '$lib/stores/player.svelte';
 
 	let { children } = $props();
+
+	$effect(() => {
+		player.init();
+	});
 </script>
 
 <div class="flex h-screen w-screen flex-col">
@@ -14,6 +19,7 @@
 				{@render children()}
 			</div>
 		</main>
+		<QueuePanel />
 	</div>
 	<NowPlayingBar />
 </div>

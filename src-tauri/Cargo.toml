@@ -37,5 +37,18 @@ tauri-plugin-single-instance = "2"
 # Database
 rusqlite = { version = "0.35", features = ["bundled"] }
 
+# Audio metadata
+lofty = "0.23"
+
+# Audio playback
+rodio = { version = "0.20", features = ["symphonia-all"] }
+rand = "0.8"
+
 # Async
 crossbeam-channel = "0.5"
+walkdir = "2"
+
+# HTTP / Downloads
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
+futures-util = "0.3"
+zip = "2"
