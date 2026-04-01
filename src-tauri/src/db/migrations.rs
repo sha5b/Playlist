@@ -155,7 +155,25 @@ CREATE INDEX IF NOT EXISTS idx_mpe_playlist ON monitored_playlist_entries(playli
 CREATE INDEX IF NOT EXISTS idx_mpe_status ON monitored_playlist_entries(playlist_id, status);
 ";
 
-const MIGRATIONS: &[&str] = &[MIGRATION_001, MIGRATION_002, MIGRATION_003];
+const MIGRATION_004: &str = "
+ALTER TABLE tracks ADD COLUMN description TEXT;
+ALTER TABLE tracks ADD COLUMN label TEXT;
+ALTER TABLE tracks ADD COLUMN release_date TEXT;
+ALTER TABLE tracks ADD COLUMN composer TEXT;
+ALTER TABLE tracks ADD COLUMN language TEXT;
+ALTER TABLE tracks ADD COLUMN metadata_completeness INTEGER NOT NULL DEFAULT 0;
+
+ALTER TABLE albums ADD COLUMN label TEXT;
+ALTER TABLE albums ADD COLUMN release_date TEXT;
+ALTER TABLE albums ADD COLUMN description TEXT;
+ALTER TABLE albums ADD COLUMN album_type TEXT;
+
+ALTER TABLE artists ADD COLUMN country TEXT;
+ALTER TABLE artists ADD COLUMN begin_year INTEGER;
+ALTER TABLE artists ADD COLUMN artist_type TEXT;
+";
+
+const MIGRATIONS: &[&str] = &[MIGRATION_001, MIGRATION_002, MIGRATION_003, MIGRATION_004];
 
 pub fn run(conn: &Connection) -> Result<(), Box<dyn std::error::Error>> {
     conn.execute(

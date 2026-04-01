@@ -317,6 +317,10 @@ pub fn search(
                 total_discs: row.get(7)?,
                 musicbrainz_id: row.get(8)?,
                 cover_art_path: row.get(9)?,
+                label: None,
+                release_date: None,
+                description: None,
+                album_type: None,
                 artist_name: row.get(10)?,
                 track_count: row.get(11)?,
             })
@@ -351,6 +355,9 @@ pub fn search(
                 musicbrainz_id: row.get(3)?,
                 image_path: row.get(4)?,
                 bio: row.get(5)?,
+                country: None,
+                begin_year: None,
+                artist_type: None,
                 track_count: row.get(6)?,
             })
         })
@@ -780,12 +787,20 @@ pub async fn manager_add_playlist(
     let ytdlp_binary = crate::download::setup::resolve_ytdlp(&bin_dir)
         .unwrap_or_else(|| "yt-dlp".to_string());
     let ffmpeg_dir = crate::download::setup::resolve_ffmpeg_dir(&bin_dir);
+    let cookies_from_browser = {
+        let conn = db.lock().map_err(|e| e.to_string())?;
+        crate::db::settings::get_setting(&conn, "cookies_from_browser")
+            .ok()
+            .flatten()
+            .filter(|s| !s.is_empty())
+    };
 
     // Fetch playlist info
     let fetch_result = crate::download::ytdlp::get_playlist_entries(
         &ytdlp_binary,
         ffmpeg_dir.as_deref(),
         &url,
+        cookies_from_browser.as_deref(),
     )
     .await?;
 
@@ -870,12 +885,20 @@ pub async fn manager_sync_playlist(
     let ytdlp_binary = crate::download::setup::resolve_ytdlp(&bin_dir)
         .unwrap_or_else(|| "yt-dlp".to_string());
     let ffmpeg_dir = crate::download::setup::resolve_ffmpeg_dir(&bin_dir);
+    let cookies_from_browser = {
+        let conn = db.lock().map_err(|e| e.to_string())?;
+        crate::db::settings::get_setting(&conn, "cookies_from_browser")
+            .ok()
+            .flatten()
+            .filter(|s| !s.is_empty())
+    };
 
     // Fetch current entries
     let fetch_result = crate::download::ytdlp::get_playlist_entries(
         &ytdlp_binary,
         ffmpeg_dir.as_deref(),
         &source_url,
+        cookies_from_browser.as_deref(),
     )
     .await?;
 
@@ -1123,4 +1146,805 @@ pub async fn manager_remove_playlist(
     let conn = db.lock().map_err(|e| e.to_string())?;
     crate::db::monitored::delete_monitored_playlist(&conn, playlist_id)
         .map_err(|e| e.to_string())
+}
+
+// --- Metadata Enrichment ---
+
+#[derive(Debug, serde::Serialize)]
+pub struct EnrichResult {
+    pub track_id: i64,
+    pub fields_updated: i64,
+    pub completeness: i64,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct ScanMissingResult {
+    pub total_tracks: i64,
+    pub enriched: i64,
+    pub failed: i64,
+    pub completeness_avg: i64,
+}
+
+/// Enrich a single track's metadata from MusicBrainz
+#[tauri::command]
+pub async fn enrich_track(
+    db: State<'_, Arc<DbPool>>,
+    track_id: i64,
+) -> Result<EnrichResult, String> {
+    // Get track info for MusicBrainz search
+    let (title, artist_name) = {
+        let conn = db.lock().map_err(|e| e.to_string())?;
+        let track = crate::db::tracks::get_track(&conn, track_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "Track not found".to_string())?;
+        (track.title, track.artist_name)
+    };
+
+    let enrichment = crate::metadata::musicbrainz::enrich_track(&title, artist_name.as_deref()).await?;
+
+    // Apply enrichment to DB (only fill missing fields)
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    let mut updated = 0i64;
+
+    macro_rules! update_if_missing {
+        ($col:expr, $val:expr) => {
+            if let Some(ref v) = $val {
+                let changed = conn.execute(
+                    &format!("UPDATE tracks SET {} = ?1 WHERE id = ?2 AND ({} IS NULL OR {} = '')", $col, $col, $col),
+                    rusqlite::params![v, track_id],
+                ).unwrap_or(0);
+                updated += changed as i64;
+            }
+        };
+    }
+
+    update_if_missing!("musicbrainz_id", enrichment.musicbrainz_id);
+    update_if_missing!("genre", enrichment.genre);
+    update_if_missing!("release_date", enrichment.release_date);
+    update_if_missing!("isrc", enrichment.isrc);
+    update_if_missing!("description", enrichment.description);
+    update_if_missing!("label", enrichment.label);
+    update_if_missing!("language", enrichment.language);
+
+    // Update artist info if we have MusicBrainz data
+    if let Some(ref mb_artist_id) = enrichment.artist_musicbrainz_id {
+        // Get the track's artist_id
+        let artist_id: Option<i64> = conn.query_row(
+            "SELECT artist_id FROM tracks WHERE id = ?1",
+            rusqlite::params![track_id],
+            |row| row.get(0),
+        ).ok();
+        if let Some(aid) = artist_id {
+            let _ = conn.execute(
+                "UPDATE artists SET musicbrainz_id = ?1 WHERE id = ?2 AND musicbrainz_id IS NULL",
+                rusqlite::params![mb_artist_id, aid],
+            );
+            if let Some(ref sn) = enrichment.artist_sort_name {
+                let _ = conn.execute(
+                    "UPDATE artists SET sort_name = ?1 WHERE id = ?2 AND sort_name IS NULL",
+                    rusqlite::params![sn, aid],
+                );
+            }
+            if let Some(ref at) = enrichment.artist_type {
+                let _ = conn.execute(
+                    "UPDATE artists SET artist_type = ?1 WHERE id = ?2 AND artist_type IS NULL",
+                    rusqlite::params![at, aid],
+                );
+            }
+            if let Some(ref c) = enrichment.artist_country {
+                let _ = conn.execute(
+                    "UPDATE artists SET country = ?1 WHERE id = ?2 AND country IS NULL",
+                    rusqlite::params![c, aid],
+                );
+            }
+            if let Some(by) = enrichment.artist_begin_year {
+                let _ = conn.execute(
+                    "UPDATE artists SET begin_year = ?1 WHERE id = ?2 AND begin_year IS NULL",
+                    rusqlite::params![by, aid],
+                );
+            }
+        }
+    }
+
+    // Update album info
+    if let Some(ref mb_album_id) = enrichment.album_musicbrainz_id {
+        let album_id: Option<i64> = conn.query_row(
+            "SELECT album_id FROM tracks WHERE id = ?1",
+            rusqlite::params![track_id],
+            |row| row.get(0),
+        ).ok().flatten();
+        if let Some(aid) = album_id {
+            let _ = conn.execute(
+                "UPDATE albums SET musicbrainz_id = ?1 WHERE id = ?2 AND musicbrainz_id IS NULL",
+                rusqlite::params![mb_album_id, aid],
+            );
+            if let Some(ref rd) = enrichment.album_release_date {
+                let _ = conn.execute(
+                    "UPDATE albums SET release_date = ?1 WHERE id = ?2 AND release_date IS NULL",
+                    rusqlite::params![rd, aid],
+                );
+            }
+            if let Some(ref at) = enrichment.album_type {
+                let _ = conn.execute(
+                    "UPDATE albums SET album_type = ?1 WHERE id = ?2 AND album_type IS NULL",
+                    rusqlite::params![at, aid],
+                );
+            }
+        }
+    }
+
+    let completeness = crate::db::tracks::update_completeness(&conn, track_id)
+        .map_err(|e| e.to_string())?;
+
+    Ok(EnrichResult { track_id, fields_updated: updated, completeness })
+}
+
+/// Enrich an album's metadata from MusicBrainz + Last.fm, including tracklist and cover art
+#[derive(Debug, serde::Serialize)]
+pub struct EnrichAlbumResult {
+    pub album_id: i64,
+    pub fields_updated: i64,
+    pub tracks_added: i64,
+    pub tracklist: Vec<crate::metadata::musicbrainz::AlbumTrackInfo>,
+}
+
+#[tauri::command]
+pub async fn enrich_album(
+    db: State<'_, Arc<DbPool>>,
+    app_handle: tauri::AppHandle,
+    album_id: i64,
+) -> Result<EnrichAlbumResult, String> {
+    // Get album info for search
+    let (title, artist_name, existing_cover, existing_description, existing_genre) = {
+        let conn = db.lock().map_err(|e| e.to_string())?;
+        let album = crate::db::albums::get_album(&conn, album_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "Album not found".to_string())?;
+        (album.title, album.artist_name, album.cover_art_path, album.description, album.genre)
+    };
+
+    // Fetch MusicBrainz data
+    let enrichment = crate::metadata::musicbrainz::enrich_album(&title, artist_name.as_deref()).await?;
+
+    // Fetch Last.fm data in parallel (don't fail if it errors)
+    let lastfm_data = if let Some(ref artist) = artist_name {
+        crate::metadata::lastfm::get_album_info(&title, artist).await.ok()
+    } else {
+        None
+    };
+
+    // Fetch artist data from Last.fm for bio/image
+    let lastfm_artist = if let Some(ref artist) = artist_name {
+        crate::metadata::lastfm::get_artist_info(artist).await.ok()
+    } else {
+        None
+    };
+
+    // Apply all DB updates in a block so conn is dropped before async cover art download
+    let (mut updated, artist_id) = {
+        let conn = db.lock().map_err(|e| e.to_string())?;
+        let mut updated = 0i64;
+
+        macro_rules! update_album_if_missing {
+            ($col:expr, $val:expr) => {
+                if let Some(ref v) = $val {
+                    let changed = conn.execute(
+                        &format!("UPDATE albums SET {} = ?1 WHERE id = ?2 AND ({} IS NULL OR {} = '')", $col, $col, $col),
+                        rusqlite::params![v, album_id],
+                    ).unwrap_or(0);
+                    updated += changed as i64;
+                }
+            };
+        }
+
+        update_album_if_missing!("musicbrainz_id", enrichment.musicbrainz_id);
+        update_album_if_missing!("release_date", enrichment.release_date);
+        update_album_if_missing!("label", enrichment.label);
+        update_album_if_missing!("album_type", enrichment.album_type);
+
+        // Genre: prefer Last.fm tags (joined), fallback to MusicBrainz
+        if existing_genre.is_none() {
+            let genre = lastfm_data.as_ref()
+                .filter(|d| !d.tags.is_empty())
+                .map(|d| d.tags.join(", "))
+                .or(enrichment.genre.clone());
+            update_album_if_missing!("genre", genre);
+        }
+
+        // Description: prefer Last.fm wiki
+        if existing_description.is_none() {
+            let desc = lastfm_data.as_ref()
+                .and_then(|d| d.description.clone());
+            update_album_if_missing!("description", desc);
+        }
+
+        if let Some(tt) = enrichment.total_tracks {
+            let changed = conn.execute(
+                "UPDATE albums SET total_tracks = ?1 WHERE id = ?2 AND total_tracks IS NULL",
+                rusqlite::params![tt, album_id],
+            ).unwrap_or(0);
+            updated += changed as i64;
+        }
+        if let Some(td) = enrichment.total_discs {
+            let changed = conn.execute(
+                "UPDATE albums SET total_discs = ?1 WHERE id = ?2 AND total_discs IS NULL",
+                rusqlite::params![td, album_id],
+            ).unwrap_or(0);
+            updated += changed as i64;
+        }
+
+        // Update artist info
+        let artist_id: Option<i64> = conn.query_row(
+            "SELECT artist_id FROM albums WHERE id = ?1",
+            rusqlite::params![album_id],
+            |row| row.get(0),
+        ).ok().flatten();
+
+        if let Some(aid) = artist_id {
+            if let Some(ref mb_artist_id) = enrichment.artist_musicbrainz_id {
+                let _ = conn.execute("UPDATE artists SET musicbrainz_id = ?1 WHERE id = ?2 AND musicbrainz_id IS NULL", rusqlite::params![mb_artist_id, aid]);
+                if let Some(ref v) = enrichment.artist_sort_name { let _ = conn.execute("UPDATE artists SET sort_name = ?1 WHERE id = ?2 AND sort_name IS NULL", rusqlite::params![v, aid]); }
+                if let Some(ref v) = enrichment.artist_type { let _ = conn.execute("UPDATE artists SET artist_type = ?1 WHERE id = ?2 AND artist_type IS NULL", rusqlite::params![v, aid]); }
+                if let Some(ref v) = enrichment.artist_country { let _ = conn.execute("UPDATE artists SET country = ?1 WHERE id = ?2 AND country IS NULL", rusqlite::params![v, aid]); }
+                if let Some(v) = enrichment.artist_begin_year { let _ = conn.execute("UPDATE artists SET begin_year = ?1 WHERE id = ?2 AND begin_year IS NULL", rusqlite::params![v, aid]); }
+            }
+            // Artist bio from Last.fm
+            if let Some(ref lfm_artist) = lastfm_artist {
+                if let Some(ref bio) = lfm_artist.bio {
+                    let _ = conn.execute("UPDATE artists SET bio = ?1 WHERE id = ?2 AND (bio IS NULL OR bio = '')", rusqlite::params![bio, aid]);
+                }
+            }
+        }
+
+        (updated, artist_id)
+    }; // conn dropped here
+
+    // Download cover art if album has no cover
+    if existing_cover.is_none() {
+        let covers_dir = app_handle
+            .path()
+            .app_data_dir()
+            .map(|d| d.join("covers"))
+            .ok();
+
+        if let Some(covers_dir) = covers_dir {
+            let _ = std::fs::create_dir_all(&covers_dir);
+            let mut cover_bytes: Option<Vec<u8>> = None;
+
+            // Try Cover Art Archive first (highest quality)
+            if let Some(ref mbid) = enrichment.musicbrainz_id {
+                cover_bytes = crate::metadata::musicbrainz::download_cover_art(mbid).await;
+            }
+
+            // Fallback to Last.fm image
+            if cover_bytes.is_none() {
+                if let Some(ref url) = lastfm_data.as_ref().and_then(|d| d.image_url.clone()) {
+                    cover_bytes = crate::metadata::lastfm::download_image(url).await;
+                }
+            }
+
+            if let Some(bytes) = cover_bytes {
+                let filename = format!("album_{}.jpg", album_id);
+                let path = covers_dir.join(&filename);
+                if std::fs::write(&path, &bytes).is_ok() {
+                    let path_str = path.to_string_lossy().to_string();
+                    if let Ok(conn) = db.lock() {
+                        let _ = conn.execute(
+                            "UPDATE albums SET cover_art_path = ?1 WHERE id = ?2",
+                            rusqlite::params![path_str, album_id],
+                        );
+                        // Also update tracks that belong to this album and have no cover
+                        let _ = conn.execute(
+                            "UPDATE tracks SET cover_art_path = ?1 WHERE album_id = ?2 AND cover_art_path IS NULL",
+                            rusqlite::params![path_str, album_id],
+                        );
+                        updated += 1;
+                    }
+                }
+            }
+        }
+
+        // Download artist image if missing
+        if let Some(aid) = artist_id {
+            let artist_has_image: bool = db.lock().ok()
+                .and_then(|conn| conn.query_row(
+                    "SELECT image_path IS NOT NULL FROM artists WHERE id = ?1",
+                    rusqlite::params![aid],
+                    |row| row.get::<_, bool>(0),
+                ).ok())
+                .unwrap_or(true);
+
+            if !artist_has_image {
+                let mut artist_img_bytes: Option<Vec<u8>> = None;
+                if let Some(ref lfm_artist) = lastfm_artist {
+                    if let Some(ref url) = lfm_artist.image_url {
+                        artist_img_bytes = crate::metadata::lastfm::download_image(url).await;
+                    }
+                }
+                if let Some(bytes) = artist_img_bytes {
+                    if let Some(covers_dir) = app_handle.path().app_data_dir().map(|d| d.join("covers")).ok() {
+                        let filename = format!("artist_{}.jpg", aid);
+                        let path = covers_dir.join(&filename);
+                        if std::fs::write(&path, &bytes).is_ok() {
+                            let path_str = path.to_string_lossy().to_string();
+                            if let Ok(conn) = db.lock() {
+                                let _ = conn.execute(
+                                    "UPDATE artists SET image_path = ?1 WHERE id = ?2 AND image_path IS NULL",
+                                    rusqlite::params![path_str, aid],
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let tracklist = enrichment.tracklist.clone();
+    let tracks_added = tracklist.len() as i64;
+
+    Ok(EnrichAlbumResult { album_id, fields_updated: updated, tracks_added, tracklist })
+}
+
+/// Scan all tracks with low metadata completeness and enrich them
+#[tauri::command]
+pub async fn scan_missing_metadata(
+    db: State<'_, Arc<DbPool>>,
+    app_handle: tauri::AppHandle,
+) -> Result<ScanMissingResult, String> {
+    // First, recompute completeness for all tracks that still have 0
+    {
+        let conn = db.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn.prepare(
+            "SELECT id FROM tracks WHERE metadata_completeness = 0"
+        ).map_err(|e| e.to_string())?;
+        let ids: Vec<i64> = stmt.query_map([], |row| row.get(0))
+            .map_err(|e| e.to_string())?
+            .filter_map(|r| r.ok())
+            .collect();
+        drop(stmt);
+        for id in &ids {
+            let _ = crate::db::tracks::update_completeness(&conn, *id);
+        }
+    }
+
+    // Get tracks that need enrichment (completeness < 70)
+    let tracks_to_enrich: Vec<(i64, String, Option<String>)> = {
+        let conn = db.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn.prepare(
+            "SELECT t.id, t.title, a.name
+             FROM tracks t
+             LEFT JOIN artists a ON t.artist_id = a.id
+             WHERE t.metadata_completeness < 70
+             ORDER BY t.metadata_completeness ASC
+             LIMIT 50"
+        ).map_err(|e| e.to_string())?;
+        let result: Vec<_> = stmt.query_map([], |row| Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, Option<String>>(2)?,
+        )))
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+        result
+    };
+
+    let total = tracks_to_enrich.len() as i64;
+    let mut enriched = 0i64;
+    let mut failed = 0i64;
+
+    for (i, (track_id, title, artist_name)) in tracks_to_enrich.iter().enumerate() {
+        // Rate limit: 1 request per second for MusicBrainz
+        if i > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+        }
+
+        // Emit progress event
+        let _ = app_handle.emit(
+            "metadata-scan-progress",
+            serde_json::json!({
+                "current": i + 1,
+                "total": total,
+                "track_title": title,
+            }),
+        );
+
+        match crate::metadata::musicbrainz::enrich_track(title, artist_name.as_deref()).await {
+            Ok(enrichment) => {
+                if let Ok(conn) = db.lock() {
+                    // Apply enrichment (same logic as enrich_track command but inlined)
+                    macro_rules! update_if_missing {
+                        ($col:expr, $val:expr) => {
+                            if let Some(ref v) = $val {
+                                let _ = conn.execute(
+                                    &format!("UPDATE tracks SET {} = ?1 WHERE id = ?2 AND ({} IS NULL OR {} = '')", $col, $col, $col),
+                                    rusqlite::params![v, track_id],
+                                );
+                            }
+                        };
+                    }
+                    update_if_missing!("musicbrainz_id", enrichment.musicbrainz_id);
+                    update_if_missing!("genre", enrichment.genre);
+                    update_if_missing!("release_date", enrichment.release_date);
+                    update_if_missing!("isrc", enrichment.isrc);
+                    update_if_missing!("description", enrichment.description);
+                    update_if_missing!("label", enrichment.label);
+                    update_if_missing!("language", enrichment.language);
+
+                    // Update artist
+                    if let Some(ref mb_id) = enrichment.artist_musicbrainz_id {
+                        let artist_id: Option<i64> = conn.query_row(
+                            "SELECT artist_id FROM tracks WHERE id = ?1",
+                            rusqlite::params![track_id],
+                            |row| row.get(0),
+                        ).ok();
+                        if let Some(aid) = artist_id {
+                            let _ = conn.execute("UPDATE artists SET musicbrainz_id = ?1 WHERE id = ?2 AND musicbrainz_id IS NULL", rusqlite::params![mb_id, aid]);
+                            if let Some(ref v) = enrichment.artist_sort_name { let _ = conn.execute("UPDATE artists SET sort_name = ?1 WHERE id = ?2 AND sort_name IS NULL", rusqlite::params![v, aid]); }
+                            if let Some(ref v) = enrichment.artist_type { let _ = conn.execute("UPDATE artists SET artist_type = ?1 WHERE id = ?2 AND artist_type IS NULL", rusqlite::params![v, aid]); }
+                            if let Some(ref v) = enrichment.artist_country { let _ = conn.execute("UPDATE artists SET country = ?1 WHERE id = ?2 AND country IS NULL", rusqlite::params![v, aid]); }
+                            if let Some(v) = enrichment.artist_begin_year { let _ = conn.execute("UPDATE artists SET begin_year = ?1 WHERE id = ?2 AND begin_year IS NULL", rusqlite::params![v, aid]); }
+                        }
+                    }
+
+                    let _ = crate::db::tracks::update_completeness(&conn, *track_id);
+                    enriched += 1;
+                }
+            }
+            Err(e) => {
+                log::warn!("Failed to enrich track {} ({}): {}", track_id, title, e);
+                failed += 1;
+            }
+        }
+    }
+
+    // Compute average completeness
+    let completeness_avg = {
+        let conn = db.lock().map_err(|e| e.to_string())?;
+        conn.query_row(
+            "SELECT COALESCE(AVG(metadata_completeness), 0) FROM tracks",
+            [],
+            |row| row.get::<_, i64>(0),
+        ).unwrap_or(0)
+    };
+
+    // Emit completion event
+    let _ = app_handle.emit("metadata-scan-complete", serde_json::json!({
+        "enriched": enriched,
+        "failed": failed,
+        "completeness_avg": completeness_avg,
+    }));
+
+    Ok(ScanMissingResult { total_tracks: total, enriched, failed, completeness_avg })
+}
+
+/// Background auto-enrichment: enriches all albums and tracks with missing metadata.
+/// Called once on app startup as a background task.
+pub async fn auto_enrich_library(
+    db: Arc<std::sync::Mutex<rusqlite::Connection>>,
+    app_handle: tauri::AppHandle,
+) {
+    log::info!("Starting background auto-enrichment...");
+
+    let covers_dir = match app_handle.path().app_data_dir().map(|d| d.join("covers")) {
+        Ok(d) => { let _ = std::fs::create_dir_all(&d); d },
+        Err(_) => return,
+    };
+
+    // 1. Enrich albums that have no musicbrainz_id
+    let albums_to_enrich: Vec<(i64, String, Option<String>, Option<String>)> = {
+        match db.lock() {
+            Ok(conn) => {
+                let mut stmt = match conn.prepare(
+                    "SELECT al.id, al.title, a.name, al.cover_art_path
+                     FROM albums al
+                     LEFT JOIN artists a ON al.artist_id = a.id
+                     WHERE al.musicbrainz_id IS NULL
+                     LIMIT 100"
+                ) {
+                    Ok(s) => s,
+                    Err(_) => return,
+                };
+                let result: Vec<_> = stmt.query_map([], |row| Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                )))
+                .unwrap_or_else(|_| panic!())
+                .filter_map(|r| r.ok())
+                .collect();
+                result
+            }
+            Err(_) => return,
+        }
+    };
+
+    let total_albums = albums_to_enrich.len();
+    log::info!("Auto-enriching {} albums", total_albums);
+
+    let _ = app_handle.emit("auto-enrich-progress", serde_json::json!({
+        "phase": "albums",
+        "current": 0,
+        "total": total_albums,
+    }));
+
+    for (i, (album_id, title, artist_name, existing_cover)) in albums_to_enrich.iter().enumerate() {
+        // Rate limit for MusicBrainz
+        if i > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+        }
+
+        let _ = app_handle.emit("auto-enrich-progress", serde_json::json!({
+            "phase": "albums",
+            "current": i + 1,
+            "total": total_albums,
+            "title": title,
+        }));
+
+        // MusicBrainz album enrichment
+        let enrichment = match crate::metadata::musicbrainz::enrich_album(&title, artist_name.as_deref()).await {
+            Ok(e) => e,
+            Err(e) => {
+                log::warn!("Failed to enrich album '{}': {}", title, e);
+                continue;
+            }
+        };
+
+        // Last.fm album data
+        let lastfm_data = if let Some(ref artist) = artist_name {
+            crate::metadata::lastfm::get_album_info(&title, artist).await.ok()
+        } else {
+            None
+        };
+
+        if let Ok(conn) = db.lock() {
+            macro_rules! update_album {
+                ($col:expr, $val:expr) => {
+                    if let Some(ref v) = $val {
+                        let _ = conn.execute(
+                            &format!("UPDATE albums SET {} = ?1 WHERE id = ?2 AND ({} IS NULL OR {} = '')", $col, $col, $col),
+                            rusqlite::params![v, album_id],
+                        );
+                    }
+                };
+            }
+
+            update_album!("musicbrainz_id", enrichment.musicbrainz_id);
+            update_album!("release_date", enrichment.release_date);
+            update_album!("label", enrichment.label);
+            update_album!("album_type", enrichment.album_type);
+
+            // Genre: prefer Last.fm tags
+            let genre = lastfm_data.as_ref()
+                .filter(|d| !d.tags.is_empty())
+                .map(|d| d.tags.join(", "))
+                .or(enrichment.genre.clone());
+            update_album!("genre", genre);
+
+            // Description from Last.fm
+            let desc = lastfm_data.as_ref().and_then(|d| d.description.clone());
+            update_album!("description", desc);
+
+            if let Some(tt) = enrichment.total_tracks {
+                let _ = conn.execute("UPDATE albums SET total_tracks = ?1 WHERE id = ?2 AND total_tracks IS NULL", rusqlite::params![tt, album_id]);
+            }
+            if let Some(td) = enrichment.total_discs {
+                let _ = conn.execute("UPDATE albums SET total_discs = ?1 WHERE id = ?2 AND total_discs IS NULL", rusqlite::params![td, album_id]);
+            }
+
+            // Artist enrichment
+            let artist_id: Option<i64> = conn.query_row(
+                "SELECT artist_id FROM albums WHERE id = ?1", rusqlite::params![album_id], |row| row.get(0),
+            ).ok().flatten();
+            if let Some(aid) = artist_id {
+                if let Some(ref mb_id) = enrichment.artist_musicbrainz_id {
+                    let _ = conn.execute("UPDATE artists SET musicbrainz_id = ?1 WHERE id = ?2 AND musicbrainz_id IS NULL", rusqlite::params![mb_id, aid]);
+                }
+                if let Some(ref v) = enrichment.artist_sort_name { let _ = conn.execute("UPDATE artists SET sort_name = ?1 WHERE id = ?2 AND sort_name IS NULL", rusqlite::params![v, aid]); }
+                if let Some(ref v) = enrichment.artist_type { let _ = conn.execute("UPDATE artists SET artist_type = ?1 WHERE id = ?2 AND artist_type IS NULL", rusqlite::params![v, aid]); }
+                if let Some(ref v) = enrichment.artist_country { let _ = conn.execute("UPDATE artists SET country = ?1 WHERE id = ?2 AND country IS NULL", rusqlite::params![v, aid]); }
+                if let Some(v) = enrichment.artist_begin_year { let _ = conn.execute("UPDATE artists SET begin_year = ?1 WHERE id = ?2 AND begin_year IS NULL", rusqlite::params![v, aid]); }
+            }
+        }
+
+        // Download cover art if missing
+        if existing_cover.is_none() {
+            let mut cover_bytes: Option<Vec<u8>> = None;
+            if let Some(ref mbid) = enrichment.musicbrainz_id {
+                cover_bytes = crate::metadata::musicbrainz::download_cover_art(mbid).await;
+            }
+            if cover_bytes.is_none() {
+                if let Some(ref url) = lastfm_data.as_ref().and_then(|d| d.image_url.clone()) {
+                    cover_bytes = crate::metadata::lastfm::download_image(url).await;
+                }
+            }
+            if let Some(bytes) = cover_bytes {
+                let filename = format!("album_{}.jpg", album_id);
+                let path = covers_dir.join(&filename);
+                if std::fs::write(&path, &bytes).is_ok() {
+                    let path_str = path.to_string_lossy().to_string();
+                    if let Ok(conn) = db.lock() {
+                        let _ = conn.execute("UPDATE albums SET cover_art_path = ?1 WHERE id = ?2", rusqlite::params![path_str, album_id]);
+                        let _ = conn.execute("UPDATE tracks SET cover_art_path = ?1 WHERE album_id = ?2 AND cover_art_path IS NULL", rusqlite::params![path_str, album_id]);
+                    }
+                }
+            }
+        }
+
+        // Download artist image if missing
+        let artist_needs_image: Option<i64> = db.lock().ok().and_then(|conn| {
+            let aid: Option<i64> = conn.query_row(
+                "SELECT artist_id FROM albums WHERE id = ?1", rusqlite::params![album_id], |row| row.get(0),
+            ).ok().flatten();
+            aid.filter(|&aid| {
+                !conn.query_row(
+                    "SELECT image_path IS NOT NULL FROM artists WHERE id = ?1",
+                    rusqlite::params![aid], |row| row.get::<_, bool>(0),
+                ).unwrap_or(true)
+            })
+        });
+
+        if let Some(aid) = artist_needs_image {
+            if let Some(ref artist) = artist_name {
+                if let Ok(lfm) = crate::metadata::lastfm::get_artist_info(artist).await {
+                    if let Some(ref url) = lfm.image_url {
+                        if let Some(bytes) = crate::metadata::lastfm::download_image(url).await {
+                            let filename = format!("artist_{}.jpg", aid);
+                            let path = covers_dir.join(&filename);
+                            if std::fs::write(&path, &bytes).is_ok() {
+                                let path_str = path.to_string_lossy().to_string();
+                                if let Ok(conn) = db.lock() {
+                                    let _ = conn.execute("UPDATE artists SET image_path = ?1 WHERE id = ?2 AND image_path IS NULL", rusqlite::params![path_str, aid]);
+                                    if let Some(ref bio) = lfm.bio {
+                                        let _ = conn.execute("UPDATE artists SET bio = ?1 WHERE id = ?2 AND (bio IS NULL OR bio = '')", rusqlite::params![bio, aid]);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 2. Enrich tracks with low completeness
+    let tracks_to_enrich: Vec<(i64, String, Option<String>)> = {
+        match db.lock() {
+            Ok(conn) => {
+                // First recompute zero-completeness tracks
+                if let Ok(mut stmt) = conn.prepare("SELECT id FROM tracks WHERE metadata_completeness = 0") {
+                    let ids: Vec<i64> = stmt.query_map([], |row| row.get(0))
+                        .unwrap_or_else(|_| panic!())
+                        .filter_map(|r| r.ok())
+                        .collect();
+                    drop(stmt);
+                    for id in &ids {
+                        let _ = crate::db::tracks::update_completeness(&conn, *id);
+                    }
+                }
+
+                let mut stmt = match conn.prepare(
+                    "SELECT t.id, t.title, a.name
+                     FROM tracks t
+                     LEFT JOIN artists a ON t.artist_id = a.id
+                     WHERE t.metadata_completeness < 70
+                     ORDER BY t.metadata_completeness ASC
+                     LIMIT 100"
+                ) {
+                    Ok(s) => s,
+                    Err(_) => return,
+                };
+                let result: Vec<_> = stmt.query_map([], |row| Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                )))
+                .unwrap_or_else(|_| panic!())
+                .filter_map(|r| r.ok())
+                .collect();
+                result
+            }
+            Err(_) => return,
+        }
+    };
+
+    let total_tracks = tracks_to_enrich.len();
+    log::info!("Auto-enriching {} tracks", total_tracks);
+
+    for (i, (track_id, title, artist_name)) in tracks_to_enrich.iter().enumerate() {
+        if i > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+        }
+
+        let _ = app_handle.emit("auto-enrich-progress", serde_json::json!({
+            "phase": "tracks",
+            "current": i + 1,
+            "total": total_tracks,
+            "title": title,
+        }));
+
+        // MusicBrainz track enrichment
+        match crate::metadata::musicbrainz::enrich_track(&title, artist_name.as_deref()).await {
+            Ok(enrichment) => {
+                // Apply MusicBrainz data
+                if let Ok(conn) = db.lock() {
+                    macro_rules! update_track {
+                        ($col:expr, $val:expr) => {
+                            if let Some(ref v) = $val {
+                                let _ = conn.execute(
+                                    &format!("UPDATE tracks SET {} = ?1 WHERE id = ?2 AND ({} IS NULL OR {} = '')", $col, $col, $col),
+                                    rusqlite::params![v, track_id],
+                                );
+                            }
+                        };
+                    }
+                    update_track!("musicbrainz_id", enrichment.musicbrainz_id);
+                    update_track!("genre", enrichment.genre);
+                    update_track!("release_date", enrichment.release_date);
+                    update_track!("isrc", enrichment.isrc);
+                    update_track!("description", enrichment.description);
+                    update_track!("label", enrichment.label);
+                    update_track!("language", enrichment.language);
+                }
+                // conn is dropped here
+
+                // Also enrich with Last.fm track tags
+                if let Some(ref artist) = artist_name {
+                    if let Ok(lfm) = crate::metadata::lastfm::get_track_info(&title, artist).await {
+                        if let Ok(conn) = db.lock() {
+                            if !lfm.tags.is_empty() {
+                                let tags_str = lfm.tags.join(", ");
+                                let _ = conn.execute(
+                                    "UPDATE tracks SET genre = ?1 WHERE id = ?2 AND (genre IS NULL OR genre = '')",
+                                    rusqlite::params![tags_str, track_id],
+                                );
+                            }
+                            if let Some(ref desc) = lfm.description {
+                                let _ = conn.execute(
+                                    "UPDATE tracks SET description = ?1 WHERE id = ?2 AND (description IS NULL OR description = '')",
+                                    rusqlite::params![desc, track_id],
+                                );
+                            }
+                        }
+                    }
+                }
+
+                if let Ok(conn) = db.lock() {
+                    let _ = crate::db::tracks::update_completeness(&conn, *track_id);
+                }
+            }
+            Err(e) => {
+                log::warn!("Failed to enrich track '{}': {}", title, e);
+            }
+        }
+    }
+
+    let _ = app_handle.emit("auto-enrich-progress", serde_json::json!({
+        "phase": "complete",
+        "albums_enriched": total_albums,
+        "tracks_enriched": total_tracks,
+    }));
+
+    log::info!("Background auto-enrichment complete: {} albums, {} tracks", total_albums, total_tracks);
+}
+
+/// Get metadata stats for the library
+#[tauri::command]
+pub fn get_metadata_stats(
+    db: State<'_, Arc<DbPool>>,
+) -> Result<serde_json::Value, String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    let total: i64 = conn.query_row("SELECT COUNT(*) FROM tracks", [], |row| row.get(0)).unwrap_or(0);
+    let avg: f64 = conn.query_row("SELECT COALESCE(AVG(metadata_completeness), 0) FROM tracks", [], |row| row.get(0)).unwrap_or(0.0);
+    let complete: i64 = conn.query_row("SELECT COUNT(*) FROM tracks WHERE metadata_completeness >= 80", [], |row| row.get(0)).unwrap_or(0);
+    let incomplete: i64 = conn.query_row("SELECT COUNT(*) FROM tracks WHERE metadata_completeness < 50", [], |row| row.get(0)).unwrap_or(0);
+
+    Ok(serde_json::json!({
+        "total_tracks": total,
+        "average_completeness": avg.round() as i64,
+        "complete_tracks": complete,
+        "incomplete_tracks": incomplete,
+    }))
 }

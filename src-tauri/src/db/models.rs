@@ -24,6 +24,12 @@ pub struct Track {
     pub play_count: i64,
     pub last_played_at: Option<String>,
     pub date_added: String,
+    pub description: Option<String>,
+    pub label: Option<String>,
+    pub release_date: Option<String>,
+    pub composer: Option<String>,
+    pub language: Option<String>,
+    pub metadata_completeness: i64,
     // Denormalized for display
     pub artist_name: Option<String>,
     pub album_title: Option<String>,
@@ -43,6 +49,9 @@ pub struct Artist {
     pub musicbrainz_id: Option<String>,
     pub image_path: Option<String>,
     pub bio: Option<String>,
+    pub country: Option<String>,
+    pub begin_year: Option<i64>,
+    pub artist_type: Option<String>,
     pub track_count: i64,
 }
 
@@ -58,6 +67,10 @@ pub struct Album {
     pub total_discs: Option<i64>,
     pub musicbrainz_id: Option<String>,
     pub cover_art_path: Option<String>,
+    pub label: Option<String>,
+    pub release_date: Option<String>,
+    pub description: Option<String>,
+    pub album_type: Option<String>,
     pub artist_name: Option<String>,
     pub track_count: i64,
 }

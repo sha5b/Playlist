@@ -8,6 +8,10 @@ import type {
 	Playlist,
 	PlaylistDetail,
 	SearchResults,
+	EnrichResult,
+	EnrichAlbumResult,
+	ScanMissingResult,
+	MetadataStats,
 } from '$lib/types';
 
 // --- Simple TTL cache for frequently accessed data ---
@@ -207,4 +211,28 @@ export async function importFolder(path: string): Promise<number> {
 	const result = await invoke<number>('library_import_folder', { path });
 	invalidateCache();
 	return result;
+}
+
+// --- Metadata Enrichment ---
+
+export async function enrichAlbum(albumId: number): Promise<EnrichAlbumResult> {
+	const result = await invoke<EnrichAlbumResult>('enrich_album', { albumId });
+	invalidateCache();
+	return result;
+}
+
+export async function enrichTrack(trackId: number): Promise<EnrichResult> {
+	const result = await invoke<EnrichResult>('enrich_track', { trackId });
+	invalidateCache();
+	return result;
+}
+
+export async function scanMissingMetadata(): Promise<ScanMissingResult> {
+	const result = await invoke<ScanMissingResult>('scan_missing_metadata');
+	invalidateCache();
+	return result;
+}
+
+export async function getMetadataStats(): Promise<MetadataStats> {
+	return invoke<MetadataStats>('get_metadata_stats');
 }

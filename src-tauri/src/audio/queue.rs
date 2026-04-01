@@ -153,6 +153,24 @@ impl PlayQueue {
         }
     }
 
+    pub fn move_in_queue(&mut self, from: usize, to: usize) {
+        if from >= self.order.len() || to >= self.order.len() || from == to {
+            return;
+        }
+        let item = self.order.remove(from);
+        self.order.insert(to, item);
+        // Adjust position to keep tracking the currently-playing item
+        if let Some(pos) = self.position {
+            if from == pos {
+                self.position = Some(to);
+            } else if from < pos && to >= pos {
+                self.position = Some(pos - 1);
+            } else if from > pos && to <= pos {
+                self.position = Some(pos + 1);
+            }
+        }
+    }
+
     pub fn remove_at_order_index(&mut self, order_idx: usize) {
         if order_idx >= self.order.len() {
             return;

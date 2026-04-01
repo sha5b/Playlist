@@ -1,15 +1,16 @@
 <script lang="ts">
 	import { page } from '$app/state';
-	import { getTrack } from '$lib/api/library';
+	import { getTrack, enrichTrack } from '$lib/api/library';
 	import { Button } from '$lib/components/ui/button';
 	import { player } from '$lib/stores/player.svelte';
 	import { formatDuration, formatFileSize, formatDate, assetUrl } from '$lib/utils/format';
-	import { ArrowLeft, Music, Play, ListStart, ListPlus, Loader2 } from 'lucide-svelte';
+	import { ArrowLeft, Music, Play, ListStart, ListPlus, Loader2, Sparkles } from 'lucide-svelte';
 	import { toast } from 'svelte-sonner';
 	import type { Track } from '$lib/types';
 
 	let track: Track | null = $state(null);
 	let loading = $state(true);
+	let enriching = $state(false);
 
 	const trackId = $derived(Number(page.params.id));
 
@@ -44,6 +45,20 @@
 		toast.success(`Added "${track.title}" to queue`);
 	}
 
+	async function handleEnrich() {
+		if (!track || enriching) return;
+		enriching = true;
+		try {
+			const result = await enrichTrack(track.id);
+			toast.success(`Enriched metadata (${result.fields_updated} fields updated, ${result.completeness}% complete)`);
+			track = await getTrack(track.id);
+		} catch (e) {
+			toast.error('Failed to enrich metadata', { description: String(e) });
+		} finally {
+			enriching = false;
+		}
+	}
+
 	function formatBitrate(br: number | null): string {
 		if (!br) return '--';
 		return `${br} kbps`;
@@ -53,6 +68,8 @@
 		if (!sr) return '--';
 		return `${(sr / 1000).toFixed(1)} kHz`;
 	}
+
+
 </script>
 
 <div class="flex-1 min-h-0 overflow-y-auto space-y-6">
@@ -82,7 +99,12 @@
 				{/if}
 			</div>
 			<div class="space-y-2">
-				<p class="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Song</p>
+				<div class="flex items-center gap-2">
+					<p class="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Song</p>
+					<span class="text-xs font-medium {track.metadata_completeness >= 80 ? 'text-green-500' : track.metadata_completeness >= 50 ? 'text-yellow-500' : 'text-red-500'}">
+						{track.metadata_completeness}% metadata
+					</span>
+				</div>
 				<h1 class="text-3xl font-bold tracking-tight">{track.title}</h1>
 				<p class="text-sm text-muted-foreground">
 					{#if track.artist_id}
@@ -114,9 +136,24 @@
 						<ListPlus class="size-4" />
 						Add to Queue
 					</Button>
+					<Button variant="outline" onclick={handleEnrich} disabled={enriching}>
+						{#if enriching}
+							<Loader2 class="size-4 animate-spin" />
+						{:else}
+							<Sparkles class="size-4" />
+						{/if}
+						Enrich
+					</Button>
 				</div>
 			</div>
 		</div>
+
+		{#if track.description}
+			<div class="rounded-lg border border-border p-6">
+				<h2 class="text-sm font-semibold uppercase tracking-wider text-muted-foreground mb-3">Description</h2>
+				<p class="text-sm text-foreground/80 whitespace-pre-line">{track.description}</p>
+			</div>
+		{/if}
 
 		<div class="rounded-lg border border-border p-6">
 			<h2 class="text-sm font-semibold uppercase tracking-wider text-muted-foreground mb-4">Details</h2>
@@ -131,6 +168,36 @@
 					<div>
 						<span class="text-muted-foreground">Genre</span>
 						<p class="font-medium">{track.genre}</p>
+					</div>
+				{/if}
+				{#if track.year}
+					<div>
+						<span class="text-muted-foreground">Year</span>
+						<p class="font-medium">{track.year}</p>
+					</div>
+				{/if}
+				{#if track.release_date}
+					<div>
+						<span class="text-muted-foreground">Release Date</span>
+						<p class="font-medium">{track.release_date}</p>
+					</div>
+				{/if}
+				{#if track.label}
+					<div>
+						<span class="text-muted-foreground">Label</span>
+						<p class="font-medium">{track.label}</p>
+					</div>
+				{/if}
+				{#if track.composer}
+					<div>
+						<span class="text-muted-foreground">Composer</span>
+						<p class="font-medium">{track.composer}</p>
+					</div>
+				{/if}
+				{#if track.language}
+					<div>
+						<span class="text-muted-foreground">Language</span>
+						<p class="font-medium">{track.language}</p>
 					</div>
 				{/if}
 				{#if track.format}

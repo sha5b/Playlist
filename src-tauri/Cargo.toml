@@ -46,7 +46,7 @@ crossbeam-channel = "0.5"
 walkdir = "2"
 
 # HTTP / Downloads
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json"] }
 futures-util = "0.3"
 zip = "2"
 

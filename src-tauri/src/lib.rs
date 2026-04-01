@@ -166,6 +166,17 @@ pub fn run() {
                 })
                 .build(app)?;
 
+            // Spawn background auto-enrichment task
+            {
+                let db = app.state::<Arc<std::sync::Mutex<rusqlite::Connection>>>().inner().clone();
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    // Small delay to let the UI load first
+                    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                    commands::auto_enrich_library(db, handle).await;
+                });
+            }
+
             log::info!("Playlist app initialized successfully");
             Ok(())
         })
@@ -241,10 +252,17 @@ pub fn run() {
             commands::player::player_set_repeat,
             commands::player::player_add_to_queue,
             commands::player::player_add_next,
+            commands::player::player_move_in_queue,
             commands::player::player_remove_from_queue,
             commands::player::player_clear_queue,
             commands::player::player_get_state,
             commands::player::player_get_queue,
+            commands::player::player_random_tracks,
+            // Metadata enrichment
+            commands::enrich_track,
+            commands::enrich_album,
+            commands::scan_missing_metadata,
+            commands::get_metadata_stats,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

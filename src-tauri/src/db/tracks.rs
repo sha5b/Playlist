@@ -1,6 +1,53 @@
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, Row};
 
 use super::models::{Track, TrackPage};
+
+/// Shared column list for track queries. Indexes 0–27.
+const TRACK_COLUMNS: &str =
+    "t.id, t.title, t.duration_ms, t.track_number, t.disc_number,
+     t.genre, t.year, t.file_path, t.file_size, t.format, t.bitrate,
+     t.sample_rate, t.channels, t.cover_art_path, t.source_platform,
+     t.source_url, t.play_count, t.last_played_at, t.date_added,
+     a.name as artist_name, al.title as album_title, t.album_artist,
+     t.artist_id, t.album_id,
+     t.description, t.label, t.release_date, t.composer, t.language,
+     t.metadata_completeness";
+
+/// Map a row (using TRACK_COLUMNS order) into a Track.
+fn row_to_track(row: &Row) -> Result<Track, rusqlite::Error> {
+    Ok(Track {
+        id: row.get(0)?,
+        title: row.get(1)?,
+        artist_id: row.get(22)?,
+        album_id: row.get(23)?,
+        album_artist: row.get(21)?,
+        duration_ms: row.get(2)?,
+        track_number: row.get(3)?,
+        disc_number: row.get(4)?,
+        genre: row.get(5)?,
+        year: row.get(6)?,
+        file_path: row.get(7)?,
+        file_size: row.get(8)?,
+        format: row.get(9)?,
+        bitrate: row.get(10)?,
+        sample_rate: row.get(11)?,
+        channels: row.get(12)?,
+        cover_art_path: row.get(13)?,
+        source_platform: row.get(14)?,
+        source_url: row.get(15)?,
+        play_count: row.get(16)?,
+        last_played_at: row.get(17)?,
+        date_added: row.get(18)?,
+        artist_name: row.get(19)?,
+        album_title: row.get(20)?,
+        description: row.get(24)?,
+        label: row.get(25)?,
+        release_date: row.get(26)?,
+        composer: row.get(27)?,
+        language: row.get(28)?,
+        metadata_completeness: row.get(29)?,
+    })
+}
 
 pub fn get_tracks(
     conn: &Connection,
@@ -36,96 +83,36 @@ pub fn get_tracks(
     let total: i64 = conn.query_row(&count_sql, [], |row| row.get(0))?;
 
     let sql = format!(
-        "SELECT t.id, t.title, t.duration_ms, t.track_number, t.disc_number,
-                t.genre, t.year, t.file_path, t.file_size, t.format, t.bitrate,
-                t.sample_rate, t.channels, t.cover_art_path, t.source_platform,
-                t.source_url, t.play_count, t.last_played_at, t.date_added,
-                a.name as artist_name, al.title as album_title, t.album_artist
+        "SELECT {}
          FROM tracks t
          LEFT JOIN artists a ON t.artist_id = a.id
          LEFT JOIN albums al ON t.album_id = al.id
          {}
          ORDER BY t.{} {}
          LIMIT ?1 OFFSET ?2",
-        where_clause, allowed_sort, dir
+        TRACK_COLUMNS, where_clause, allowed_sort, dir
     );
 
     let mut stmt = conn.prepare(&sql)?;
     let tracks = stmt
-        .query_map(params![limit, offset], |row| {
-            Ok(Track {
-                id: row.get(0)?,
-                title: row.get(1)?,
-                artist_id: None,
-                album_id: None,
-                album_artist: row.get(21)?,
-                duration_ms: row.get(2)?,
-                track_number: row.get(3)?,
-                disc_number: row.get(4)?,
-                genre: row.get(5)?,
-                year: row.get(6)?,
-                file_path: row.get(7)?,
-                file_size: row.get(8)?,
-                format: row.get(9)?,
-                bitrate: row.get(10)?,
-                sample_rate: row.get(11)?,
-                channels: row.get(12)?,
-                cover_art_path: row.get(13)?,
-                source_platform: row.get(14)?,
-                source_url: row.get(15)?,
-                play_count: row.get(16)?,
-                last_played_at: row.get(17)?,
-                date_added: row.get(18)?,
-                artist_name: row.get(19)?,
-                album_title: row.get(20)?,
-            })
-        })?
+        .query_map(params![limit, offset], |row| row_to_track(row))?
         .collect::<Result<Vec<_>, _>>()?;
 
     Ok(TrackPage { tracks, total })
 }
 
 pub fn get_track(conn: &Connection, id: i64) -> Result<Option<Track>, rusqlite::Error> {
-    let mut stmt = conn.prepare(
-        "SELECT t.id, t.title, t.duration_ms, t.track_number, t.disc_number,
-                t.genre, t.year, t.file_path, t.file_size, t.format, t.bitrate,
-                t.sample_rate, t.channels, t.cover_art_path, t.source_platform,
-                t.source_url, t.play_count, t.last_played_at, t.date_added,
-                a.name as artist_name, al.title as album_title, t.album_artist
+    let sql = format!(
+        "SELECT {}
          FROM tracks t
          LEFT JOIN artists a ON t.artist_id = a.id
          LEFT JOIN albums al ON t.album_id = al.id
          WHERE t.id = ?1",
-    )?;
+        TRACK_COLUMNS
+    );
+    let mut stmt = conn.prepare(&sql)?;
 
-    let mut rows = stmt.query_map(params![id], |row| {
-        Ok(Track {
-            id: row.get(0)?,
-            title: row.get(1)?,
-            artist_id: None,
-            album_id: None,
-            album_artist: row.get(21)?,
-            duration_ms: row.get(2)?,
-            track_number: row.get(3)?,
-            disc_number: row.get(4)?,
-            genre: row.get(5)?,
-            year: row.get(6)?,
-            file_path: row.get(7)?,
-            file_size: row.get(8)?,
-            format: row.get(9)?,
-            bitrate: row.get(10)?,
-            sample_rate: row.get(11)?,
-            channels: row.get(12)?,
-            cover_art_path: row.get(13)?,
-            source_platform: row.get(14)?,
-            source_url: row.get(15)?,
-            play_count: row.get(16)?,
-            last_played_at: row.get(17)?,
-            date_added: row.get(18)?,
-            artist_name: row.get(19)?,
-            album_title: row.get(20)?,
-        })
-    })?;
+    let mut rows = stmt.query_map(params![id], |row| row_to_track(row))?;
 
     match rows.next() {
         Some(Ok(track)) => Ok(Some(track)),
@@ -172,12 +159,8 @@ pub fn search_tracks_fts(
         .collect::<Vec<_>>()
         .join(" ");
 
-    let mut stmt = conn.prepare(
-        "SELECT t.id, t.title, t.duration_ms, t.track_number, t.disc_number,
-                t.genre, t.year, t.file_path, t.file_size, t.format, t.bitrate,
-                t.sample_rate, t.channels, t.cover_art_path, t.source_platform,
-                t.source_url, t.play_count, t.last_played_at, t.date_added,
-                a.name as artist_name, al.title as album_title, t.album_artist
+    let sql = format!(
+        "SELECT {}
          FROM tracks_fts
          JOIN tracks t ON t.id = tracks_fts.rowid
          LEFT JOIN artists a ON t.artist_id = a.id
@@ -185,138 +168,101 @@ pub fn search_tracks_fts(
          WHERE tracks_fts MATCH ?1
          ORDER BY bm25(tracks_fts)
          LIMIT ?2",
-    )?;
+        TRACK_COLUMNS
+    );
+    let mut stmt = conn.prepare(&sql)?;
 
     let tracks = stmt
-        .query_map(params![fts_query, limit], |row| {
-            Ok(Track {
-                id: row.get(0)?,
-                title: row.get(1)?,
-                artist_id: None,
-                album_id: None,
-                album_artist: row.get(21)?,
-                duration_ms: row.get(2)?,
-                track_number: row.get(3)?,
-                disc_number: row.get(4)?,
-                genre: row.get(5)?,
-                year: row.get(6)?,
-                file_path: row.get(7)?,
-                file_size: row.get(8)?,
-                format: row.get(9)?,
-                bitrate: row.get(10)?,
-                sample_rate: row.get(11)?,
-                channels: row.get(12)?,
-                cover_art_path: row.get(13)?,
-                source_platform: row.get(14)?,
-                source_url: row.get(15)?,
-                play_count: row.get(16)?,
-                last_played_at: row.get(17)?,
-                date_added: row.get(18)?,
-                artist_name: row.get(19)?,
-                album_title: row.get(20)?,
-            })
-        })?
+        .query_map(params![fts_query, limit], |row| row_to_track(row))?
         .collect::<Result<Vec<_>, _>>()?;
 
     Ok(tracks)
 }
 
 pub fn get_tracks_by_album(conn: &Connection, album_id: i64) -> Result<Vec<Track>, rusqlite::Error> {
-    let mut stmt = conn.prepare(
-        "SELECT t.id, t.title, t.duration_ms, t.track_number, t.disc_number,
-                t.genre, t.year, t.file_path, t.file_size, t.format, t.bitrate,
-                t.sample_rate, t.channels, t.cover_art_path, t.source_platform,
-                t.source_url, t.play_count, t.last_played_at, t.date_added,
-                a.name as artist_name, al.title as album_title, t.album_artist,
-                t.artist_id, t.album_id
+    let sql = format!(
+        "SELECT {}
          FROM tracks t
          LEFT JOIN artists a ON t.artist_id = a.id
          LEFT JOIN albums al ON t.album_id = al.id
          WHERE t.album_id = ?1
          ORDER BY t.disc_number, t.track_number, t.title",
-    )?;
+        TRACK_COLUMNS
+    );
+    let mut stmt = conn.prepare(&sql)?;
 
     let tracks = stmt
-        .query_map(params![album_id], |row| {
-            Ok(Track {
-                id: row.get(0)?,
-                title: row.get(1)?,
-                artist_id: row.get(22)?,
-                album_id: row.get(23)?,
-                album_artist: row.get(21)?,
-                duration_ms: row.get(2)?,
-                track_number: row.get(3)?,
-                disc_number: row.get(4)?,
-                genre: row.get(5)?,
-                year: row.get(6)?,
-                file_path: row.get(7)?,
-                file_size: row.get(8)?,
-                format: row.get(9)?,
-                bitrate: row.get(10)?,
-                sample_rate: row.get(11)?,
-                channels: row.get(12)?,
-                cover_art_path: row.get(13)?,
-                source_platform: row.get(14)?,
-                source_url: row.get(15)?,
-                play_count: row.get(16)?,
-                last_played_at: row.get(17)?,
-                date_added: row.get(18)?,
-                artist_name: row.get(19)?,
-                album_title: row.get(20)?,
-            })
-        })?
+        .query_map(params![album_id], |row| row_to_track(row))?
         .collect::<Result<Vec<_>, _>>()?;
 
     Ok(tracks)
 }
 
 pub fn get_tracks_by_artist(conn: &Connection, artist_id: i64) -> Result<Vec<Track>, rusqlite::Error> {
-    let mut stmt = conn.prepare(
-        "SELECT t.id, t.title, t.duration_ms, t.track_number, t.disc_number,
-                t.genre, t.year, t.file_path, t.file_size, t.format, t.bitrate,
-                t.sample_rate, t.channels, t.cover_art_path, t.source_platform,
-                t.source_url, t.play_count, t.last_played_at, t.date_added,
-                a.name as artist_name, al.title as album_title, t.album_artist,
-                t.artist_id, t.album_id
+    let sql = format!(
+        "SELECT {}
          FROM tracks t
          LEFT JOIN artists a ON t.artist_id = a.id
          LEFT JOIN albums al ON t.album_id = al.id
          WHERE t.artist_id = ?1
          ORDER BY t.date_added DESC",
-    )?;
+        TRACK_COLUMNS
+    );
+    let mut stmt = conn.prepare(&sql)?;
 
     let tracks = stmt
-        .query_map(params![artist_id], |row| {
-            Ok(Track {
-                id: row.get(0)?,
-                title: row.get(1)?,
-                artist_id: row.get(22)?,
-                album_id: row.get(23)?,
-                album_artist: row.get(21)?,
-                duration_ms: row.get(2)?,
-                track_number: row.get(3)?,
-                disc_number: row.get(4)?,
-                genre: row.get(5)?,
-                year: row.get(6)?,
-                file_path: row.get(7)?,
-                file_size: row.get(8)?,
-                format: row.get(9)?,
-                bitrate: row.get(10)?,
-                sample_rate: row.get(11)?,
-                channels: row.get(12)?,
-                cover_art_path: row.get(13)?,
-                source_platform: row.get(14)?,
-                source_url: row.get(15)?,
-                play_count: row.get(16)?,
-                last_played_at: row.get(17)?,
-                date_added: row.get(18)?,
-                artist_name: row.get(19)?,
-                album_title: row.get(20)?,
-            })
-        })?
+        .query_map(params![artist_id], |row| row_to_track(row))?
         .collect::<Result<Vec<_>, _>>()?;
 
     Ok(tracks)
+}
+
+/// Compute metadata completeness as a percentage (0–100).
+/// Checks key fields: title, artist, album, genre, year, track_number, cover_art, duration, description.
+pub fn compute_completeness(conn: &Connection, track_id: i64) -> Result<i64, rusqlite::Error> {
+    let row: (
+        Option<String>, Option<i64>, Option<i64>, Option<String>,
+        Option<i64>, Option<i64>, Option<String>, Option<i64>,
+        Option<String>, Option<String>, Option<String>,
+    ) = conn.query_row(
+        "SELECT title, artist_id, album_id, genre, year, track_number,
+                cover_art_path, duration_ms, description, label, release_date
+         FROM tracks WHERE id = ?1",
+        params![track_id],
+        |row| Ok((
+            row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?,
+            row.get(4)?, row.get(5)?, row.get(6)?, row.get(7)?,
+            row.get(8)?, row.get(9)?, row.get(10)?,
+        )),
+    )?;
+
+    let fields: &[bool] = &[
+        row.0.as_ref().map_or(false, |s| !s.is_empty() && s != "Unknown"), // title
+        row.1.is_some(),  // artist
+        row.2.is_some(),  // album
+        row.3.as_ref().map_or(false, |s| !s.is_empty()), // genre
+        row.4.is_some(),  // year
+        row.5.is_some(),  // track_number
+        row.6.as_ref().map_or(false, |s| !s.is_empty()), // cover_art
+        row.7.is_some(),  // duration
+        row.8.as_ref().map_or(false, |s| !s.is_empty()), // description
+        row.9.as_ref().map_or(false, |s| !s.is_empty()),  // label
+        row.10.as_ref().map_or(false, |s| !s.is_empty()), // release_date
+    ];
+
+    let filled = fields.iter().filter(|&&b| b).count();
+    let pct = (filled as f64 / fields.len() as f64 * 100.0).round() as i64;
+    Ok(pct)
+}
+
+/// Recompute and store metadata_completeness for a track.
+pub fn update_completeness(conn: &Connection, track_id: i64) -> Result<i64, rusqlite::Error> {
+    let pct = compute_completeness(conn, track_id)?;
+    conn.execute(
+        "UPDATE tracks SET metadata_completeness = ?1 WHERE id = ?2",
+        params![pct, track_id],
+    )?;
+    Ok(pct)
 }
 
 pub fn update_fts(conn: &Connection, track_id: i64) -> Result<(), rusqlite::Error> {

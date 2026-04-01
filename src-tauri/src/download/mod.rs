@@ -77,6 +77,15 @@ impl DownloadManager {
         setup::resolve_ffmpeg_dir(&bin_dir)
     }
 
+    /// Get the cookies-from-browser setting (e.g. "chrome", "firefox", "edge")
+    fn get_cookies_from_browser(&self) -> Option<String> {
+        let conn = self.db.lock().expect("DB mutex poisoned");
+        crate::db::settings::get_setting(&conn, "cookies_from_browser")
+            .ok()
+            .flatten()
+            .filter(|s| !s.is_empty())
+    }
+
     /// Resume any downloads that were interrupted by an app shutdown.
     /// Resets 'downloading'/'processing' back to 'queued', then restarts all queued downloads.
     /// Must be called after the Tokio runtime is available (i.e., not during sync `setup()`).
@@ -121,6 +130,7 @@ impl DownloadManager {
         let download_dir = self.get_download_dir();
         let ytdlp_binary = self.resolve_ytdlp();
         let ffmpeg_dir = self.resolve_ffmpeg_dir();
+        let cookies_from_browser = self.get_cookies_from_browser();
         let semaphore = self.concurrency.clone();
 
         // Emit queued event immediately so the frontend can show all pending downloads
@@ -131,7 +141,7 @@ impl DownloadManager {
             let handle = tokio::spawn(async move {
                 // Wait for a concurrency slot (limits parallel yt-dlp processes)
                 let _permit = semaphore.acquire().await.expect("Semaphore closed");
-                run_download(db, app_handle, download_id, download_dir, ytdlp_binary, ffmpeg_dir)
+                run_download(db, app_handle, download_id, download_dir, ytdlp_binary, ffmpeg_dir, cookies_from_browser)
                     .await;
                 active_tasks.lock().await.remove(&download_id);
             });
@@ -198,6 +208,7 @@ async fn run_download(
     download_dir: PathBuf,
     ytdlp_binary: String,
     ffmpeg_dir: Option<String>,
+    cookies_from_browser: Option<String>,
 ) {
     let download = {
         let conn = match db.lock() {
@@ -256,10 +267,11 @@ async fn run_download(
     );
 
     // Fetch metadata first
-    match ytdlp::get_info(
+    let ytdlp_info = match ytdlp::get_info(
         &ytdlp_binary,
         ffmpeg_dir.as_deref(),
         &download.url,
+        cookies_from_browser.as_deref(),
     )
     .await
     {
@@ -285,6 +297,7 @@ async fn run_download(
                 None,
                 Some(best_title.to_string()),
             );
+            Some(info)
         }
         Err(e) => {
             log::warn!(
@@ -292,8 +305,9 @@ async fn run_download(
                 download_id,
                 e
             );
+            None
         }
-    }
+    };
 
     // Download the audio using download_id as filename to avoid encoding issues
     let app_handle_progress = app_handle.clone();
@@ -308,6 +322,7 @@ async fn run_download(
         &download.format,
         &download.quality,
         &file_stem,
+        cookies_from_browser.as_deref(),
         move |progress| {
             emit_event(
                 &app_handle_progress,
@@ -344,7 +359,7 @@ async fn run_download(
                 None,
             );
 
-            // Build fallback metadata from the download record (populated by yt-dlp get_info)
+            // Build fallback metadata from the download record + yt-dlp info
             let dl_meta = {
                 let title_artist = if let Ok(conn) = db.lock() {
                     conn.query_row(
@@ -359,9 +374,19 @@ async fn run_download(
                 } else {
                     None
                 };
-                match title_artist {
-                    Some((t, a, u)) => DownloadMeta { title: t, artist: a, source_url: Some(u) },
-                    None => DownloadMeta { title: None, artist: None, source_url: None },
+                let (title, artist, source_url) = match title_artist {
+                    Some((t, a, u)) => (t, a, Some(u)),
+                    None => (None, None, None),
+                };
+                DownloadMeta {
+                    title,
+                    artist,
+                    source_url,
+                    description: ytdlp_info.as_ref().and_then(|i| i.description.clone()),
+                    genre: ytdlp_info.as_ref().and_then(|i| i.genre.clone()),
+                    release_year: ytdlp_info.as_ref().and_then(|i| i.release_year.clone()),
+                    language: ytdlp_info.as_ref().and_then(|i| i.language.clone()),
+                    composer: ytdlp_info.as_ref().and_then(|i| i.composer.clone()),
                 }
             };
             let track_id = import_downloaded_file(&db, &app_handle, &file_path, &dl_meta).await;
@@ -426,11 +451,16 @@ async fn run_download(
     }
 }
 
-/// Metadata from the download record to use as fallback when file tags are missing
+/// Metadata from the download record + yt-dlp to use as fallback when file tags are missing
 struct DownloadMeta {
     title: Option<String>,
     artist: Option<String>,
     source_url: Option<String>,
+    description: Option<String>,
+    genre: Option<String>,
+    release_year: Option<String>,
+    language: Option<String>,
+    composer: Option<String>,
 }
 
 async fn import_downloaded_file(
@@ -491,11 +521,21 @@ async fn import_downloaded_file(
     let total_discs_val = tag_data.total_discs.map(|d| d as i64);
     let genre_for_album = tag_data.genre.clone();
 
+    // Merge yt-dlp fallback fields with file tags (file tags win)
+    let genre = tag_data.genre.or_else(|| dl_meta.genre.clone());
+    let year = tag_data.year.map(|y| y as i64)
+        .or_else(|| dl_meta.release_year.as_ref().and_then(|y| y.parse::<i64>().ok()));
+    let description = dl_meta.description.clone();
+    let language = dl_meta.language.clone();
+    let composer = dl_meta.composer.clone();
+    let release_date = dl_meta.release_year.clone();
+
     let result = conn.execute(
         "INSERT INTO tracks (title, artist_id, album_id, album_artist, duration_ms,
             track_number, disc_number, genre, year, file_path, file_size, format,
-            bitrate, sample_rate, channels, cover_art_path, source_platform, source_url)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, 'download', ?17)",
+            bitrate, sample_rate, channels, cover_art_path, source_platform, source_url,
+            description, language, composer, release_date)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, 'download', ?17, ?18, ?19, ?20, ?21)",
         rusqlite::params![
             title,
             artist_id,
@@ -504,8 +544,8 @@ async fn import_downloaded_file(
             tag_data.duration_ms.map(|d| d as i64),
             tag_data.track_number.map(|t| t as i64),
             tag_data.disc_number.map(|d| d as i64),
-            tag_data.genre,
-            tag_data.year.map(|y| y as i64),
+            genre,
+            year,
             file_path,
             file_size,
             tag_data.format,
@@ -514,6 +554,10 @@ async fn import_downloaded_file(
             tag_data.channels.map(|c| c as i64),
             cover_art_path,
             dl_meta.source_url,
+            description,
+            language,
+            composer,
+            release_date,
         ],
     );
 
@@ -521,6 +565,7 @@ async fn import_downloaded_file(
         Ok(_) => {
             let track_id = conn.last_insert_rowid();
             let _ = crate::db::tracks::update_fts(&conn, track_id);
+            let _ = crate::db::tracks::update_completeness(&conn, track_id);
 
             // Propagate cover art to album and artist
             if let Some(ref cover) = cover_art_path {

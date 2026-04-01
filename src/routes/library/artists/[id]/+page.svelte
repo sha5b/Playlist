@@ -84,6 +84,13 @@
 					{artist.track_count} track{artist.track_count !== 1 ? 's' : ''}
 					{#if albums.length > 0}&middot; {albums.length} album{albums.length !== 1 ? 's' : ''}{/if}
 				</p>
+				{#if artist.artist_type || artist.country || artist.begin_year}
+					<p class="text-xs text-muted-foreground">
+						{#if artist.artist_type}{artist.artist_type}{/if}
+						{#if artist.country}{artist.artist_type ? ' · ' : ''}{artist.country}{/if}
+						{#if artist.begin_year}{(artist.artist_type || artist.country) ? ' · Since ' : 'Since '}{artist.begin_year}{/if}
+					</p>
+				{/if}
 				<div class="flex gap-2 pt-2">
 					<Button onclick={playAll} disabled={tracks.length === 0}>
 						<Play class="size-4" fill="currentColor" />
@@ -102,7 +109,7 @@
 				<h2 class="text-lg font-semibold">Albums</h2>
 				<div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
 					{#each albums as album}
-						<a href="/library/albums/{album.id}" class="group">
+						<a href="/library/albums/{album.id}" class="group rounded-lg p-2 -m-2 transition-colors hover:bg-muted/30">
 							<div class="aspect-square rounded-lg bg-muted flex items-center justify-center overflow-hidden mb-2">
 								{#if album.cover_art_path}
 									<img

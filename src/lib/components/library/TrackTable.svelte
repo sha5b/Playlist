@@ -12,6 +12,7 @@
 		_placeholder: true;
 		track_number: number;
 		disc_number: number;
+		title?: string;
 	}
 
 	type DisplayRow = (Track & { _placeholder?: never }) | Placeholder;
@@ -27,7 +28,7 @@
 		navigable = true,
 	}: {
 		tracks: Track[];
-		placeholders?: { track_number: number; disc_number: number }[];
+		placeholders?: { track_number: number; disc_number: number; title?: string }[];
 		onplay?: (track: Track) => void;
 		ondelete?: (track: Track) => void;
 		navigable?: boolean;
@@ -89,6 +90,9 @@
 		toast.success(`"${track.title}" will play next`);
 	}
 
+	// Track drag state to prevent onclick navigation after a drag
+	let wasDragging = false;
+
 	function rowKey(row: DisplayRow, index: number): string | number {
 		if (row._placeholder) return `p-${row.disc_number}-${row.track_number}`;
 		return row.id;
@@ -140,7 +144,7 @@
 											<Music class="size-4 text-muted-foreground" />
 										</div>
 										<div class="min-w-0">
-											<p class="text-sm text-muted-foreground truncate">Track {row.track_number}</p>
+											<p class="text-sm text-muted-foreground truncate">{row.title ?? `Track ${row.track_number}`}</p>
 										</div>
 									</div>
 								</div>
@@ -155,10 +159,19 @@
 							<div
 								role="row"
 								tabindex="0"
+								draggable="true"
+								ondragstart={(e) => {
+									if (!e.dataTransfer) return;
+									wasDragging = true;
+									e.dataTransfer.setData('application/x-playlist-track', JSON.stringify({ trackId: track.id, title: track.title }));
+									e.dataTransfer.setData('text/plain', track.title);
+									e.dataTransfer.effectAllowed = 'copyMove';
+								}}
+								ondragend={() => { setTimeout(() => { wasDragging = false; }, 0); }}
 								class="border-b border-border/50 hover:bg-muted/50 transition-colors cursor-pointer group flex items-center
 									{isCurrentTrack ? 'bg-primary/5' : ''}"
 								style="height: {ROW_HEIGHT}px;"
-								onclick={() => { if (navigable) goto(`/library/songs/${track.id}`); }}
+								onclick={() => { if (wasDragging) return; if (navigable) goto(`/library/songs/${track.id}`); }}
 							>
 								<div
 									class="w-12 px-4 text-center text-sm tabular-nums

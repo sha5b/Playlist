@@ -32,6 +32,13 @@ pub struct VideoInfo {
     pub thumbnail: Option<String>,
     pub webpage_url: Option<String>,
     pub album: Option<String>,
+    pub genre: Option<String>,
+    pub release_year: Option<String>,
+    pub description: Option<String>,
+    pub track_number: Option<i64>,
+    pub disc_number: Option<i64>,
+    pub composer: Option<String>,
+    pub language: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -64,12 +71,18 @@ pub async fn get_info(
     binary: &str,
     ffmpeg_dir: Option<&str>,
     url: &str,
+    cookies_from_browser: Option<&str>,
 ) -> Result<VideoInfo, String> {
     let mut cmd = Command::new(binary);
     low_priority(&mut cmd);
     cmd.args(["--dump-json", "--no-download", "--no-warnings", "--flat-playlist"]);
     if let Some(dir) = ffmpeg_dir {
         cmd.args(["--ffmpeg-location", dir]);
+    }
+    if let Some(browser) = cookies_from_browser {
+        if !browser.is_empty() {
+            cmd.args(["--cookies-from-browser", browser]);
+        }
     }
     cmd.arg(url);
     cmd.stdout(Stdio::piped());
@@ -91,7 +104,11 @@ pub async fn get_info(
     let json: serde_json::Value = serde_json::from_str(first_line)
         .map_err(|e| format!("Failed to parse yt-dlp output: {}", e))?;
 
-    Ok(VideoInfo {
+    Ok(video_info_from_json(&json))
+}
+
+fn video_info_from_json(json: &serde_json::Value) -> VideoInfo {
+    VideoInfo {
         title: json["title"].as_str().unwrap_or("Unknown").to_string(),
         track: json["track"].as_str().map(|s| s.to_string()),
         artist: json["artist"].as_str()
@@ -102,7 +119,18 @@ pub async fn get_info(
         thumbnail: json["thumbnail"].as_str().map(|s| s.to_string()),
         webpage_url: json["webpage_url"].as_str().map(|s| s.to_string()),
         album: json["album"].as_str().map(|s| s.to_string()),
-    })
+        genre: json["genre"].as_str().map(|s| s.to_string()),
+        release_year: json["release_year"].as_str()
+            .or_else(|| json["release_date"].as_str().and_then(|d| if d.len() >= 4 { Some(d) } else { None }))
+            .map(|s| s.get(..4).unwrap_or(s).to_string()),
+        description: json["description"].as_str()
+            .filter(|d| !d.is_empty())
+            .map(|d| if d.len() > 500 { format!("{}...", &d[..497]) } else { d.to_string() }),
+        track_number: json["track_number"].as_i64(),
+        disc_number: json["disc_number"].as_i64(),
+        composer: json["composer"].as_str().map(|s| s.to_string()),
+        language: json["language"].as_str().map(|s| s.to_string()),
+    }
 }
 
 /// Result of fetching playlist entries, including the playlist title
@@ -116,12 +144,18 @@ pub async fn get_playlist_entries(
     binary: &str,
     ffmpeg_dir: Option<&str>,
     url: &str,
+    cookies_from_browser: Option<&str>,
 ) -> Result<PlaylistFetchResult, String> {
     let mut cmd = Command::new(binary);
     low_priority(&mut cmd);
     cmd.args(["--dump-json", "--no-download", "--no-warnings", "--flat-playlist"]);
     if let Some(dir) = ffmpeg_dir {
         cmd.args(["--ffmpeg-location", dir]);
+    }
+    if let Some(browser) = cookies_from_browser {
+        if !browser.is_empty() {
+            cmd.args(["--cookies-from-browser", browser]);
+        }
     }
     cmd.arg(url);
     cmd.stdout(Stdio::piped());
@@ -150,21 +184,12 @@ pub async fn get_playlist_entries(
             if playlist_title.is_none() {
                 playlist_title = json["playlist_title"].as_str().map(|s| s.to_string());
             }
-            entries.push(VideoInfo {
-                title: json["title"].as_str().unwrap_or("Unknown").to_string(),
-                track: json["track"].as_str().map(|s| s.to_string()),
-                artist: json["artist"].as_str()
-                    .or_else(|| json["creator"].as_str())
-                    .map(|s| s.to_string()),
-                uploader: json["uploader"].as_str().map(|s| s.to_string()),
-                duration: json["duration"].as_f64(),
-                thumbnail: json["thumbnail"].as_str().map(|s| s.to_string()),
-                webpage_url: json["webpage_url"]
-                    .as_str()
-                    .or_else(|| json["url"].as_str())
-                    .map(|s| s.to_string()),
-                album: json["album"].as_str().map(|s| s.to_string()),
-            });
+            let mut info = video_info_from_json(&json);
+            // For playlist entries, also try "url" field for webpage_url
+            if info.webpage_url.is_none() {
+                info.webpage_url = json["url"].as_str().map(|s| s.to_string());
+            }
+            entries.push(info);
         }
     }
 
@@ -184,6 +209,7 @@ pub async fn download_audio<F>(
     format: &str,
     _quality: &str,
     file_stem: &str,
+    cookies_from_browser: Option<&str>,
     progress_callback: F,
 ) -> Result<String, String>
 where
@@ -215,6 +241,11 @@ where
     ]);
     if let Some(dir) = ffmpeg_dir {
         cmd.args(["--ffmpeg-location", dir]);
+    }
+    if let Some(browser) = cookies_from_browser {
+        if !browser.is_empty() {
+            cmd.args(["--cookies-from-browser", browser]);
+        }
     }
     cmd.arg(url);
     cmd.stdout(Stdio::piped());

@@ -204,6 +204,16 @@ pub fn player_add_next(
 }
 
 #[tauri::command]
+pub fn player_move_in_queue(
+    engine: State<'_, Arc<AudioEngine>>,
+    from_index: usize,
+    to_index: usize,
+) -> Result<(), String> {
+    engine.send(PlayerCommand::MoveInQueue { from: from_index, to: to_index });
+    Ok(())
+}
+
+#[tauri::command]
 pub fn player_remove_from_queue(
     engine: State<'_, Arc<AudioEngine>>,
     index: usize,
@@ -226,4 +236,40 @@ pub fn player_get_state(engine: State<'_, Arc<AudioEngine>>) -> Result<PlaybackS
 #[tauri::command]
 pub fn player_get_queue(engine: State<'_, Arc<AudioEngine>>) -> Result<(Vec<QueueTrack>, Option<usize>), String> {
     Ok(engine.get_queue())
+}
+
+/// Get random tracks from the library, optionally excluding certain track IDs.
+#[tauri::command]
+pub fn player_random_tracks(
+    db: State<'_, Arc<DbPool>>,
+    exclude_ids: Vec<i64>,
+    limit: usize,
+) -> Result<Vec<i64>, String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    let limit = if limit == 0 { 1 } else { limit };
+    if exclude_ids.is_empty() {
+        let mut stmt = conn.prepare(
+            &format!("SELECT id FROM tracks ORDER BY RANDOM() LIMIT {}", limit)
+        ).map_err(|e| e.to_string())?;
+        let ids: Vec<i64> = stmt.query_map([], |row| row.get(0))
+            .map_err(|e| e.to_string())?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(ids)
+    } else {
+        let placeholders: Vec<String> = (1..=exclude_ids.len()).map(|i| format!("?{}", i)).collect();
+        let sql = format!(
+            "SELECT id FROM tracks WHERE id NOT IN ({}) ORDER BY RANDOM() LIMIT {}",
+            placeholders.join(","), limit
+        );
+        let params: Vec<&dyn rusqlite::types::ToSql> = exclude_ids.iter()
+            .map(|id| id as &dyn rusqlite::types::ToSql)
+            .collect();
+        let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+        let ids: Vec<i64> = stmt.query_map(params.as_slice(), |row| row.get(0))
+            .map_err(|e| e.to_string())?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(ids)
+    }
 }

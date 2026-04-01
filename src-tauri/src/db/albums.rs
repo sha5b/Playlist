@@ -1,6 +1,34 @@
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, Row};
 
 use super::models::Album;
+
+/// Shared column list for album queries. Indexes 0–15.
+const ALBUM_COLUMNS: &str =
+    "al.id, al.title, al.artist_id, al.album_artist, al.year, al.genre,
+     al.total_tracks, al.total_discs, al.musicbrainz_id, al.cover_art_path,
+     al.label, al.release_date, al.description, al.album_type,
+     a.name as artist_name, COUNT(t.id) as track_count";
+
+fn row_to_album(row: &Row) -> Result<Album, rusqlite::Error> {
+    Ok(Album {
+        id: row.get(0)?,
+        title: row.get(1)?,
+        artist_id: row.get(2)?,
+        album_artist: row.get(3)?,
+        year: row.get(4)?,
+        genre: row.get(5)?,
+        total_tracks: row.get(6)?,
+        total_discs: row.get(7)?,
+        musicbrainz_id: row.get(8)?,
+        cover_art_path: row.get(9)?,
+        label: row.get(10)?,
+        release_date: row.get(11)?,
+        description: row.get(12)?,
+        album_type: row.get(13)?,
+        artist_name: row.get(14)?,
+        track_count: row.get(15)?,
+    })
+}
 
 pub fn find_or_create(
     conn: &Connection,
@@ -105,9 +133,7 @@ pub fn get_albums(conn: &Connection, offset: i64, limit: i64, search: Option<&st
     };
 
     let sql = format!(
-        "SELECT al.id, al.title, al.artist_id, al.album_artist, al.year, al.genre,
-                al.total_tracks, al.total_discs, al.musicbrainz_id, al.cover_art_path,
-                a.name as artist_name, COUNT(t.id) as track_count
+        "SELECT {}
          FROM albums al
          LEFT JOIN artists a ON al.artist_id = a.id
          LEFT JOIN tracks t ON t.album_id = al.id
@@ -115,98 +141,54 @@ pub fn get_albums(conn: &Connection, offset: i64, limit: i64, search: Option<&st
          {}
          ORDER BY al.title COLLATE NOCASE
          LIMIT ?1 OFFSET ?2",
-        where_clause
+        ALBUM_COLUMNS, where_clause
     );
 
     let mut stmt = conn.prepare(&sql)?;
-    let map_row = |row: &rusqlite::Row| -> rusqlite::Result<Album> {
-        Ok(Album {
-            id: row.get(0)?,
-            title: row.get(1)?,
-            artist_id: row.get(2)?,
-            album_artist: row.get(3)?,
-            year: row.get(4)?,
-            genre: row.get(5)?,
-            total_tracks: row.get(6)?,
-            total_discs: row.get(7)?,
-            musicbrainz_id: row.get(8)?,
-            cover_art_path: row.get(9)?,
-            artist_name: row.get(10)?,
-            track_count: row.get(11)?,
-        })
-    };
-    let albums = if let Some(ref p) = pattern {
-        stmt.query_map(params![limit, offset, p], map_row)?
+    let albums: Vec<Album> = if let Some(ref p) = pattern {
+        stmt.query_map(params![limit, offset, p], |row| row_to_album(row))?
+            .collect::<Result<Vec<_>, _>>()?
     } else {
-        stmt.query_map(params![limit, offset], map_row)?
-    }.collect::<Result<Vec<_>, _>>()?;
+        stmt.query_map(params![limit, offset], |row| row_to_album(row))?
+            .collect::<Result<Vec<_>, _>>()?
+    };
 
     Ok((albums, total))
 }
 
 pub fn get_albums_by_artist(conn: &Connection, artist_id: i64) -> Result<Vec<Album>, rusqlite::Error> {
-    let mut stmt = conn.prepare(
-        "SELECT al.id, al.title, al.artist_id, al.album_artist, al.year, al.genre,
-                al.total_tracks, al.total_discs, al.musicbrainz_id, al.cover_art_path,
-                a.name as artist_name, COUNT(t.id) as track_count
+    let sql = format!(
+        "SELECT {}
          FROM albums al
          LEFT JOIN artists a ON al.artist_id = a.id
          LEFT JOIN tracks t ON t.album_id = al.id
          WHERE al.artist_id = ?1
          GROUP BY al.id
          ORDER BY al.year DESC, al.title COLLATE NOCASE",
-    )?;
+        ALBUM_COLUMNS
+    );
+    let mut stmt = conn.prepare(&sql)?;
 
     let albums = stmt
-        .query_map(params![artist_id], |row| {
-            Ok(Album {
-                id: row.get(0)?,
-                title: row.get(1)?,
-                artist_id: row.get(2)?,
-                album_artist: row.get(3)?,
-                year: row.get(4)?,
-                genre: row.get(5)?,
-                total_tracks: row.get(6)?,
-                total_discs: row.get(7)?,
-                musicbrainz_id: row.get(8)?,
-                cover_art_path: row.get(9)?,
-                artist_name: row.get(10)?,
-                track_count: row.get(11)?,
-            })
-        })?
+        .query_map(params![artist_id], |row| row_to_album(row))?
         .collect::<Result<Vec<_>, _>>()?;
 
     Ok(albums)
 }
 
 pub fn get_album(conn: &Connection, id: i64) -> Result<Option<Album>, rusqlite::Error> {
-    let mut stmt = conn.prepare(
-        "SELECT al.id, al.title, al.artist_id, al.album_artist, al.year, al.genre,
-                al.total_tracks, al.total_discs, al.musicbrainz_id, al.cover_art_path,
-                a.name as artist_name, COUNT(t.id) as track_count
+    let sql = format!(
+        "SELECT {}
          FROM albums al
          LEFT JOIN artists a ON al.artist_id = a.id
          LEFT JOIN tracks t ON t.album_id = al.id
          WHERE al.id = ?1
          GROUP BY al.id",
-    )?;
+        ALBUM_COLUMNS
+    );
+    let mut stmt = conn.prepare(&sql)?;
 
-    let mut rows = stmt.query_map(params![id], |row| {
-        Ok(Album {
-            id: row.get(0)?,
-            title: row.get(1)?,
-            artist_id: row.get(2)?,
-            album_artist: row.get(3)?,
-            year: row.get(4)?,
-            genre: row.get(5)?,
-            total_tracks: row.get(6)?,
-            total_discs: row.get(7)?,
-            musicbrainz_id: row.get(8)?,
-            cover_art_path: row.get(9)?,
-            artist_name: row.get(10)?,
-            track_count: row.get(11)?,
-        })
-    })?;
+    let mut rows = stmt.query_map(params![id], |row| row_to_album(row))?;
 
     match rows.next() {
         Some(Ok(a)) => Ok(Some(a)),

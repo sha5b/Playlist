@@ -4,17 +4,29 @@
 	import { Button } from '$lib/components/ui/button';
 	import { Input } from '$lib/components/ui/input';
 	import { Slider } from '$lib/components/ui/slider';
-	import { FolderOpen, Volume2, RotateCcw, Music, Trash2 } from 'lucide-svelte';
-	import { getSetting, setSetting, resetLibrary } from '$lib/api/library';
+	import { FolderOpen, Volume2, RotateCcw, Music, Trash2, Cookie, Sparkles, Loader2 } from 'lucide-svelte';
+	import { getSetting, setSetting, resetLibrary, getMetadataStats, scanMissingMetadata } from '$lib/api/library';
+	import { listen } from '@tauri-apps/api/event';
+	import type { MetadataStats, MetadataScanProgress } from '$lib/types';
 	import { player } from '$lib/stores/player.svelte';
 	import { open } from '@tauri-apps/plugin-dialog';
 	import { toast } from 'svelte-sonner';
 
 	let downloadDir = $state('');
 	let downloadFormat = $state('mp3');
+	let cookiesBrowser = $state('');
 	let defaultVolume = $state(75);
 
 	const formatOptions = ['mp3', 'opus', 'flac', 'm4a'] as const;
+	const browserOptions = [
+		{ value: '', label: 'None' },
+		{ value: 'chrome', label: 'Chrome' },
+		{ value: 'firefox', label: 'Firefox' },
+		{ value: 'edge', label: 'Edge' },
+		{ value: 'brave', label: 'Brave' },
+		{ value: 'opera', label: 'Opera' },
+		{ value: 'vivaldi', label: 'Vivaldi' },
+	] as const;
 
 	async function load() {
 		try {
@@ -22,6 +34,8 @@
 			if (dir) downloadDir = dir;
 			const fmt = await getSetting('download_format');
 			if (fmt) downloadFormat = fmt;
+			const cookies = await getSetting('cookies_from_browser');
+			if (cookies) cookiesBrowser = cookies;
 			const vol = await getSetting('default_volume');
 			if (vol) defaultVolume = Math.round(parseFloat(vol) * 100);
 		} catch (e) {
@@ -33,6 +47,12 @@
 		downloadFormat = fmt;
 		await setSetting('download_format', fmt);
 		toast.success(`Download format set to ${fmt.toUpperCase()}`);
+	}
+
+	async function setCookiesBrowser(browser: string) {
+		cookiesBrowser = browser;
+		await setSetting('cookies_from_browser', browser);
+		toast.success(browser ? `Using cookies from ${browser}` : 'Browser cookies disabled');
 	}
 
 	async function chooseDownloadDir() {
@@ -49,6 +69,42 @@
 		const vol = values[0] / 100;
 		await setSetting('default_volume', String(vol));
 		player.setVolume(vol);
+	}
+
+	let metadataStats: MetadataStats | null = $state(null);
+	let scanning = $state(false);
+	let scanProgress: MetadataScanProgress | null = $state(null);
+
+	async function loadMetadataStats() {
+		try {
+			metadataStats = await getMetadataStats();
+		} catch (e) {
+			console.error('Failed to load metadata stats:', e);
+		}
+	}
+
+	async function handleScanMetadata() {
+		if (scanning) return;
+		scanning = true;
+		scanProgress = null;
+
+		const unlisten = await listen<MetadataScanProgress>('metadata-scan-progress', (event) => {
+			scanProgress = event.payload;
+		});
+
+		try {
+			const result = await scanMissingMetadata();
+			toast.success(`Metadata scan complete`, {
+				description: `${result.enriched} tracks enriched, ${result.failed} failed. Average completeness: ${result.completeness_avg}%`
+			});
+			await loadMetadataStats();
+		} catch (e) {
+			toast.error('Metadata scan failed', { description: String(e) });
+		} finally {
+			scanning = false;
+			scanProgress = null;
+			unlisten();
+		}
 	}
 
 	let resettingLibrary = $state(false);
@@ -68,15 +124,18 @@
 	async function resetSettings() {
 		downloadDir = '';
 		downloadFormat = 'mp3';
+		cookiesBrowser = '';
 		defaultVolume = 75;
 		await setSetting('default_volume', '0.75');
 		await setSetting('download_format', 'mp3');
+		await setSetting('cookies_from_browser', '');
 		player.setVolume(0.75);
 		toast.success('Settings reset to defaults');
 	}
 
 	$effect(() => {
 		load();
+		loadMetadataStats();
 	});
 </script>
 
@@ -130,6 +189,26 @@
 					MP3 is most compatible. FLAC is lossless. OPUS has best quality-to-size ratio.
 				</p>
 			</div>
+			<div class="space-y-2">
+				<label class="text-sm font-medium flex items-center gap-2">
+					<Cookie class="size-4 text-muted-foreground" />
+					Browser Cookies
+				</label>
+				<div class="flex gap-2 flex-wrap">
+					{#each browserOptions as opt}
+						<Button
+							variant={cookiesBrowser === opt.value ? 'default' : 'outline'}
+							size="sm"
+							onclick={() => setCookiesBrowser(opt.value)}
+						>
+							{opt.label}
+						</Button>
+					{/each}
+				</div>
+				<p class="text-xs text-muted-foreground">
+					Use cookies from your browser to bypass YouTube's bot detection. Pick the browser where you're logged in to YouTube.
+				</p>
+			</div>
 		</CardContent>
 	</Card>
 
@@ -153,6 +232,74 @@
 					step={1}
 					onValueChange={handleVolumeChange}
 				/>
+			</div>
+		</CardContent>
+	</Card>
+
+	<Card>
+		<CardHeader>
+			<CardTitle>Metadata</CardTitle>
+			<CardDescription>Enrich your library with MusicBrainz data</CardDescription>
+		</CardHeader>
+		<CardContent class="space-y-4">
+			{#if metadataStats}
+				<div class="space-y-3">
+					<div class="flex items-center justify-between">
+						<span class="text-sm text-muted-foreground">Average Completeness</span>
+						<span class="text-sm font-medium tabular-nums {metadataStats.average_completeness >= 80 ? 'text-green-500' : metadataStats.average_completeness >= 50 ? 'text-yellow-500' : 'text-red-500'}">
+							{metadataStats.average_completeness}%
+						</span>
+					</div>
+					<div class="h-2 rounded-full bg-muted overflow-hidden">
+						<div
+							class="h-full rounded-full transition-all duration-500 {metadataStats.average_completeness >= 80 ? 'bg-green-500' : metadataStats.average_completeness >= 50 ? 'bg-yellow-500' : 'bg-red-500'}"
+							style="width: {metadataStats.average_completeness}%"
+						></div>
+					</div>
+					<div class="grid grid-cols-3 gap-4 text-center">
+						<div>
+							<p class="text-2xl font-bold tabular-nums">{metadataStats.total_tracks}</p>
+							<p class="text-xs text-muted-foreground">Total Tracks</p>
+						</div>
+						<div>
+							<p class="text-2xl font-bold tabular-nums text-green-500">{metadataStats.complete_tracks}</p>
+							<p class="text-xs text-muted-foreground">Complete (80%+)</p>
+						</div>
+						<div>
+							<p class="text-2xl font-bold tabular-nums text-red-500">{metadataStats.incomplete_tracks}</p>
+							<p class="text-xs text-muted-foreground">Incomplete (&lt;50%)</p>
+						</div>
+					</div>
+				</div>
+			{/if}
+
+			{#if scanning && scanProgress}
+				<div class="space-y-2 rounded-md bg-muted/50 p-3">
+					<div class="flex items-center justify-between text-sm">
+						<span class="text-muted-foreground">Scanning...</span>
+						<span class="tabular-nums font-medium">{scanProgress.current}/{scanProgress.total}</span>
+					</div>
+					<div class="h-1.5 rounded-full bg-muted overflow-hidden">
+						<div class="h-full rounded-full bg-primary transition-all" style="width: {(scanProgress.current / scanProgress.total) * 100}%"></div>
+					</div>
+					<p class="text-xs text-muted-foreground truncate">Enriching: {scanProgress.track_title}</p>
+				</div>
+			{/if}
+
+			<div class="flex items-center justify-between gap-4">
+				<div>
+					<p class="text-sm font-medium">Scan for Missing Metadata</p>
+					<p class="text-xs text-muted-foreground">Looks up tracks with incomplete data on MusicBrainz (up to 50 at a time)</p>
+				</div>
+				<Button variant="outline" size="sm" onclick={handleScanMetadata} disabled={scanning}>
+					{#if scanning}
+						<Loader2 class="size-4 animate-spin" />
+						Scanning...
+					{:else}
+						<Sparkles class="size-4" />
+						Scan
+					{/if}
+				</Button>
 			</div>
 		</CardContent>
 	</Card>

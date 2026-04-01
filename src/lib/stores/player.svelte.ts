@@ -13,6 +13,8 @@ let repeat: RepeatMode = $state('off');
 let queueTracks: QueueTrack[] = $state([]);
 let queuePosition: number | null = $state(null);
 let queueOpen: boolean = $state(false);
+let autoplay: boolean = $state(false);
+let playedHistory: Set<number> = new Set();
 
 // --- Event listener setup ---
 let initialized = false;
@@ -24,7 +26,8 @@ let pendingDurationMs = 0;
 
 function handleEvent(event: PlayerEvent) {
 	switch (event.kind) {
-		case 'state_changed':
+		case 'state_changed': {
+			const prevState = state;
 			state = event.data.state;
 			currentTrack = event.data.current_track;
 			positionMs = event.data.position_ms;
@@ -33,12 +36,20 @@ function handleEvent(event: PlayerEvent) {
 			shuffle = event.data.shuffle;
 			repeat = event.data.repeat;
 			queuePosition = event.data.queue_position;
+			// Autoplay: when playback stops naturally, start a new random track
+			if (autoplay && prevState === 'playing' && state === 'stopped') {
+				handleAutoplay();
+			}
+			// Also check if we should proactively queue the next track
+			checkAutoplayQueue();
 			break;
+		}
 		case 'track_changed':
 			currentTrack = event.data;
 			if (event.data) {
 				positionMs = 0;
 				durationMs = event.data.duration_ms ?? 0;
+				playedHistory.add(event.data.id);
 			}
 			break;
 		case 'progress':
@@ -56,6 +67,7 @@ function handleEvent(event: PlayerEvent) {
 		case 'queue_updated':
 			queueTracks = event.data.tracks;
 			queuePosition = event.data.position;
+			checkAutoplayQueue();
 			break;
 		case 'error':
 			console.error('Player error:', event.data);
@@ -87,6 +99,42 @@ async function init() {
 	}
 }
 
+let autoplayPending = false; // prevent double-adding
+
+async function handleAutoplay() {
+	if (autoplayPending) return;
+	autoplayPending = true;
+	try {
+		const excludeIds = Array.from(playedHistory);
+		let ids = await playerApi.getRandomTracks(excludeIds, 1);
+		if (ids.length === 0) {
+			// All tracks played, reset history and try again
+			playedHistory.clear();
+			ids = await playerApi.getRandomTracks([], 1);
+		}
+		if (ids.length > 0) {
+			if (state === 'stopped') {
+				await playerApi.playTracks(ids, 0);
+			} else {
+				await playerApi.addToQueue(ids[0]);
+			}
+		}
+	} catch {
+		// Silently fail
+	} finally {
+		autoplayPending = false;
+	}
+}
+
+function checkAutoplayQueue() {
+	if (!autoplay || autoplayPending) return;
+	if (state !== 'playing' && state !== 'paused') return;
+	// If we're on the last track in the queue, proactively add the next one
+	if (queuePosition !== null && queuePosition >= queueTracks.length - 1) {
+		handleAutoplay();
+	}
+}
+
 // --- Public API ---
 export const player = {
 	get state() { return state; },
@@ -99,6 +147,7 @@ export const player = {
 	get queueTracks() { return queueTracks; },
 	get queuePosition() { return queuePosition; },
 	get queueOpen() { return queueOpen; },
+	get autoplay() { return autoplay; },
 	get isPlaying() { return state === 'playing'; },
 	get isPaused() { return state === 'paused'; },
 	get isStopped() { return state === 'stopped'; },
@@ -109,8 +158,31 @@ export const player = {
 		queueOpen = !queueOpen;
 	},
 
+	toggleAutoplay() {
+		autoplay = !autoplay;
+		if (autoplay) {
+			playedHistory.clear();
+			// Add current queue tracks to history
+			for (const t of queueTracks) {
+				playedHistory.add(t.id);
+			}
+		}
+	},
+
+	async playRandom() {
+		try {
+			const ids = await playerApi.getRandomTracks([], 50);
+			if (ids.length > 0) {
+				playedHistory.clear();
+				await playerApi.playTracks(ids, 0);
+				// Auto-open queue so user sees the tracks
+				if (!queueOpen) queueOpen = true;
+			}
+		} catch { /* ignore */ }
+	},
+
 	async playTrack(trackId: number) {
-		await playerApi.playTrack(trackId);
+		await playerApi.playTracks([trackId], 0);
 	},
 
 	async playTracks(trackIds: number[], startIndex = 0) {
@@ -154,7 +226,18 @@ export const player = {
 	},
 
 	async toggleShuffle() {
-		await playerApi.setShuffle(!shuffle);
+		if (!shuffle && (state === 'stopped' || queueTracks.length === 0)) {
+			// Turning shuffle on with nothing playing — load random tracks
+			const ids = await playerApi.getRandomTracks([], 50);
+			if (ids.length > 0) {
+				playedHistory.clear();
+				await playerApi.playTracks(ids, 0);
+				await playerApi.setShuffle(true);
+				if (!queueOpen) queueOpen = true;
+			}
+		} else {
+			await playerApi.setShuffle(!shuffle);
+		}
 	},
 
 	async cycleRepeat() {
@@ -170,6 +253,24 @@ export const player = {
 
 	async addNext(trackId: number) {
 		await playerApi.addNext(trackId);
+	},
+
+	async moveInQueue(fromIndex: number, toIndex: number) {
+		// Optimistic update for smooth DnD
+		const newTracks = [...queueTracks];
+		const [moved] = newTracks.splice(fromIndex, 1);
+		newTracks.splice(toIndex, 0, moved);
+		queueTracks = newTracks;
+		if (queuePosition !== null) {
+			if (fromIndex === queuePosition) {
+				queuePosition = toIndex;
+			} else if (fromIndex < queuePosition && toIndex >= queuePosition) {
+				queuePosition = queuePosition - 1;
+			} else if (fromIndex > queuePosition && toIndex <= queuePosition) {
+				queuePosition = queuePosition + 1;
+			}
+		}
+		await playerApi.moveInQueue(fromIndex, toIndex);
 	},
 
 	async removeFromQueue(index: number) {

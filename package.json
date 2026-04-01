@@ -33,6 +33,7 @@
 		"@tauri-apps/plugin-log": "^2.8.0",
 		"clsx": "^2.1.1",
 		"lucide-svelte": "^1.0.1",
+		"svelte-dnd-action": "^0.9.69",
 		"svelte-sonner": "^1.1.0",
 		"tailwind-merge": "^3.5.0"
 	}

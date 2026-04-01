@@ -44,6 +44,7 @@ pub enum PlayerCommand {
     SetRepeat(RepeatMode),
     AddToQueue(QueueTrack),
     AddNext(QueueTrack),
+    MoveInQueue { from: usize, to: usize },
     RemoveFromQueue(usize), // order index
     ClearQueue,
     /// Graceful shutdown -- audio thread stops and exits
@@ -322,6 +323,9 @@ impl AudioEngine {
                                         s.playback.queue_position = s.queue.position();
                                         emit(PlayerEvent::TrackChanged(Some(track)));
                                         emit(PlayerEvent::StateChanged(s.playback.clone()));
+                                        let q_tracks = s.queue.get_ordered_tracks();
+                                        let q_pos = s.queue.position();
+                                        emit(PlayerEvent::QueueUpdated { tracks: q_tracks, position: q_pos });
                                     }
                                 }
                             } else {
@@ -516,6 +520,18 @@ impl AudioEngine {
                                 let mut s = shared.write().unwrap();
                                 s.queue.add_next(track);
                                 s.playback.queue_length = s.queue.len();
+                                let tracks = s.queue.get_ordered_tracks();
+                                let pos = s.queue.position();
+                                emit(PlayerEvent::QueueUpdated { tracks, position: pos });
+                            }
+                            preloaded = None;
+                        }
+                        PlayerCommand::MoveInQueue { from, to } => {
+                            log::info!("[audio] MoveInQueue: from={} to={}", from, to);
+                            {
+                                let mut s = shared.write().unwrap();
+                                s.queue.move_in_queue(from, to);
+                                s.playback.queue_position = s.queue.position();
                                 let tracks = s.queue.get_ordered_tracks();
                                 let pos = s.queue.position();
                                 emit(PlayerEvent::QueueUpdated { tracks, position: pos });
@@ -718,6 +734,9 @@ impl AudioEngine {
                         s.playback.queue_position = s.queue.position();
                         emit(PlayerEvent::TrackChanged(Some(track)));
                         emit(PlayerEvent::StateChanged(s.playback.clone()));
+                        let q_tracks = s.queue.get_ordered_tracks();
+                        let q_pos = s.queue.position();
+                        emit(PlayerEvent::QueueUpdated { tracks: q_tracks, position: q_pos });
                     }
                     log::info!("[audio] Playback started (duration={}ms)", dur);
                 }

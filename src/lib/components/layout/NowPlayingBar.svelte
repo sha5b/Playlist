@@ -4,9 +4,11 @@
 	import {
 		Shuffle, SkipBack, Play, Pause, SkipForward,
 		Repeat, Repeat1, Volume2, VolumeX, Volume1,
-		ListMusic, Music
+		ListMusic, Music, Infinity
 	} from 'lucide-svelte';
+	import { goto } from '$app/navigation';
 	import { player } from '$lib/stores/player.svelte';
+	import { getAlbumTracks, getArtistTracks } from '$lib/api/library';
 	import { formatDuration, assetUrl } from '$lib/utils/format';
 
 	function handleProgressChange(values: number[]) {
@@ -31,11 +33,89 @@
 	);
 
 	const hasTrack = $derived(player.currentTrack !== null);
+
+	function handlePlayPause() {
+		if (hasTrack) {
+			player.togglePlayPause();
+		} else {
+			player.playRandom();
+		}
+	}
+
+	// Drop zone on the queue button area
+	let queueDragOver = $state(false);
+
+	const DRAG_TYPES = ['application/x-playlist-track', 'application/x-playlist-album', 'application/x-playlist-artist'];
+
+	function handleQueueDragOver(e: DragEvent) {
+		if (e.dataTransfer && DRAG_TYPES.some((t) => Array.from(e.dataTransfer!.types).includes(t))) {
+			e.preventDefault();
+			e.dataTransfer.dropEffect = 'copy';
+			queueDragOver = true;
+			if (!player.queueOpen) player.toggleQueuePanel();
+		}
+	}
+
+	async function handleQueueDrop(e: DragEvent) {
+		queueDragOver = false;
+		if (!e.dataTransfer) return;
+		e.preventDefault();
+
+		const trackData = e.dataTransfer.getData('application/x-playlist-track');
+		if (trackData) {
+			try {
+				const { trackId } = JSON.parse(trackData);
+				if (player.queueTracks.length === 0 || player.isStopped) {
+					player.playTracks([trackId], 0);
+				} else {
+					player.addToQueue(trackId);
+				}
+			} catch { /* ignore */ }
+			return;
+		}
+
+		const albumData = e.dataTransfer.getData('application/x-playlist-album');
+		if (albumData) {
+			try {
+				const { albumId } = JSON.parse(albumData);
+				const tracks = await getAlbumTracks(albumId);
+				if (tracks.length > 0) {
+					const ids = tracks.map((t) => t.id);
+					if (player.queueTracks.length === 0 || player.isStopped) {
+						player.playTracks(ids, 0);
+					} else {
+						for (const id of ids) await player.addToQueue(id);
+					}
+				}
+			} catch { /* ignore */ }
+			return;
+		}
+
+		const artistData = e.dataTransfer.getData('application/x-playlist-artist');
+		if (artistData) {
+			try {
+				const { artistId } = JSON.parse(artistData);
+				const tracks = await getArtistTracks(artistId);
+				if (tracks.length > 0) {
+					const ids = tracks.map((t) => t.id);
+					if (player.queueTracks.length === 0 || player.isStopped) {
+						player.playTracks(ids, 0);
+					} else {
+						for (const id of ids) await player.addToQueue(id);
+					}
+				}
+			} catch { /* ignore */ }
+		}
+	}
 </script>
 
 <footer class="flex h-20 items-center border-t border-border bg-card px-4 gap-4">
-	<!-- Left: Track info -->
-	<div class="flex items-center gap-3 w-[280px] min-w-0">
+	<!-- Left: Track info (click to open Playing page) -->
+	<!-- svelte-ignore a11y_no_static_element_interactions -->
+	<div
+		class="flex items-center gap-3 w-[200px] lg:w-[280px] min-w-0 rounded-lg -m-1 p-1 transition-colors {hasTrack ? 'cursor-pointer hover:bg-muted/30' : ''}"
+		onclick={() => { if (hasTrack) goto('/playing'); }}
+	>
 		<div class="size-12 shrink-0 rounded-md bg-muted flex items-center justify-center overflow-hidden">
 			{#if player.currentTrack?.cover_art_path}
 				<img
@@ -65,7 +145,6 @@
 				size="icon-sm"
 				class={player.shuffle ? 'text-primary hover:text-primary' : 'text-muted-foreground hover:text-foreground'}
 				onclick={() => player.toggleShuffle()}
-				disabled={!hasTrack}
 			>
 				<Shuffle class="size-4" />
 			</Button>
@@ -82,8 +161,7 @@
 				variant="default"
 				size="icon"
 				class="rounded-full"
-				onclick={() => player.togglePlayPause()}
-				disabled={!hasTrack}
+				onclick={handlePlayPause}
 			>
 				{#if player.isPlaying}
 					<Pause class="size-5" fill="currentColor" />
@@ -109,6 +187,15 @@
 			>
 				<RepeatIcon class="size-4" />
 			</Button>
+			<Button
+				variant="ghost"
+				size="icon-sm"
+				class={player.autoplay ? 'text-primary hover:text-primary' : 'text-muted-foreground hover:text-foreground'}
+				onclick={() => player.toggleAutoplay()}
+				title="Autoplay: add random tracks when queue ends"
+			>
+				<Infinity class="size-4" />
+			</Button>
 		</div>
 		<div class="flex w-full items-center gap-2 px-2">
 			<span class="text-[11px] text-muted-foreground w-10 text-right tabular-nums">
@@ -129,7 +216,7 @@
 	</div>
 
 	<!-- Right: Volume + Queue -->
-	<div class="flex items-center gap-2 w-[200px] justify-end">
+	<div class="flex items-center gap-2 w-[160px] lg:w-[200px] justify-end">
 		<Button
 			variant="ghost"
 			size="icon-sm"
@@ -142,16 +229,24 @@
 			value={[player.volume * 100]}
 			max={100}
 			step={1}
-			class="w-24"
+			class="w-20 lg:w-24"
 			onValueChange={handleVolumeChange}
 		/>
-		<Button
-			variant="ghost"
-			size="icon-sm"
-			class={player.queueOpen ? 'text-primary hover:text-primary' : 'text-muted-foreground hover:text-foreground'}
-			onclick={() => player.toggleQueuePanel()}
+		<!-- svelte-ignore a11y_no_static_element_interactions -->
+		<div
+			class="rounded-md transition-colors {queueDragOver ? 'ring-2 ring-primary bg-primary/10' : ''}"
+			ondragover={handleQueueDragOver}
+			ondragleave={() => { queueDragOver = false; }}
+			ondrop={handleQueueDrop}
 		>
-			<ListMusic class="size-4" />
-		</Button>
+			<Button
+				variant="ghost"
+				size="icon-sm"
+				class={player.queueOpen ? 'text-primary hover:text-primary' : 'text-muted-foreground hover:text-foreground'}
+				onclick={() => player.toggleQueuePanel()}
+			>
+				<ListMusic class="size-4" />
+			</Button>
+		</div>
 	</div>
 </footer>

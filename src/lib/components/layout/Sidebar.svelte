@@ -3,12 +3,13 @@
 	import { Separator } from '$lib/components/ui/separator';
 	import { Button } from '$lib/components/ui/button';
 	import * as Tooltip from '$lib/components/ui/tooltip';
-	import { Home, Music, Disc, Users, ListMusic, Settings, PanelLeftClose, PanelLeft, LayoutDashboard, Download } from 'lucide-svelte';
+	import { Home, Music, Disc, Users, ListMusic, Settings, PanelLeftClose, PanelLeft, LayoutDashboard, Download, AudioLines } from 'lucide-svelte';
 	import { ui } from '$lib/stores/ui.svelte';
 	import { downloadStore } from '$lib/stores/downloads.svelte';
 
 	const navItems = [
 		{ href: '/', label: 'Home', icon: Home },
+		{ href: '/playing', label: 'Playing', icon: AudioLines },
 		{ href: '/manager', label: 'Manager', icon: LayoutDashboard },
 	];
 
@@ -76,7 +77,7 @@
 				<a
 					href={item.href}
 					class="flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition-colors
-						{isActive(item.href) ? 'bg-sidebar-accent text-sidebar-accent-foreground font-medium' : 'text-muted-foreground hover:bg-sidebar-accent/50 hover:text-sidebar-foreground'}"
+						{isActive(item.href) ? 'bg-sidebar-accent text-sidebar-accent-foreground font-medium border-l-2 border-primary' : 'text-muted-foreground hover:bg-sidebar-accent/50 hover:text-sidebar-foreground'}"
 				>
 					<item.icon class="size-4 shrink-0" />
 					{item.label}
@@ -112,7 +113,7 @@
 				<a
 					href={item.href}
 					class="flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition-colors
-						{isActive(item.href) ? 'bg-sidebar-accent text-sidebar-accent-foreground font-medium' : 'text-muted-foreground hover:bg-sidebar-accent/50 hover:text-sidebar-foreground'}"
+						{isActive(item.href) ? 'bg-sidebar-accent text-sidebar-accent-foreground font-medium border-l-2 border-primary' : 'text-muted-foreground hover:bg-sidebar-accent/50 hover:text-sidebar-foreground'}"
 				>
 					<item.icon class="size-4 shrink-0" />
 					{item.label}
@@ -175,7 +176,7 @@
 				<a
 					href={item.href}
 					class="flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition-colors
-						{isActive(item.href) ? 'bg-sidebar-accent text-sidebar-accent-foreground font-medium' : 'text-muted-foreground hover:bg-sidebar-accent/50 hover:text-sidebar-foreground'}"
+						{isActive(item.href) ? 'bg-sidebar-accent text-sidebar-accent-foreground font-medium border-l-2 border-primary' : 'text-muted-foreground hover:bg-sidebar-accent/50 hover:text-sidebar-foreground'}"
 				>
 					<item.icon class="size-4 shrink-0" />
 					{item.label}

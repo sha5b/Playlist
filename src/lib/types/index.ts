@@ -21,6 +21,12 @@ export interface Track {
 	play_count: number;
 	last_played_at: string | null;
 	date_added: string;
+	description: string | null;
+	label: string | null;
+	release_date: string | null;
+	composer: string | null;
+	language: string | null;
+	metadata_completeness: number;
 	artist_name: string | null;
 	album_title: string | null;
 }
@@ -37,6 +43,9 @@ export interface Artist {
 	musicbrainz_id: string | null;
 	image_path: string | null;
 	bio: string | null;
+	country: string | null;
+	begin_year: number | null;
+	artist_type: string | null;
 	track_count: number;
 }
 
@@ -51,6 +60,10 @@ export interface Album {
 	total_discs: number | null;
 	musicbrainz_id: string | null;
 	cover_art_path: string | null;
+	label: string | null;
+	release_date: string | null;
+	description: string | null;
+	album_type: string | null;
 	artist_name: string | null;
 	track_count: number;
 }
@@ -232,4 +245,46 @@ export interface BatchDownloadResult {
 export interface ManagerEntryEvent {
 	entry_id: number;
 	status: string;
+}
+
+// --- Metadata Enrichment Types ---
+
+export interface EnrichResult {
+	track_id: number;
+	fields_updated: number;
+	completeness: number;
+}
+
+export interface EnrichAlbumResult {
+	album_id: number;
+	fields_updated: number;
+	tracks_added: number;
+	tracklist: AlbumTrackInfo[];
+}
+
+export interface AlbumTrackInfo {
+	disc_number: number;
+	track_number: number;
+	title: string;
+	duration_ms: number | null;
+}
+
+export interface ScanMissingResult {
+	total_tracks: number;
+	enriched: number;
+	failed: number;
+	completeness_avg: number;
+}
+
+export interface MetadataStats {
+	total_tracks: number;
+	average_completeness: number;
+	complete_tracks: number;
+	incomplete_tracks: number;
+}
+
+export interface MetadataScanProgress {
+	current: number;
+	total: number;
+	track_title: string;
 }

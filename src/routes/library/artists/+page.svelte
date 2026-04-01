@@ -43,8 +43,8 @@
 	});
 </script>
 
-<div class="flex flex-col flex-1 min-h-0 gap-6 overflow-y-auto">
-	<div class="flex items-center justify-between shrink-0">
+<div class="overflow-y-auto overflow-x-hidden space-y-6">
+	<div class="flex items-center justify-between">
 		<div>
 			<h1 class="text-3xl font-bold tracking-tight">Artists</h1>
 			<p class="text-muted-foreground mt-1">
@@ -78,7 +78,17 @@
 	{:else}
 		<div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
 			{#each artists as artist}
-				<a href="/library/artists/{artist.id}" class="group text-center">
+				<a
+					href="/library/artists/{artist.id}"
+					class="group text-center rounded-lg p-2 -m-2 transition-colors hover:bg-muted/30"
+					draggable="true"
+					ondragstart={(e) => {
+						if (!e.dataTransfer) return;
+						e.dataTransfer.setData('application/x-playlist-artist', JSON.stringify({ artistId: artist.id, name: artist.name }));
+						e.dataTransfer.setData('text/plain', artist.name);
+						e.dataTransfer.effectAllowed = 'copyMove';
+					}}
+				>
 					<div class="aspect-square rounded-full bg-muted flex items-center justify-center overflow-hidden mb-2 mx-auto max-w-32">
 						{#if artist.image_path}
 							<img

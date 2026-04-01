@@ -1,6 +1,26 @@
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, Row};
 
 use super::models::Artist;
+
+const ARTIST_COLUMNS: &str =
+    "a.id, a.name, a.sort_name, a.musicbrainz_id, a.image_path, a.bio,
+     a.country, a.begin_year, a.artist_type,
+     COUNT(t.id) as track_count";
+
+fn row_to_artist(row: &Row) -> Result<Artist, rusqlite::Error> {
+    Ok(Artist {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        sort_name: row.get(2)?,
+        musicbrainz_id: row.get(3)?,
+        image_path: row.get(4)?,
+        bio: row.get(5)?,
+        country: row.get(6)?,
+        begin_year: row.get(7)?,
+        artist_type: row.get(8)?,
+        track_count: row.get(9)?,
+    })
+}
 
 pub fn find_or_create(conn: &Connection, name: &str) -> Result<i64, rusqlite::Error> {
     if let Ok(id) = conn.query_row(
@@ -50,59 +70,40 @@ pub fn get_artists(conn: &Connection, offset: i64, limit: i64, search: Option<&s
     };
 
     let sql = format!(
-        "SELECT a.id, a.name, a.sort_name, a.musicbrainz_id, a.image_path, a.bio,
-                COUNT(t.id) as track_count
+        "SELECT {}
          FROM artists a
          LEFT JOIN tracks t ON t.artist_id = a.id
          GROUP BY a.id
          {}
          ORDER BY a.name COLLATE NOCASE
          LIMIT ?1 OFFSET ?2",
-        having_clause
+        ARTIST_COLUMNS, having_clause
     );
 
     let mut stmt = conn.prepare(&sql)?;
-    let map_row = |row: &rusqlite::Row| -> rusqlite::Result<Artist> {
-        Ok(Artist {
-            id: row.get(0)?,
-            name: row.get(1)?,
-            sort_name: row.get(2)?,
-            musicbrainz_id: row.get(3)?,
-            image_path: row.get(4)?,
-            bio: row.get(5)?,
-            track_count: row.get(6)?,
-        })
-    };
-    let artists = if let Some(ref p) = pattern {
-        stmt.query_map(params![limit, offset, p], map_row)?
+    let artists: Vec<Artist> = if let Some(ref p) = pattern {
+        stmt.query_map(params![limit, offset, p], |row| row_to_artist(row))?
+            .collect::<Result<Vec<_>, _>>()?
     } else {
-        stmt.query_map(params![limit, offset], map_row)?
-    }.collect::<Result<Vec<_>, _>>()?;
+        stmt.query_map(params![limit, offset], |row| row_to_artist(row))?
+            .collect::<Result<Vec<_>, _>>()?
+    };
 
     Ok((artists, total))
 }
 
 pub fn get_artist(conn: &Connection, id: i64) -> Result<Option<Artist>, rusqlite::Error> {
-    let mut stmt = conn.prepare(
-        "SELECT a.id, a.name, a.sort_name, a.musicbrainz_id, a.image_path, a.bio,
-                COUNT(t.id) as track_count
+    let sql = format!(
+        "SELECT {}
          FROM artists a
          LEFT JOIN tracks t ON t.artist_id = a.id
          WHERE a.id = ?1
          GROUP BY a.id",
-    )?;
+        ARTIST_COLUMNS
+    );
+    let mut stmt = conn.prepare(&sql)?;
 
-    let mut rows = stmt.query_map(params![id], |row| {
-        Ok(Artist {
-            id: row.get(0)?,
-            name: row.get(1)?,
-            sort_name: row.get(2)?,
-            musicbrainz_id: row.get(3)?,
-            image_path: row.get(4)?,
-            bio: row.get(5)?,
-            track_count: row.get(6)?,
-        })
-    })?;
+    let mut rows = stmt.query_map(params![id], |row| row_to_artist(row))?;
 
     match rows.next() {
         Some(Ok(a)) => Ok(Some(a)),

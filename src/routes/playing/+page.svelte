@@ -1,0 +1,170 @@
+<script lang="ts">
+	import { Button } from '$lib/components/ui/button';
+	import { Slider } from '$lib/components/ui/slider';
+	import {
+		Shuffle, SkipBack, Play, Pause, SkipForward,
+		Repeat, Repeat1, Music, Trash2, AudioLines
+	} from 'lucide-svelte';
+	import { player } from '$lib/stores/player.svelte';
+	import { formatDuration, assetUrl } from '$lib/utils/format';
+	import DndQueueList from '$lib/components/player/DndQueueList.svelte';
+
+	function handleProgressChange(values: number[]) {
+		const seconds = (values[0] / 100) * (player.durationMs / 1000);
+		player.seek(seconds);
+	}
+
+	const progressPercent = $derived(
+		player.durationMs > 0 ? (player.positionMs / player.durationMs) * 100 : 0
+	);
+
+	const RepeatIcon = $derived(
+		player.repeat === 'one' ? Repeat1 : Repeat
+	);
+
+	const hasTrack = $derived(player.currentTrack !== null);
+	const hasUpNext = $derived(
+		player.queuePosition !== null && player.queuePosition < player.queueTracks.length - 1
+	);
+</script>
+
+<div class="flex flex-col flex-1 min-h-0 overflow-y-auto">
+	{#if !hasTrack}
+		<!-- Empty state -->
+		<div class="flex flex-col items-center justify-center flex-1 gap-4">
+			<div class="size-20 rounded-2xl bg-muted flex items-center justify-center">
+				<AudioLines class="size-10 text-muted-foreground" strokeWidth={1.5} />
+			</div>
+			<div class="text-center">
+				<h1 class="text-2xl font-bold tracking-tight">Nothing playing</h1>
+				<p class="text-muted-foreground mt-1">Pick something from your library to get started</p>
+			</div>
+		</div>
+	{:else}
+		<div class="p-6 space-y-8">
+			<!-- Hero: Current Track -->
+			<div class="flex gap-8 items-start">
+				<!-- Large album art -->
+				<div class="size-64 lg:size-72 shrink-0 rounded-xl bg-muted overflow-hidden shadow-2xl shadow-black/40">
+					{#if player.currentTrack?.cover_art_path}
+						<img
+							src={assetUrl(player.currentTrack.cover_art_path)}
+							alt=""
+							class="size-full object-cover"
+						/>
+					{:else}
+						<div class="size-full flex items-center justify-center">
+							<Music class="size-20 text-muted-foreground" strokeWidth={1} />
+						</div>
+					{/if}
+				</div>
+
+				<!-- Track info + controls -->
+				<div class="flex flex-col flex-1 min-w-0 pt-2">
+					<p class="text-xs font-semibold uppercase tracking-wider text-primary mb-2">Now Playing</p>
+					<h1 class="text-3xl lg:text-4xl font-bold tracking-tight truncate">
+						{player.currentTrack?.title}
+					</h1>
+					<p class="text-lg text-muted-foreground mt-1 truncate">
+						{player.currentTrack?.artist_name ?? 'Unknown Artist'}
+					</p>
+					{#if player.currentTrack?.album_title}
+						<p class="text-sm text-muted-foreground/70 mt-0.5 truncate">
+							{player.currentTrack.album_title}
+						</p>
+					{/if}
+
+					<!-- Playback controls -->
+					<div class="flex flex-col gap-3 mt-8 max-w-md">
+						<!-- Progress bar -->
+						<div class="flex items-center gap-3">
+							<span class="text-xs text-muted-foreground w-10 text-right tabular-nums">
+								{formatDuration(player.positionMs)}
+							</span>
+							<Slider
+								value={[progressPercent]}
+								max={100}
+								step={0.1}
+								class="flex-1"
+								onValueCommit={handleProgressChange}
+							/>
+							<span class="text-xs text-muted-foreground w-10 tabular-nums">
+								{formatDuration(player.durationMs)}
+							</span>
+						</div>
+
+						<!-- Control buttons -->
+						<div class="flex items-center gap-3 justify-center">
+							<Button
+								variant="ghost"
+								size="icon"
+								class={player.shuffle ? 'text-primary hover:text-primary' : 'text-muted-foreground hover:text-foreground'}
+								onclick={() => player.toggleShuffle()}
+							>
+								<Shuffle class="size-5" />
+							</Button>
+							<Button
+								variant="ghost"
+								size="icon"
+								class="text-foreground hover:text-foreground"
+								onclick={() => player.prev()}
+							>
+								<SkipBack class="size-5" fill="currentColor" />
+							</Button>
+							<Button
+								variant="default"
+								size="icon"
+								class="rounded-full size-12"
+								onclick={() => player.togglePlayPause()}
+							>
+								{#if player.isPlaying}
+									<Pause class="size-6" fill="currentColor" />
+								{:else}
+									<Play class="size-6" fill="currentColor" />
+								{/if}
+							</Button>
+							<Button
+								variant="ghost"
+								size="icon"
+								class="text-foreground hover:text-foreground"
+								onclick={() => player.next()}
+							>
+								<SkipForward class="size-5" fill="currentColor" />
+							</Button>
+							<Button
+								variant="ghost"
+								size="icon"
+								class={player.repeat !== 'off' ? 'text-primary hover:text-primary' : 'text-muted-foreground hover:text-foreground'}
+								onclick={() => player.cycleRepeat()}
+							>
+								<RepeatIcon class="size-5" />
+							</Button>
+						</div>
+					</div>
+				</div>
+			</div>
+
+			<!-- Up Next Section -->
+			<div>
+				<div class="flex items-center justify-between mb-3">
+					<h2 class="text-lg font-semibold">Up Next</h2>
+					{#if hasUpNext}
+						<Button
+							variant="ghost"
+							size="sm"
+							class="text-muted-foreground hover:text-foreground gap-1.5"
+							onclick={() => player.clearQueue()}
+						>
+							<Trash2 class="size-3.5" />
+							Clear
+						</Button>
+					{/if}
+				</div>
+
+				<div class="rounded-lg border border-border bg-card/50 p-3">
+					<DndQueueList />
+				</div>
+			</div>
+		</div>
+	{/if}
+</div>

@@ -179,7 +179,10 @@ pub fn get_playlist_tracks(conn: &Connection, playlist_id: i64) -> Result<Vec<Tr
                 t.genre, t.year, t.file_path, t.file_size, t.format, t.bitrate,
                 t.sample_rate, t.channels, t.cover_art_path, t.source_platform,
                 t.source_url, t.play_count, t.last_played_at, t.date_added,
-                a.name as artist_name, al.title as album_title, t.album_artist
+                a.name as artist_name, al.title as album_title, t.album_artist,
+                t.artist_id, t.album_id,
+                t.description, t.label, t.release_date, t.composer, t.language,
+                t.metadata_completeness
          FROM playlist_tracks pt
          JOIN tracks t ON t.id = pt.track_id
          LEFT JOIN artists a ON t.artist_id = a.id
@@ -193,8 +196,8 @@ pub fn get_playlist_tracks(conn: &Connection, playlist_id: i64) -> Result<Vec<Tr
             Ok(Track {
                 id: row.get(0)?,
                 title: row.get(1)?,
-                artist_id: None,
-                album_id: None,
+                artist_id: row.get(22)?,
+                album_id: row.get(23)?,
                 album_artist: row.get(21)?,
                 duration_ms: row.get(2)?,
                 track_number: row.get(3)?,
@@ -215,6 +218,12 @@ pub fn get_playlist_tracks(conn: &Connection, playlist_id: i64) -> Result<Vec<Tr
                 date_added: row.get(18)?,
                 artist_name: row.get(19)?,
                 album_title: row.get(20)?,
+                description: row.get(24)?,
+                label: row.get(25)?,
+                release_date: row.get(26)?,
+                composer: row.get(27)?,
+                language: row.get(28)?,
+                metadata_completeness: row.get(29)?,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;

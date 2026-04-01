@@ -53,6 +53,10 @@ export async function addNext(trackId: number): Promise<void> {
 	return invoke('player_add_next', { trackId });
 }
 
+export async function moveInQueue(fromIndex: number, toIndex: number): Promise<void> {
+	return invoke('player_move_in_queue', { fromIndex, toIndex });
+}
+
 export async function removeFromQueue(index: number): Promise<void> {
 	return invoke('player_remove_from_queue', { index });
 }
@@ -67,4 +71,8 @@ export async function getState(): Promise<PlaybackState> {
 
 export async function getQueue(): Promise<[QueueTrack[], number | null]> {
 	return invoke('player_get_queue');
+}
+
+export async function getRandomTracks(excludeIds: number[] = [], limit = 1): Promise<number[]> {
+	return invoke('player_random_tracks', { excludeIds, limit });
 }

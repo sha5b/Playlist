@@ -64,7 +64,7 @@
 	{:else}
 		<div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
 			{#each playlists as playlist}
-				<a href="/library/playlists/{playlist.id}" class="group">
+				<a href="/library/playlists/{playlist.id}" class="group rounded-lg p-2 -m-2 transition-colors hover:bg-muted/30">
 					<div class="aspect-square rounded-lg bg-muted flex items-center justify-center overflow-hidden mb-2">
 						{#if playlist.cover_art_path}
 							<img
