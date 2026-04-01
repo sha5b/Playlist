@@ -116,18 +116,10 @@ impl PlayQueue {
         }
     }
 
-    pub fn is_shuffle(&self) -> bool {
-        self.shuffle
-    }
-
     pub fn clear(&mut self) {
         self.tracks.clear();
         self.order.clear();
         self.position = None;
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.tracks.is_empty()
     }
 
     pub fn len(&self) -> usize {
@@ -144,6 +136,20 @@ impl PlayQueue {
             .iter()
             .filter_map(|&idx| self.tracks.get(idx).cloned())
             .collect()
+    }
+
+    /// Peek at the next track without advancing the position.
+    /// If `wrap` is true, wraps around to the first track when at the end (for RepeatAll).
+    pub fn peek_next(&self, wrap: bool) -> Option<&QueueTrack> {
+        match self.position {
+            Some(pos) if pos + 1 < self.order.len() => {
+                self.order.get(pos + 1).and_then(|&idx| self.tracks.get(idx))
+            }
+            Some(_) if wrap && !self.tracks.is_empty() => {
+                self.order.first().and_then(|&idx| self.tracks.get(idx))
+            }
+            _ => None,
+        }
     }
 
     pub fn remove_at_order_index(&mut self, order_idx: usize) {

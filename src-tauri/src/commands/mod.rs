@@ -7,6 +7,7 @@ use walkdir::WalkDir;
 
 use crate::db::DbPool;
 use crate::db::models::*;
+use crate::db::monitored::{MonitoredPlaylist, MonitoredEntry};
 use crate::download::DownloadManager;
 use crate::metadata::tags;
 
@@ -72,6 +73,68 @@ pub fn library_delete_track(
     if let Some(path) = file_path {
         let _ = std::fs::remove_file(path);
     }
+    Ok(())
+}
+
+/// Delete all library data: tracks (and their files), albums, artists, playlists, downloads, monitored entries.
+/// Settings are preserved.
+#[tauri::command]
+pub async fn library_reset(
+    db: State<'_, Arc<DbPool>>,
+    manager: State<'_, Arc<crate::download::DownloadManager>>,
+    app_handle: tauri::AppHandle,
+    delete_files: bool,
+) -> Result<(), String> {
+    // Cancel all active downloads before wiping data
+    manager.cancel_all().await;
+
+    let conn = db.lock().map_err(|e| e.to_string())?;
+
+    // Optionally delete downloaded files
+    if delete_files {
+        let download_dir = {
+            let dir = crate::db::settings::get_setting(&conn, "download_dir").ok().flatten();
+            match dir {
+                Some(d) if !d.is_empty() => std::path::PathBuf::from(d),
+                _ => app_handle
+                    .path()
+                    .app_data_dir()
+                    .unwrap_or_else(|_| std::path::PathBuf::from("."))
+                    .join("downloads"),
+            }
+        };
+        if download_dir.exists() {
+            let _ = std::fs::remove_dir_all(&download_dir);
+            let _ = std::fs::create_dir_all(&download_dir);
+        }
+    }
+
+    // Clear all tables (order matters for foreign keys)
+    conn.execute_batch(
+        "DELETE FROM monitored_playlist_entries;
+         DELETE FROM playlist_tracks;
+         DELETE FROM downloads;
+         DELETE FROM tracks;
+         DELETE FROM albums;
+         DELETE FROM artists;
+         DELETE FROM playlists;
+         DROP TABLE IF EXISTS tracks_fts;
+         CREATE VIRTUAL TABLE tracks_fts USING fts5(
+             title, artist_name, album_title, album_artist, genre,
+             content='',
+             tokenize='unicode61 remove_diacritics 2'
+         );"
+    ).map_err(|e| e.to_string())?;
+
+    // Remove cover art
+    if let Ok(covers_dir) = app_handle.path().app_data_dir().map(|d| d.join("covers")) {
+        if covers_dir.exists() {
+            let _ = std::fs::remove_dir_all(&covers_dir);
+            let _ = std::fs::create_dir_all(&covers_dir);
+        }
+    }
+
+    log::info!("Library reset complete");
     Ok(())
 }
 
@@ -379,23 +442,40 @@ pub fn library_import_folder(
 
     let mut imported = 0i64;
 
-    for entry in WalkDir::new(&path).follow_links(true).into_iter().filter_map(|e| e.ok()) {
+    // Collect all audio file paths first
+    let audio_files: Vec<_> = WalkDir::new(&path)
+        .follow_links(true)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().is_file() && tags::is_audio_file(e.path()))
+        .collect();
+
+    if audio_files.is_empty() {
+        return Ok(0);
+    }
+
+    // Batch-check which files already exist in the library
+    let existing_paths: std::collections::HashSet<String> = {
+        let mut stmt = conn
+            .prepare("SELECT file_path FROM tracks")
+            .map_err(|e| e.to_string())?;
+        let rows: Vec<String> = stmt.query_map([], |row| row.get::<_, String>(0))
+            .map_err(|e| e.to_string())?
+            .filter_map(|r| r.ok())
+            .collect();
+        rows.into_iter().collect()
+    };
+
+    // Wrap all inserts in a single transaction (10-50x faster than auto-commit per row)
+    conn.execute_batch("BEGIN").map_err(|e| e.to_string())?;
+
+    let mut fts_ids: Vec<i64> = Vec::new();
+
+    for entry in &audio_files {
         let file_path = entry.path();
-        if !file_path.is_file() || !tags::is_audio_file(file_path) {
-            continue;
-        }
-
-        // Skip if already in library
         let path_str = file_path.to_string_lossy().to_string();
-        let exists: bool = conn
-            .query_row(
-                "SELECT COUNT(*) > 0 FROM tracks WHERE file_path = ?1",
-                params![path_str],
-                |row| row.get(0),
-            )
-            .unwrap_or(false);
 
-        if exists {
+        if existing_paths.contains(&path_str) {
             continue;
         }
 
@@ -460,8 +540,7 @@ pub fn library_import_folder(
 
         match result {
             Ok(_) => {
-                let track_id = conn.last_insert_rowid();
-                let _ = crate::db::tracks::update_fts(&conn, track_id);
+                fts_ids.push(conn.last_insert_rowid());
                 imported += 1;
             }
             Err(e) => {
@@ -469,6 +548,13 @@ pub fn library_import_folder(
             }
         }
     }
+
+    // Batch FTS updates after all inserts
+    for track_id in fts_ids {
+        let _ = crate::db::tracks::update_fts(&conn, track_id);
+    }
+
+    conn.execute_batch("COMMIT").map_err(|e| e.to_string())?;
 
     log::info!("Imported {} tracks from {}", imported, path);
     Ok(imported)
@@ -504,7 +590,7 @@ pub async fn download_ensure_deps(
 }
 
 #[tauri::command]
-pub fn download_start(
+pub async fn download_start(
     db: State<'_, Arc<DbPool>>,
     manager: State<'_, Arc<DownloadManager>>,
     url: String,
@@ -512,7 +598,13 @@ pub fn download_start(
     quality: Option<String>,
 ) -> Result<Download, String> {
     let parsed = crate::download::url_parser::parse_url(&url);
-    let fmt = format.unwrap_or_else(|| "opus".to_string());
+    let default_format = {
+        let conn = db.lock().map_err(|e| e.to_string())?;
+        crate::db::settings::get_setting(&conn, "download_format")
+            .ok().flatten()
+            .unwrap_or_else(|| "mp3".to_string())
+    };
+    let fmt = format.unwrap_or(default_format);
     let qual = quality.unwrap_or_else(|| "best".to_string());
 
     let download = {
@@ -577,7 +669,7 @@ pub async fn download_cancel(
 }
 
 #[tauri::command]
-pub fn download_retry(
+pub async fn download_retry(
     db: State<'_, Arc<DbPool>>,
     manager: State<'_, Arc<DownloadManager>>,
     id: i64,
@@ -612,4 +704,389 @@ pub fn download_get_history(
 pub fn download_clear_history(db: State<'_, Arc<DbPool>>) -> Result<i64, String> {
     let conn = db.lock().map_err(|e| e.to_string())?;
     crate::db::downloads::clear_completed(&conn).map_err(|e| e.to_string())
+}
+
+// --- Manager (Monitored Playlists) ---
+
+#[tauri::command]
+pub fn manager_get_playlists(db: State<'_, Arc<DbPool>>) -> Result<Vec<MonitoredPlaylist>, String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    crate::db::monitored::get_monitored_playlists(&conn).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn manager_get_entries(
+    db: State<'_, Arc<DbPool>>,
+    playlist_id: i64,
+) -> Result<Vec<MonitoredEntry>, String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    crate::db::monitored::get_entries(&conn, playlist_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn manager_get_new_entries(
+    db: State<'_, Arc<DbPool>>,
+    playlist_id: i64,
+) -> Result<Vec<MonitoredEntry>, String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    crate::db::monitored::get_new_entries(&conn, playlist_id).map_err(|e| e.to_string())
+}
+
+/// Add a playlist URL to monitor. Fetches metadata via yt-dlp and stores entries.
+#[tauri::command]
+pub async fn manager_add_playlist(
+    db: State<'_, Arc<DbPool>>,
+    app_handle: tauri::AppHandle,
+    url: String,
+) -> Result<MonitoredPlaylist, String> {
+    let parsed = crate::download::url_parser::parse_url(&url);
+
+    // Resolve yt-dlp binary
+    let bin_dir = crate::download::setup::get_bin_dir(&app_handle);
+    let ytdlp_binary = crate::download::setup::resolve_ytdlp(&bin_dir)
+        .unwrap_or_else(|| "yt-dlp".to_string());
+    let ffmpeg_dir = crate::download::setup::resolve_ffmpeg_dir(&bin_dir);
+
+    // Fetch playlist info
+    let fetch_result = crate::download::ytdlp::get_playlist_entries(
+        &ytdlp_binary,
+        ffmpeg_dir.as_deref(),
+        &url,
+    )
+    .await?;
+
+    let entries = fetch_result.entries;
+
+    if entries.is_empty() {
+        return Err("No entries found. Make sure this is a valid playlist URL.".to_string());
+    }
+
+    // Use the actual playlist title from yt-dlp, fall back to platform name
+    let playlist_name = fetch_result
+        .playlist_title
+        .filter(|t| !t.is_empty())
+        .unwrap_or_else(|| format!("{} playlist", parsed.platform));
+
+    // Create playlist in DB
+    let playlist = {
+        let conn = db.lock().map_err(|e| e.to_string())?;
+        crate::db::monitored::create_monitored_playlist(
+            &conn,
+            &playlist_name,
+            &parsed.platform,
+            &parsed.clean_url,
+            None,
+        )
+        .map_err(|e| e.to_string())?
+    };
+
+    // Store entries — prefer music-specific fields (track > title, artist > uploader)
+    let entry_data: Vec<_> = entries
+        .iter()
+        .map(|e| {
+            let best_title = e.track.clone().unwrap_or_else(|| e.title.clone());
+            let best_artist = e.artist.clone().or_else(|| e.uploader.clone());
+            (
+                e.webpage_url.clone().unwrap_or_default(),
+                Some(best_title),
+                best_artist,
+                e.duration,
+                e.thumbnail.clone(),
+            )
+        })
+        .filter(|(url, _, _, _, _)| !url.is_empty())
+        .collect();
+
+    {
+        let conn = db.lock().map_err(|e| e.to_string())?;
+        crate::db::monitored::upsert_entries(&conn, playlist.id, &entry_data)
+            .map_err(|e| e.to_string())?;
+    }
+
+    // Return the full monitored playlist with counts
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    let playlists = crate::db::monitored::get_monitored_playlists(&conn)
+        .map_err(|e| e.to_string())?;
+    playlists
+        .into_iter()
+        .find(|p| p.id == playlist.id)
+        .ok_or_else(|| "Failed to retrieve created playlist".to_string())
+}
+
+/// Sync a monitored playlist - fetch latest entries and detect new ones
+#[tauri::command]
+pub async fn manager_sync_playlist(
+    db: State<'_, Arc<DbPool>>,
+    app_handle: tauri::AppHandle,
+    playlist_id: i64,
+) -> Result<SyncResult, String> {
+    // Get the playlist source URL
+    let source_url = {
+        let conn = db.lock().map_err(|e| e.to_string())?;
+        let playlist = crate::db::playlists::get_playlist(&conn, playlist_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "Playlist not found".to_string())?;
+        playlist
+            .source_url
+            .ok_or_else(|| "Playlist has no source URL".to_string())?
+    };
+
+    // Resolve yt-dlp binary
+    let bin_dir = crate::download::setup::get_bin_dir(&app_handle);
+    let ytdlp_binary = crate::download::setup::resolve_ytdlp(&bin_dir)
+        .unwrap_or_else(|| "yt-dlp".to_string());
+    let ffmpeg_dir = crate::download::setup::resolve_ffmpeg_dir(&bin_dir);
+
+    // Fetch current entries
+    let fetch_result = crate::download::ytdlp::get_playlist_entries(
+        &ytdlp_binary,
+        ffmpeg_dir.as_deref(),
+        &source_url,
+    )
+    .await?;
+
+    let entry_data: Vec<_> = fetch_result.entries
+        .iter()
+        .map(|e| {
+            let best_title = e.track.clone().unwrap_or_else(|| e.title.clone());
+            let best_artist = e.artist.clone().or_else(|| e.uploader.clone());
+            (
+                e.webpage_url.clone().unwrap_or_default(),
+                Some(best_title),
+                best_artist,
+                e.duration,
+                e.thumbnail.clone(),
+            )
+        })
+        .filter(|(url, _, _, _, _)| !url.is_empty())
+        .collect();
+
+    let (new_count, total_count) = {
+        let conn = db.lock().map_err(|e| e.to_string())?;
+        crate::db::monitored::upsert_entries(&conn, playlist_id, &entry_data)
+            .map_err(|e| e.to_string())?
+    };
+
+    Ok(SyncResult {
+        playlist_id,
+        new_count,
+        total_count,
+    })
+}
+
+/// Download a single entry from a monitored playlist
+#[tauri::command]
+pub async fn manager_download_entry(
+    db: State<'_, Arc<DbPool>>,
+    manager: State<'_, Arc<DownloadManager>>,
+    entry_id: i64,
+    format: Option<String>,
+    quality: Option<String>,
+) -> Result<Download, String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+
+    let entry = crate::db::monitored::get_entry(&conn, entry_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "Entry not found".to_string())?;
+
+    let parsed = crate::download::url_parser::parse_url(&entry.source_url);
+    let default_format = crate::db::settings::get_setting(&conn, "download_format")
+        .ok().flatten()
+        .unwrap_or_else(|| "mp3".to_string());
+    let fmt = format.unwrap_or(default_format);
+    let qual = quality.unwrap_or_else(|| "best".to_string());
+
+    let download = crate::db::downloads::create_download(
+        &conn,
+        &parsed.clean_url,
+        entry.title.as_deref(),
+        entry.artist.as_deref(),
+        &parsed.platform,
+        &fmt,
+        &qual,
+    )
+    .map_err(|e| e.to_string())?;
+
+    // Update entry status to queued with download_id
+    crate::db::monitored::update_entry_status(&conn, entry_id, "queued", Some(download.id), None)
+        .map_err(|e| e.to_string())?;
+
+    drop(conn);
+    manager.start_download(download.id);
+    Ok(download)
+}
+
+/// Download all new entries from a monitored playlist.
+/// No batch limit — concurrency is controlled by the DownloadManager semaphore.
+#[tauri::command]
+pub async fn manager_download_new(
+    db: State<'_, Arc<DbPool>>,
+    manager: State<'_, Arc<DownloadManager>>,
+    playlist_id: i64,
+    format: Option<String>,
+    quality: Option<String>,
+) -> Result<BatchDownloadResult, String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+
+    let entries = crate::db::monitored::get_new_entries(&conn, playlist_id)
+        .map_err(|e| e.to_string())?;
+
+    let default_format = crate::db::settings::get_setting(&conn, "download_format")
+        .ok().flatten()
+        .unwrap_or_else(|| "mp3".to_string());
+    let fmt = format.unwrap_or(default_format);
+    let qual = quality.unwrap_or_else(|| "best".to_string());
+
+    // Use a transaction for bulk inserts (fast even for thousands of entries)
+    conn.execute_batch("BEGIN IMMEDIATE").map_err(|e| e.to_string())?;
+
+    let result: Result<Vec<i64>, String> = (|| {
+        let mut download_ids = Vec::new();
+        for entry in &entries {
+            let parsed = crate::download::url_parser::parse_url(&entry.source_url);
+            let download = crate::db::downloads::create_download(
+                &conn,
+                &parsed.clean_url,
+                entry.title.as_deref(),
+                entry.artist.as_deref(),
+                &parsed.platform,
+                &fmt,
+                &qual,
+            )
+            .map_err(|e| e.to_string())?;
+
+            crate::db::monitored::update_entry_status(
+                &conn,
+                entry.id,
+                "queued",
+                Some(download.id),
+                None,
+            )
+            .map_err(|e| e.to_string())?;
+
+            download_ids.push(download.id);
+        }
+        Ok(download_ids)
+    })();
+
+    match result {
+        Ok(download_ids) => {
+            conn.execute_batch("COMMIT").map_err(|e| e.to_string())?;
+            let queued = download_ids.len() as i64;
+            drop(conn);
+            // Start all downloads (concurrency semaphore limits parallel yt-dlp processes)
+            for id in download_ids {
+                manager.start_download(id);
+            }
+            Ok(BatchDownloadResult { queued, playlist_id })
+        }
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            Err(e)
+        }
+    }
+}
+
+/// Skip an entry (mark as skipped so it won't show as "new")
+#[tauri::command]
+pub fn manager_skip_entry(
+    db: State<'_, Arc<DbPool>>,
+    entry_id: i64,
+) -> Result<(), String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    crate::db::monitored::skip_entry(&conn, entry_id).map_err(|e| e.to_string())
+}
+
+/// Cancel a single entry's download and reset to "new"
+#[tauri::command]
+pub async fn manager_cancel_entry(
+    db: State<'_, Arc<DbPool>>,
+    manager: State<'_, Arc<DownloadManager>>,
+    entry_id: i64,
+) -> Result<(), String> {
+    let download_id = {
+        let conn = db.lock().map_err(|e| e.to_string())?;
+        let entry = crate::db::monitored::get_entry(&conn, entry_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "Entry not found".to_string())?;
+        entry.download_id
+    };
+
+    // Cancel the download if one exists
+    if let Some(did) = download_id {
+        manager.cancel_download(did).await;
+    }
+
+    // Reset entry back to "new"
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    crate::db::monitored::update_entry_status(&conn, entry_id, "new", None, None)
+        .map_err(|e| e.to_string())
+}
+
+/// Cancel all queued/downloading entries for a playlist
+#[tauri::command]
+pub async fn manager_cancel_all(
+    db: State<'_, Arc<DbPool>>,
+    manager: State<'_, Arc<DownloadManager>>,
+    playlist_id: i64,
+) -> Result<i64, String> {
+    let entries: Vec<(i64, Option<i64>)> = {
+        let conn = db.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn.prepare(
+            "SELECT id, download_id FROM monitored_playlist_entries
+             WHERE playlist_id = ?1 AND status IN ('queued', 'downloading')"
+        ).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map(params![playlist_id], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, Option<i64>>(1)?))
+        }).map_err(|e| e.to_string())?;
+        let result: Vec<_> = rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
+        result
+    };
+
+    let count = entries.len() as i64;
+
+    // Cancel all active downloads
+    for (_, download_id) in &entries {
+        if let Some(did) = download_id {
+            manager.cancel_download(*did).await;
+        }
+    }
+
+    // Reset all entries to "new"
+    {
+        let conn = db.lock().map_err(|e| e.to_string())?;
+        for (entry_id, _) in &entries {
+            let _ = crate::db::monitored::update_entry_status(&conn, *entry_id, "new", None, None);
+        }
+    }
+
+    Ok(count)
+}
+
+/// Remove a monitored playlist, cancelling any active downloads first
+#[tauri::command]
+pub async fn manager_remove_playlist(
+    db: State<'_, Arc<DbPool>>,
+    manager: State<'_, Arc<crate::download::DownloadManager>>,
+    playlist_id: i64,
+) -> Result<(), String> {
+    // Collect download IDs in a separate scope so the MutexGuard is dropped before .await
+    let download_ids: Vec<i64> = {
+        let conn = db.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn.prepare(
+            "SELECT download_id FROM monitored_playlist_entries
+             WHERE playlist_id = ?1 AND status IN ('queued', 'downloading') AND download_id IS NOT NULL"
+        ).map_err(|e| e.to_string())?;
+        let rows: Vec<i64> = stmt.query_map(rusqlite::params![playlist_id], |row| row.get(0))
+            .map_err(|e| e.to_string())?
+            .filter_map(|r| r.ok())
+            .collect();
+        rows
+    };
+    for id in download_ids {
+        manager.cancel_download(id).await;
+    }
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    crate::db::monitored::delete_monitored_playlist(&conn, playlist_id)
+        .map_err(|e| e.to_string())
 }

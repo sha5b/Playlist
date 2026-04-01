@@ -26,8 +26,3 @@ pub fn get_all_settings(conn: &Connection) -> Result<Vec<(String, String)>, rusq
         .collect::<Result<Vec<_>, _>>()?;
     Ok(settings)
 }
-
-pub fn delete_setting(conn: &Connection, key: &str) -> Result<(), rusqlite::Error> {
-    conn.execute("DELETE FROM settings WHERE key = ?1", params![key])?;
-    Ok(())
-}

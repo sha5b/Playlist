@@ -1,3 +1,11 @@
+import { convertFileSrc } from '@tauri-apps/api/core';
+
+/** Convert a local file path to a URL the webview can load via the asset protocol. */
+export function assetUrl(filePath: string | null | undefined): string {
+	if (!filePath) return '';
+	return convertFileSrc(filePath);
+}
+
 export function formatDuration(ms: number | null): string {
 	if (!ms) return '--:--';
 	const totalSeconds = Math.floor(ms / 1000);

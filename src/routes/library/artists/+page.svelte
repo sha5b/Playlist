@@ -2,6 +2,7 @@
 	import { getArtists } from '$lib/api/library';
 	import CardGridSkeleton from '$lib/components/shared/CardGridSkeleton.svelte';
 	import { Users } from 'lucide-svelte';
+	import { assetUrl } from '$lib/utils/format';
 	import type { Artist } from '$lib/types';
 
 	let artists: Artist[] = $state([]);
@@ -47,9 +48,10 @@
 					<div class="aspect-square rounded-full bg-muted flex items-center justify-center overflow-hidden mb-2 mx-auto max-w-32">
 						{#if artist.image_path}
 							<img
-								src="https://asset.localhost/{artist.image_path}"
+								src={assetUrl(artist.image_path)}
 								alt={artist.name}
 								class="size-full object-cover group-hover:scale-105 transition-transform"
+								loading="lazy"
 							/>
 						{:else}
 							<Users class="size-10 text-muted-foreground" />

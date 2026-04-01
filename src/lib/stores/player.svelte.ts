@@ -17,6 +17,11 @@ let queueOpen: boolean = $state(false);
 // --- Event listener setup ---
 let initialized = false;
 
+// Throttle progress updates to display refresh rate to avoid unnecessary re-renders
+let progressRafPending = false;
+let pendingPositionMs = 0;
+let pendingDurationMs = 0;
+
 function handleEvent(event: PlayerEvent) {
 	switch (event.kind) {
 		case 'state_changed':
@@ -37,8 +42,16 @@ function handleEvent(event: PlayerEvent) {
 			}
 			break;
 		case 'progress':
-			positionMs = event.data.position_ms;
-			durationMs = event.data.duration_ms;
+			pendingPositionMs = event.data.position_ms;
+			pendingDurationMs = event.data.duration_ms;
+			if (!progressRafPending) {
+				progressRafPending = true;
+				requestAnimationFrame(() => {
+					positionMs = pendingPositionMs;
+					durationMs = pendingDurationMs;
+					progressRafPending = false;
+				});
+			}
 			break;
 		case 'queue_updated':
 			queueTracks = event.data.tracks;

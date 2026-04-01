@@ -5,6 +5,9 @@ mod download;
 mod metadata;
 
 use std::sync::Arc;
+use tauri::image::Image;
+use tauri::menu::{MenuBuilder, MenuItemBuilder};
+use tauri::tray::TrayIconBuilder;
 use tauri::{Emitter, Manager};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -12,17 +15,26 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|_app, _args, _cwd| {}))
         .plugin(tauri_plugin_window_state::Builder::new().build())
-        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_store::Builder::new().build())
-        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_fs::init())
         .setup(|app| {
-            if cfg!(debug_assertions) {
+            // Enable logging in all builds (debug gets more detail)
+            {
+                use tauri_plugin_log::{Target, TargetKind};
+                let log_level = if cfg!(debug_assertions) {
+                    log::LevelFilter::Debug
+                } else {
+                    log::LevelFilter::Info
+                };
                 app.handle().plugin(
                     tauri_plugin_log::Builder::default()
-                        .level(log::LevelFilter::Info)
+                        .level(log_level)
+                        .targets([
+                            Target::new(TargetKind::Stdout),
+                            Target::new(TargetKind::Webview),
+                            Target::new(TargetKind::LogDir { file_name: None }),
+                        ])
                         .build(),
                 )?;
             }
@@ -44,10 +56,104 @@ pub fn run() {
             }));
             app.manage(Arc::new(engine));
 
-            // Initialize download manager
-            let db_arc: Arc<db::DbPool> = app.state::<Arc<db::DbPool>>().inner().clone();
-            let dl_manager = download::DownloadManager::new(db_arc, app.handle().clone());
-            app.manage(Arc::new(dl_manager));
+            // Initialize download manager with its own DB connection
+            // so downloads don't block UI/player queries on the main connection.
+            let dl_conn = db::open_download_conn(&app_data_dir)
+                .expect("Failed to open download DB connection");
+            let dl_db = Arc::new(std::sync::Mutex::new(dl_conn));
+            let dl_manager = Arc::new(download::DownloadManager::new(dl_db, app.handle().clone()));
+            dl_manager.resume_interrupted();
+            app.manage(dl_manager);
+
+            // System tray with playback controls
+            let show = MenuItemBuilder::with_id("show", "Show Playlist").build(app)?;
+            let play_pause = MenuItemBuilder::with_id("play_pause", "Play / Pause").build(app)?;
+            let next_track = MenuItemBuilder::with_id("next", "Next Track").build(app)?;
+            let prev_track = MenuItemBuilder::with_id("prev", "Previous Track").build(app)?;
+            let quit = MenuItemBuilder::with_id("quit", "Exit").build(app)?;
+            let tray_menu = MenuBuilder::new(app)
+                .item(&show)
+                .separator()
+                .item(&prev_track)
+                .item(&play_pause)
+                .item(&next_track)
+                .separator()
+                .item(&quit)
+                .build()?;
+
+            let tray_icon = Image::from_path("icons/32x32.png")
+                .or_else(|_| Image::from_path("icons/icon.png"))
+                .unwrap_or_else(|_| Image::from_bytes(include_bytes!("../icons/icon.png")).expect("bundled icon"));
+
+            // Hide window to tray on close instead of quitting
+            {
+                let window = app.get_webview_window("main").unwrap();
+                let window_clone = window.clone();
+                window.on_window_event(move |event| {
+                    if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                        api.prevent_close();
+                        let _ = window_clone.hide();
+                    }
+                });
+            }
+
+            let _tray = TrayIconBuilder::new()
+                .icon(tray_icon)
+                .menu(&tray_menu)
+                .tooltip("Playlist")
+                .on_menu_event(|app, event| {
+                    match event.id().as_ref() {
+                        "show" => {
+                            if let Some(window) = app.get_webview_window("main") {
+                                let _ = window.show();
+                                let _ = window.unminimize();
+                                let _ = window.set_focus();
+                            }
+                        }
+                        "play_pause" => {
+                            if let Some(engine) = app.try_state::<Arc<audio::AudioEngine>>() {
+                                let state = engine.get_state();
+                                match state.state {
+                                    audio::engine::PlayerState::Playing => {
+                                        engine.send(audio::engine::PlayerCommand::Pause);
+                                    }
+                                    audio::engine::PlayerState::Paused => {
+                                        engine.send(audio::engine::PlayerCommand::Resume);
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                        "next" => {
+                            if let Some(engine) = app.try_state::<Arc<audio::AudioEngine>>() {
+                                engine.send(audio::engine::PlayerCommand::Next);
+                            }
+                        }
+                        "prev" => {
+                            if let Some(engine) = app.try_state::<Arc<audio::AudioEngine>>() {
+                                engine.send(audio::engine::PlayerCommand::Prev);
+                            }
+                        }
+                        "quit" => {
+                            app.exit(0);
+                        }
+                        _ => {}
+                    }
+                })
+                .on_tray_icon_event(|tray, event| {
+                    if let tauri::tray::TrayIconEvent::Click {
+                        button: tauri::tray::MouseButton::Left,
+                        ..
+                    } = event
+                    {
+                        if let Some(window) = tray.app_handle().get_webview_window("main") {
+                            let _ = window.show();
+                            let _ = window.unminimize();
+                            let _ = window.set_focus();
+                        }
+                    }
+                })
+                .build(app)?;
 
             log::info!("Playlist app initialized successfully");
             Ok(())
@@ -59,6 +165,7 @@ pub fn run() {
             commands::library_get_tracks,
             commands::library_get_track,
             commands::library_delete_track,
+            commands::library_reset,
             // Albums
             commands::library_get_albums,
             commands::library_get_album,
@@ -97,6 +204,18 @@ pub fn run() {
             commands::download_get_active,
             commands::download_get_history,
             commands::download_clear_history,
+            // Manager (monitored playlists)
+            commands::manager_get_playlists,
+            commands::manager_get_entries,
+            commands::manager_get_new_entries,
+            commands::manager_add_playlist,
+            commands::manager_sync_playlist,
+            commands::manager_download_entry,
+            commands::manager_download_new,
+            commands::manager_skip_entry,
+            commands::manager_cancel_entry,
+            commands::manager_cancel_all,
+            commands::manager_remove_playlist,
             // Player
             commands::player::player_play_track,
             commands::player::player_play_tracks,
@@ -116,6 +235,15 @@ pub fn run() {
             commands::player::player_get_state,
             commands::player::player_get_queue,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app_handle, event| {
+            if let tauri::RunEvent::Exit = event {
+                // Gracefully shut down the audio thread before the process exits
+                if let Some(engine) = app_handle.try_state::<Arc<audio::AudioEngine>>() {
+                    engine.shutdown();
+                }
+                log::info!("Application exiting gracefully");
+            }
+        });
 }

@@ -6,6 +6,7 @@
 	import { player } from '$lib/stores/player.svelte';
 	import { ArrowLeft, Users, Disc, Play, Shuffle, Loader2 } from 'lucide-svelte';
 	import { toast } from 'svelte-sonner';
+	import { assetUrl } from '$lib/utils/format';
 	import type { Artist, Album, Track } from '$lib/types';
 
 	let artist: Artist | null = $state(null);
@@ -68,7 +69,7 @@
 			<div class="size-48 rounded-full bg-muted flex items-center justify-center overflow-hidden shrink-0 shadow-lg">
 				{#if artist.image_path}
 					<img
-						src="https://asset.localhost/{artist.image_path}"
+						src={assetUrl(artist.image_path)}
 						alt={artist.name}
 						class="size-full object-cover"
 					/>
@@ -105,9 +106,10 @@
 							<div class="aspect-square rounded-lg bg-muted flex items-center justify-center overflow-hidden mb-2">
 								{#if album.cover_art_path}
 									<img
-										src="https://asset.localhost/{album.cover_art_path}"
+										src={assetUrl(album.cover_art_path)}
 										alt={album.title}
 										class="size-full object-cover group-hover:scale-105 transition-transform"
+										loading="lazy"
 									/>
 								{:else}
 									<Disc class="size-12 text-muted-foreground" />

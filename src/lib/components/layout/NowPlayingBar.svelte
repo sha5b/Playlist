@@ -7,7 +7,7 @@
 		ListMusic, Music
 	} from 'lucide-svelte';
 	import { player } from '$lib/stores/player.svelte';
-	import { formatDuration } from '$lib/utils/format';
+	import { formatDuration, assetUrl } from '$lib/utils/format';
 
 	function handleProgressChange(values: number[]) {
 		const seconds = (values[0] / 100) * (player.durationMs / 1000);
@@ -39,7 +39,7 @@
 		<div class="size-12 shrink-0 rounded-md bg-muted flex items-center justify-center overflow-hidden">
 			{#if player.currentTrack?.cover_art_path}
 				<img
-					src="https://asset.localhost/{player.currentTrack.cover_art_path}"
+					src={assetUrl(player.currentTrack.cover_art_path)}
 					alt=""
 					class="size-full object-cover"
 				/>

@@ -3,7 +3,7 @@
 	import { ScrollArea } from '$lib/components/ui/scroll-area';
 	import { X, Music, Trash2 } from 'lucide-svelte';
 	import { player } from '$lib/stores/player.svelte';
-	import { formatDuration } from '$lib/utils/format';
+	import { formatDuration, assetUrl } from '$lib/utils/format';
 </script>
 
 {#if player.queueOpen}
@@ -62,9 +62,10 @@
 							<div class="size-8 shrink-0 rounded bg-muted flex items-center justify-center overflow-hidden">
 								{#if track.cover_art_path}
 									<img
-										src="https://asset.localhost/{track.cover_art_path}"
+										src={assetUrl(track.cover_art_path)}
 										alt=""
 										class="size-full object-cover"
+										loading="lazy"
 									/>
 								{:else}
 									<Music class="size-3.5 text-muted-foreground" />

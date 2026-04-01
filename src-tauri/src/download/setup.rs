@@ -217,6 +217,8 @@ async fn download_file(
 
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::limited(10))
+        .connect_timeout(std::time::Duration::from_secs(30))
+        .timeout(std::time::Duration::from_secs(600))
         .build()
         .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
 
@@ -303,6 +305,10 @@ async fn extract_ffmpeg_zip(zip_path: &Path, bin_dir: &Path) -> Result<(), Strin
             for target in &targets {
                 if name.ends_with(&format!("bin/{}", target)) {
                     let out_path = bin_dir.join(target);
+                    // Validate against zip-slip: output must stay inside bin_dir
+                    if !out_path.starts_with(&bin_dir) {
+                        return Err(format!("Unsafe zip entry path: {}", name));
+                    }
                     let mut out_file = std::fs::File::create(&out_path)
                         .map_err(|e| format!("Failed to create {}: {}", target, e))?;
                     std::io::copy(&mut entry, &mut out_file)

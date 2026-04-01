@@ -2,6 +2,7 @@
 	import { getAlbums } from '$lib/api/library';
 	import CardGridSkeleton from '$lib/components/shared/CardGridSkeleton.svelte';
 	import { Disc } from 'lucide-svelte';
+	import { assetUrl } from '$lib/utils/format';
 	import type { Album } from '$lib/types';
 
 	let albums: Album[] = $state([]);
@@ -47,9 +48,10 @@
 					<div class="aspect-square rounded-lg bg-muted flex items-center justify-center overflow-hidden mb-2">
 						{#if album.cover_art_path}
 							<img
-								src="https://asset.localhost/{album.cover_art_path}"
+								src={assetUrl(album.cover_art_path)}
 								alt={album.title}
 								class="size-full object-cover group-hover:scale-105 transition-transform"
+								loading="lazy"
 							/>
 						{:else}
 							<Disc class="size-12 text-muted-foreground" />

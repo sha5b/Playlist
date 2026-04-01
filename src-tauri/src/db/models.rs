@@ -127,3 +127,16 @@ pub struct UrlInfo {
     pub clean_url: String,
     pub title: Option<String>,
 }
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SyncResult {
+    pub playlist_id: i64,
+    pub new_count: i64,
+    pub total_count: i64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct BatchDownloadResult {
+    pub queued: i64,
+    pub playlist_id: i64,
+}

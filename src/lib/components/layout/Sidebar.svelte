@@ -3,11 +3,12 @@
 	import { Separator } from '$lib/components/ui/separator';
 	import { Button } from '$lib/components/ui/button';
 	import * as Tooltip from '$lib/components/ui/tooltip';
-	import { Home, Search, Music, Disc, Users, ListMusic, Download, Settings, PanelLeftClose, PanelLeft } from 'lucide-svelte';
+	import { Home, Search, Music, Disc, Users, ListMusic, Settings, PanelLeftClose, PanelLeft, LayoutDashboard } from 'lucide-svelte';
 	import { ui } from '$lib/stores/ui.svelte';
 
 	const navItems = [
 		{ href: '/', label: 'Home', icon: Home },
+		{ href: '/manager', label: 'Manager', icon: LayoutDashboard },
 		{ href: '/search', label: 'Search', icon: Search },
 	];
 
@@ -19,7 +20,6 @@
 	];
 
 	const bottomItems = [
-		{ href: '/downloads', label: 'Downloads', icon: Download },
 		{ href: '/settings', label: 'Settings', icon: Settings },
 	];
 

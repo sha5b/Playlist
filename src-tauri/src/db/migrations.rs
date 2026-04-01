@@ -134,7 +134,28 @@ CREATE VIRTUAL TABLE IF NOT EXISTS tracks_fts USING fts5(
 );
 ";
 
-const MIGRATIONS: &[&str] = &[MIGRATION_001, MIGRATION_002];
+const MIGRATION_003: &str = "
+CREATE TABLE IF NOT EXISTS monitored_playlist_entries (
+    id              INTEGER PRIMARY KEY,
+    playlist_id     INTEGER NOT NULL REFERENCES playlists(id) ON DELETE CASCADE,
+    source_url      TEXT NOT NULL,
+    title           TEXT,
+    artist          TEXT,
+    duration_seconds REAL,
+    thumbnail       TEXT,
+    status          TEXT NOT NULL DEFAULT 'new',
+    download_id     INTEGER REFERENCES downloads(id) ON DELETE SET NULL,
+    track_id        INTEGER REFERENCES tracks(id) ON DELETE SET NULL,
+    position        INTEGER NOT NULL DEFAULT 0,
+    first_seen_at   TEXT NOT NULL DEFAULT (datetime('now')),
+    downloaded_at   TEXT,
+    UNIQUE(playlist_id, source_url)
+);
+CREATE INDEX IF NOT EXISTS idx_mpe_playlist ON monitored_playlist_entries(playlist_id);
+CREATE INDEX IF NOT EXISTS idx_mpe_status ON monitored_playlist_entries(playlist_id, status);
+";
+
+const MIGRATIONS: &[&str] = &[MIGRATION_001, MIGRATION_002, MIGRATION_003];
 
 pub fn run(conn: &Connection) -> Result<(), Box<dyn std::error::Error>> {
     conn.execute(

@@ -7,7 +7,7 @@ use crate::db::DbPool;
 
 /// Build a QueueTrack from a track ID by reading from the database.
 fn track_from_db(conn: &rusqlite::Connection, id: i64) -> Result<QueueTrack, String> {
-    conn.query_row(
+    let track = conn.query_row(
         "SELECT t.id, t.title, a.name, al.title, t.duration_ms, t.file_path, t.cover_art_path
          FROM tracks t
          LEFT JOIN artists a ON t.artist_id = a.id
@@ -26,7 +26,9 @@ fn track_from_db(conn: &rusqlite::Connection, id: i64) -> Result<QueueTrack, Str
             })
         },
     )
-    .map_err(|e| format!("Track not found: {}", e))
+    .map_err(|e| format!("Track not found (id={}): {}", id, e))?;
+    log::info!("[player] Loaded track from DB: id={}, title=\"{}\", path=\"{}\"", track.id, track.title, track.file_path);
+    Ok(track)
 }
 
 #[tauri::command]
@@ -35,7 +37,11 @@ pub fn player_play_track(
     engine: State<'_, Arc<AudioEngine>>,
     track_id: i64,
 ) -> Result<(), String> {
-    let conn = db.lock().map_err(|e| e.to_string())?;
+    log::info!("[player] player_play_track: id={}", track_id);
+    let conn = db.lock().map_err(|e| {
+        log::error!("[player] DB lock failed: {}", e);
+        e.to_string()
+    })?;
     let queue_track = track_from_db(&conn, track_id)?;
     engine.send(PlayerCommand::PlaySingle(queue_track));
     Ok(())
@@ -48,10 +54,14 @@ pub fn player_play_tracks(
     track_ids: Vec<i64>,
     start_index: usize,
 ) -> Result<(), String> {
-    let conn = db.lock().map_err(|e| e.to_string())?;
+    log::info!("[player] player_play_tracks: {} tracks, start_index={}", track_ids.len(), start_index);
+    let conn = db.lock().map_err(|e| {
+        log::error!("[player] DB lock failed: {}", e);
+        e.to_string()
+    })?;
     let mut tracks = Vec::new();
-    for id in track_ids {
-        tracks.push(track_from_db(&conn, id)?);
+    for id in &track_ids {
+        tracks.push(track_from_db(&conn, *id)?);
     }
     engine.send(PlayerCommand::Play {
         tracks,

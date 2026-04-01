@@ -4,7 +4,7 @@
 	import TrackTable from '$lib/components/library/TrackTable.svelte';
 	import { Button } from '$lib/components/ui/button';
 	import { player } from '$lib/stores/player.svelte';
-	import { formatDurationLong } from '$lib/utils/format';
+	import { formatDurationLong, assetUrl } from '$lib/utils/format';
 	import { ArrowLeft, Disc, Play, Shuffle, Loader2 } from 'lucide-svelte';
 	import { toast } from 'svelte-sonner';
 	import type { Album, Track } from '$lib/types';
@@ -67,7 +67,7 @@
 			<div class="size-48 rounded-lg bg-muted flex items-center justify-center overflow-hidden shrink-0 shadow-lg">
 				{#if album.cover_art_path}
 					<img
-						src="https://asset.localhost/{album.cover_art_path}"
+						src={assetUrl(album.cover_art_path)}
 						alt={album.title}
 						class="size-full object-cover"
 					/>

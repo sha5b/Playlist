@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use serde::Serialize;
 use tauri::{Emitter, Manager};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Semaphore};
 
 use crate::db::DbPool;
 use crate::metadata::tags;
@@ -26,9 +26,11 @@ pub struct DownloadEvent {
 }
 
 pub struct DownloadManager {
+    /// Dedicated DB connection for downloads — avoids blocking the main app connection.
     db: Arc<DbPool>,
     app_handle: tauri::AppHandle,
     active_tasks: Arc<Mutex<HashMap<i64, tokio::task::JoinHandle<()>>>>,
+    concurrency: Arc<Semaphore>,
 }
 
 impl DownloadManager {
@@ -37,11 +39,12 @@ impl DownloadManager {
             db,
             app_handle,
             active_tasks: Arc::new(Mutex::new(HashMap::new())),
+            concurrency: Arc::new(Semaphore::new(2)),
         }
     }
 
     fn get_download_dir(&self) -> PathBuf {
-        let conn = self.db.lock().unwrap();
+        let conn = self.db.lock().expect("DB mutex poisoned");
         let dir = crate::db::settings::get_setting(&conn, "download_dir")
             .ok()
             .flatten();
@@ -74,6 +77,43 @@ impl DownloadManager {
         setup::resolve_ffmpeg_dir(&bin_dir)
     }
 
+    /// Resume any downloads that were interrupted by an app shutdown.
+    /// Resets 'downloading'/'processing' back to 'queued', then restarts all queued downloads.
+    /// Must be called after the Tokio runtime is available (i.e., not during sync `setup()`).
+    pub fn resume_interrupted(self: &Arc<Self>) {
+        let ids: Vec<i64> = {
+            let conn = match self.db.lock() {
+                Ok(c) => c,
+                Err(_) => return,
+            };
+            // Reset in-progress downloads so they restart cleanly
+            let _ = conn.execute(
+                "UPDATE downloads SET status = 'queued', progress = 0, error_message = NULL
+                 WHERE status IN ('downloading', 'processing')",
+                [],
+            );
+            let mut stmt = match conn
+                .prepare("SELECT id FROM downloads WHERE status = 'queued' ORDER BY created_at ASC")
+            {
+                Ok(s) => s,
+                Err(_) => return,
+            };
+            stmt.query_map([], |row| row.get(0))
+                .unwrap()
+                .filter_map(|r| r.ok())
+                .collect()
+        };
+        if !ids.is_empty() {
+            log::info!("Resuming {} interrupted download(s)", ids.len());
+            let mgr = Arc::clone(self);
+            tauri::async_runtime::spawn(async move {
+                for id in ids {
+                    mgr.start_download(id);
+                }
+            });
+        }
+    }
+
     pub fn start_download(&self, download_id: i64) {
         let db = self.db.clone();
         let app_handle = self.app_handle.clone();
@@ -81,15 +121,21 @@ impl DownloadManager {
         let download_dir = self.get_download_dir();
         let ytdlp_binary = self.resolve_ytdlp();
         let ffmpeg_dir = self.resolve_ffmpeg_dir();
+        let semaphore = self.concurrency.clone();
 
-        let handle = tokio::spawn(async move {
-            run_download(db, app_handle, download_id, download_dir, ytdlp_binary, ffmpeg_dir).await;
-            active_tasks.lock().await.remove(&download_id);
-        });
+        // Emit queued event immediately so the frontend can show all pending downloads
+        emit_event(&self.app_handle, download_id, "queued", 0.0, None, None, None, None);
 
-        let active_tasks = self.active_tasks.clone();
+        let active_tasks_insert = self.active_tasks.clone();
         tokio::spawn(async move {
-            active_tasks.lock().await.insert(download_id, handle);
+            let handle = tokio::spawn(async move {
+                // Wait for a concurrency slot (limits parallel yt-dlp processes)
+                let _permit = semaphore.acquire().await.expect("Semaphore closed");
+                run_download(db, app_handle, download_id, download_dir, ytdlp_binary, ffmpeg_dir)
+                    .await;
+                active_tasks.lock().await.remove(&download_id);
+            });
+            active_tasks_insert.lock().await.insert(download_id, handle);
         });
     }
 
@@ -114,6 +160,34 @@ impl DownloadManager {
                 track_id: None,
             },
         );
+    }
+
+    /// Cancel **all** active downloads. Called when the library is reset or the app exits.
+    pub async fn cancel_all(&self) {
+        let mut tasks = self.active_tasks.lock().await;
+        for (id, handle) in tasks.drain() {
+            handle.abort();
+            let _ = self.app_handle.emit(
+                "download-event",
+                DownloadEvent {
+                    id,
+                    status: "cancelled".into(),
+                    progress: 0.0,
+                    speed: None,
+                    eta: None,
+                    error: None,
+                    title: None,
+                    track_id: None,
+                },
+            );
+        }
+        // Mark all in-progress downloads as cancelled in the DB
+        if let Ok(conn) = self.db.lock() {
+            let _ = conn.execute(
+                "UPDATE downloads SET status = 'cancelled' WHERE status IN ('queued', 'downloading', 'processing')",
+                [],
+            );
+        }
     }
 }
 
@@ -148,9 +222,27 @@ async fn run_download(
 
     // Update status to downloading
     {
-        let conn = db.lock().unwrap();
-        let _ =
-            crate::db::downloads::update_download_status(&conn, download_id, "downloading", None);
+        let entry_id = if let Ok(conn) = db.lock() {
+            let _ = crate::db::downloads::update_download_status(&conn, download_id, "downloading", None);
+            // Update linked monitored entry
+            let eid: Option<i64> = conn.query_row(
+                "SELECT id FROM monitored_playlist_entries WHERE download_id = ?1",
+                rusqlite::params![download_id],
+                |row| row.get::<_, i64>(0),
+            ).ok();
+            if let Some(eid) = eid {
+                let _ = crate::db::monitored::update_entry_status(&conn, eid, "downloading", Some(download_id), None);
+            }
+            eid
+        } else {
+            None
+        };
+        if let Some(eid) = entry_id {
+            let _ = app_handle.emit(
+                "manager-entry-updated",
+                serde_json::json!({ "entry_id": eid, "status": "downloading" }),
+            );
+        }
     }
     emit_event(
         &app_handle,
@@ -172,13 +264,17 @@ async fn run_download(
     .await
     {
         Ok(info) => {
-            let conn = db.lock().unwrap();
-            let _ = crate::db::downloads::update_download_title(
-                &conn,
-                download_id,
-                &info.title,
-                info.uploader.as_deref(),
-            );
+            // Prefer music-specific fields: track > title, artist > uploader
+            let best_title = info.track.as_deref().unwrap_or(&info.title);
+            let best_artist = info.artist.as_deref().or(info.uploader.as_deref());
+            if let Ok(conn) = db.lock() {
+                let _ = crate::db::downloads::update_download_title(
+                    &conn,
+                    download_id,
+                    best_title,
+                    best_artist,
+                );
+            }
             emit_event(
                 &app_handle,
                 download_id,
@@ -187,7 +283,7 @@ async fn run_download(
                 None,
                 None,
                 None,
-                Some(info.title.clone()),
+                Some(best_title.to_string()),
             );
         }
         Err(e) => {
@@ -199,9 +295,10 @@ async fn run_download(
         }
     }
 
-    // Download the audio
+    // Download the audio using download_id as filename to avoid encoding issues
     let app_handle_progress = app_handle.clone();
     let dl_id = download_id;
+    let file_stem = format!("dl_{}", download_id);
 
     let result = ytdlp::download_audio(
         &ytdlp_binary,
@@ -210,6 +307,7 @@ async fn run_download(
         &download_dir,
         &download.format,
         &download.quality,
+        &file_stem,
         move |progress| {
             emit_event(
                 &app_handle_progress,
@@ -227,8 +325,7 @@ async fn run_download(
 
     match result {
         Ok(file_path) => {
-            {
-                let conn = db.lock().unwrap();
+            if let Ok(conn) = db.lock() {
                 let _ = crate::db::downloads::update_download_status(
                     &conn,
                     download_id,
@@ -247,10 +344,31 @@ async fn run_download(
                 None,
             );
 
-            let track_id = import_downloaded_file(&db, &app_handle, &file_path);
+            // Build fallback metadata from the download record (populated by yt-dlp get_info)
+            let dl_meta = {
+                let title_artist = if let Ok(conn) = db.lock() {
+                    conn.query_row(
+                        "SELECT title, artist, url FROM downloads WHERE id = ?1",
+                        rusqlite::params![download_id],
+                        |row| Ok((
+                            row.get::<_, Option<String>>(0)?,
+                            row.get::<_, Option<String>>(1)?,
+                            row.get::<_, String>(2)?,
+                        )),
+                    ).ok()
+                } else {
+                    None
+                };
+                match title_artist {
+                    Some((t, a, u)) => DownloadMeta { title: t, artist: a, source_url: Some(u) },
+                    None => DownloadMeta { title: None, artist: None, source_url: None },
+                }
+            };
+            let track_id = import_downloaded_file(&db, &app_handle, &file_path, &dl_meta).await;
 
-            {
-                let conn = db.lock().unwrap();
+            // Batch all post-completion DB updates in a single lock scope
+            let entry_id = if let Ok(conn) = db.lock() {
+                let _ = conn.execute_batch("BEGIN");
                 let _ = crate::db::downloads::update_download_file(
                     &conn,
                     download_id,
@@ -263,7 +381,21 @@ async fn run_download(
                     "completed",
                     None,
                 );
-            }
+                let eid: Option<i64> = conn.query_row(
+                    "SELECT id FROM monitored_playlist_entries WHERE download_id = ?1",
+                    rusqlite::params![download_id],
+                    |row| row.get(0),
+                ).ok();
+                if let Some(eid) = eid {
+                    let _ = crate::db::monitored::update_entry_status(
+                        &conn, eid, "downloaded", Some(download_id), track_id,
+                    );
+                }
+                let _ = conn.execute_batch("COMMIT");
+                eid
+            } else {
+                None
+            };
             let _ = app_handle.emit(
                 "download-event",
                 DownloadEvent {
@@ -277,6 +409,12 @@ async fn run_download(
                     track_id,
                 },
             );
+            if let Some(eid) = entry_id {
+                let _ = app_handle.emit(
+                    "manager-entry-updated",
+                    serde_json::json!({ "entry_id": eid, "status": "downloaded" }),
+                );
+            }
         }
         Err(e) => {
             fail_download(&db, &app_handle, download_id, &e);
@@ -284,10 +422,18 @@ async fn run_download(
     }
 }
 
-fn import_downloaded_file(
+/// Metadata from the download record to use as fallback when file tags are missing
+struct DownloadMeta {
+    title: Option<String>,
+    artist: Option<String>,
+    source_url: Option<String>,
+}
+
+async fn import_downloaded_file(
     db: &Arc<DbPool>,
     app_handle: &tauri::AppHandle,
     file_path: &str,
+    dl_meta: &DownloadMeta,
 ) -> Option<i64> {
     let path = std::path::Path::new(file_path);
     if !path.exists() {
@@ -295,29 +441,36 @@ fn import_downloaded_file(
         return None;
     }
 
-    let tag_data = match tags::read_tags(path) {
-        Ok(d) => d,
-        Err(e) => {
-            log::warn!("Failed to read tags from downloaded file: {}", e);
-            return None;
-        }
-    };
-
+    // Run sync I/O (tag reading, cover extraction) off the async runtime
+    let path_buf = path.to_path_buf();
     let covers_dir = app_handle.path().app_data_dir().ok()?.join("covers");
+    let covers_dir_clone = covers_dir.clone();
+    let (tag_data, cover_art_path) = tokio::task::spawn_blocking(move || {
+        let tag_data = tags::read_tags(&path_buf).unwrap_or_else(|e| {
+            log::warn!("Failed to read tags from downloaded file: {}", e);
+            tags::TagData::default()
+        });
+        let cover = tags::extract_cover_art(&path_buf, &covers_dir_clone).unwrap_or(None);
+        (tag_data, cover)
+    }).await.ok()?;
 
-    let cover_art_path = tags::extract_cover_art(path, &covers_dir).unwrap_or(None);
+    // Use file tags if available, fall back to download metadata from yt-dlp
+    let title = tag_data.title
+        .or_else(|| dl_meta.title.clone())
+        .unwrap_or_else(|| "Unknown".to_string());
+    let artist_name = tag_data.artist
+        .or_else(|| dl_meta.artist.clone());
 
     let conn = db.lock().ok()?;
 
-    let artist_id = tag_data
-        .artist
+    let artist_id = artist_name
         .as_ref()
         .and_then(|name| crate::db::artists::find_or_create(&conn, name).ok());
 
-    let album_id = tag_data.album.as_ref().and_then(|title| {
+    let album_id = tag_data.album.as_ref().and_then(|alb| {
         crate::db::albums::find_or_create(
             &conn,
-            title,
+            alb,
             artist_id,
             tag_data.album_artist.as_deref(),
             tag_data.year.map(|y| y as i64),
@@ -330,10 +483,10 @@ fn import_downloaded_file(
     let result = conn.execute(
         "INSERT INTO tracks (title, artist_id, album_id, album_artist, duration_ms,
             track_number, disc_number, genre, year, file_path, file_size, format,
-            bitrate, sample_rate, channels, cover_art_path, source_platform)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, 'download')",
+            bitrate, sample_rate, channels, cover_art_path, source_platform, source_url)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, 'download', ?17)",
         rusqlite::params![
-            tag_data.title.unwrap_or_else(|| "Unknown".to_string()),
+            title,
             artist_id,
             album_id,
             tag_data.album_artist,
@@ -349,6 +502,7 @@ fn import_downloaded_file(
             tag_data.sample_rate.map(|s| s as i64),
             tag_data.channels.map(|c| c as i64),
             cover_art_path,
+            dl_meta.source_url,
         ],
     );
 
@@ -358,7 +512,7 @@ fn import_downloaded_file(
             let _ = crate::db::tracks::update_fts(&conn, track_id);
             log::info!(
                 "Imported downloaded track: {} (id={})",
-                file_path,
+                title,
                 track_id
             );
             Some(track_id)
@@ -372,9 +526,21 @@ fn import_downloaded_file(
 
 fn fail_download(db: &Arc<DbPool>, app_handle: &tauri::AppHandle, id: i64, error: &str) {
     log::error!("Download {} failed: {}", id, error);
-    if let Ok(conn) = db.lock() {
+    let entry_id = if let Ok(conn) = db.lock() {
         let _ = crate::db::downloads::update_download_status(&conn, id, "failed", Some(error));
-    }
+        // Update linked monitored entry
+        let eid: Option<i64> = conn.query_row(
+            "SELECT id FROM monitored_playlist_entries WHERE download_id = ?1",
+            rusqlite::params![id],
+            |row| row.get(0),
+        ).ok();
+        if let Some(eid) = eid {
+            let _ = crate::db::monitored::update_entry_status(&conn, eid, "failed", Some(id), None);
+        }
+        eid
+    } else {
+        None
+    };
     let _ = app_handle.emit(
         "download-event",
         DownloadEvent {
@@ -388,6 +554,12 @@ fn fail_download(db: &Arc<DbPool>, app_handle: &tauri::AppHandle, id: i64, error
             track_id: None,
         },
     );
+    if let Some(eid) = entry_id {
+        let _ = app_handle.emit(
+            "manager-entry-updated",
+            serde_json::json!({ "entry_id": eid, "status": "failed" }),
+        );
+    }
 }
 
 fn emit_event(

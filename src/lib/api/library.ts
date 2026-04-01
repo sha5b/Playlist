@@ -10,12 +10,35 @@ import type {
 	SearchResults,
 } from '$lib/types';
 
+// --- Simple TTL cache for frequently accessed data ---
+const CACHE_TTL = 30_000; // 30 seconds
+const cache = new Map<string, { data: unknown; ts: number }>();
+
+function getCached<T>(key: string): T | null {
+	const entry = cache.get(key);
+	if (entry && Date.now() - entry.ts < CACHE_TTL) return entry.data as T;
+	return null;
+}
+
+function setCache(key: string, data: unknown) {
+	cache.set(key, { data, ts: Date.now() });
+}
+
+/** Invalidate all cached data (call after imports, downloads, deletions) */
+export function invalidateCache() {
+	cache.clear();
+}
+
 export async function greet(name: string): Promise<string> {
 	return invoke('greet', { name });
 }
 
 export async function getLibraryStats(): Promise<LibraryStats> {
-	return invoke('get_library_stats');
+	const cached = getCached<LibraryStats>('stats');
+	if (cached) return cached;
+	const result: LibraryStats = await invoke('get_library_stats');
+	setCache('stats', result);
+	return result;
 }
 
 // --- Tracks ---
@@ -39,7 +62,15 @@ export async function getTrack(id: number): Promise<Track | null> {
 }
 
 export async function deleteTrack(id: number, deleteFile = false): Promise<void> {
-	return invoke('library_delete_track', { id, deleteFile });
+	const result = await invoke<void>('library_delete_track', { id, deleteFile });
+	invalidateCache();
+	return result;
+}
+
+export async function resetLibrary(deleteFiles = true): Promise<void> {
+	const result = await invoke<void>('library_reset', { deleteFiles });
+	invalidateCache();
+	return result;
 }
 
 // --- Albums ---
@@ -48,7 +79,12 @@ export async function getAlbums(
 	offset = 0,
 	limit = 50
 ): Promise<[Album[], number]> {
-	return invoke('library_get_albums', { offset, limit });
+	const key = `albums:${offset}:${limit}`;
+	const cached = getCached<[Album[], number]>(key);
+	if (cached) return cached;
+	const result: [Album[], number] = await invoke('library_get_albums', { offset, limit });
+	setCache(key, result);
+	return result;
 }
 
 export async function getAlbum(id: number): Promise<Album | null> {
@@ -61,7 +97,12 @@ export async function getArtists(
 	offset = 0,
 	limit = 50
 ): Promise<[Artist[], number]> {
-	return invoke('library_get_artists', { offset, limit });
+	const key = `artists:${offset}:${limit}`;
+	const cached = getCached<[Artist[], number]>(key);
+	if (cached) return cached;
+	const result: [Artist[], number] = await invoke('library_get_artists', { offset, limit });
+	setCache(key, result);
+	return result;
 }
 
 export async function getArtist(id: number): Promise<Artist | null> {
@@ -159,5 +200,7 @@ export async function search(
 // --- Import ---
 
 export async function importFolder(path: string): Promise<number> {
-	return invoke('library_import_folder', { path });
+	const result = await invoke<number>('library_import_folder', { path });
+	invalidateCache();
+	return result;
 }

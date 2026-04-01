@@ -122,18 +122,6 @@ pub fn update_download_status(
     Ok(())
 }
 
-pub fn update_download_progress(
-    conn: &Connection,
-    id: i64,
-    progress: f64,
-) -> Result<(), rusqlite::Error> {
-    conn.execute(
-        "UPDATE downloads SET progress = ?2 WHERE id = ?1",
-        params![id, progress],
-    )?;
-    Ok(())
-}
-
 pub fn update_download_title(
     conn: &Connection,
     id: i64,

@@ -1,9 +1,9 @@
-use std::fs::File;
-use std::io::BufReader;
-use std::sync::{Arc, Mutex};
+use std::io::Cursor;
+use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, Sender};
+use rodio::buffer::SamplesBuffer;
 use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink, Source};
 use serde::{Deserialize, Serialize};
 
@@ -44,7 +44,8 @@ pub enum PlayerCommand {
     AddNext(QueueTrack),
     RemoveFromQueue(usize), // order index
     ClearQueue,
-    GetState,
+    /// Graceful shutdown -- audio thread stops and exits
+    Shutdown,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -79,7 +80,8 @@ pub enum PlayerEvent {
 
 pub struct AudioEngine {
     cmd_tx: Sender<PlayerCommand>,
-    shared: Arc<Mutex<SharedState>>,
+    shared: Arc<RwLock<SharedState>>,
+    thread_handle: std::sync::Mutex<Option<std::thread::JoinHandle<()>>>,
 }
 
 struct SharedState {
@@ -87,11 +89,16 @@ struct SharedState {
     queue: PlayQueue,
 }
 
+/// Fully pre-decoded PCM samples -- the cpal audio callback just copies f32 values
+/// from a Vec, doing *zero* decoding or I/O.  This makes playback immune to any
+/// CPU / disk pressure from downloads, ffmpeg, etc.
+type PreloadedSource = SamplesBuffer<f32>;
+
 impl AudioEngine {
     pub fn new(event_callback: Box<dyn Fn(PlayerEvent) + Send + 'static>) -> Self {
         let (cmd_tx, cmd_rx) = crossbeam_channel::unbounded();
 
-        let shared = Arc::new(Mutex::new(SharedState {
+        let shared = Arc::new(RwLock::new(SharedState {
             playback: PlaybackState {
                 state: PlayerState::Stopped,
                 current_track: None,
@@ -108,105 +115,212 @@ impl AudioEngine {
 
         let shared_clone = Arc::clone(&shared);
 
-        std::thread::spawn(move || {
-            Self::audio_thread(cmd_rx, shared_clone, event_callback);
-        });
+        let handle = std::thread::Builder::new()
+            .name("audio-playback".into())
+            .spawn(move || {
+                // Elevate audio thread priority so downloads/ffmpeg can't starve it
+                #[cfg(windows)]
+                {
+                    use windows_sys::Win32::System::Threading::*;
+                    unsafe {
+                        SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
+                    }
+                }
+                #[cfg(unix)]
+                {
+                    unsafe { libc::nice(-5); }
+                }
+                Self::audio_thread(cmd_rx, shared_clone, event_callback);
+            })
+            .expect("failed to spawn audio thread");
 
-        Self { cmd_tx, shared }
+        Self {
+            cmd_tx,
+            shared,
+            thread_handle: std::sync::Mutex::new(Some(handle)),
+        }
     }
 
     pub fn send(&self, cmd: PlayerCommand) {
         let _ = self.cmd_tx.send(cmd);
     }
 
+    pub fn shutdown(&self) {
+        let _ = self.cmd_tx.send(PlayerCommand::Shutdown);
+        if let Ok(mut guard) = self.thread_handle.lock() {
+            if let Some(handle) = guard.take() {
+                let _ = handle.join();
+            }
+        }
+    }
+
     pub fn get_state(&self) -> PlaybackState {
-        self.shared.lock().unwrap().playback.clone()
+        self.shared.read().unwrap().playback.clone()
     }
 
     pub fn get_queue(&self) -> (Vec<QueueTrack>, Option<usize>) {
-        let shared = self.shared.lock().unwrap();
+        let shared = self.shared.read().unwrap();
         (shared.queue.get_ordered_tracks(), shared.queue.position())
+    }
+
+    /// Load file -> decode ALL samples to raw PCM f32 -> wrap in SamplesBuffer.
+    /// The cpal audio callback then just copies pre-decoded floats -- zero CPU decode
+    /// work in the real-time path, so downloads / ffmpeg can never cause stuttering.
+    fn open_track(file_path: &str) -> Result<(PreloadedSource, u64), String> {
+        log::info!("[audio] Loading file: {}", file_path);
+        let data = std::fs::read(file_path)
+            .map_err(|e| format!("Failed to read file '{}': {}", file_path, e))?;
+        log::debug!("[audio] Read {} bytes from disk", data.len());
+
+        let cursor = Cursor::new(data);
+        let source = Decoder::new(cursor)
+            .map_err(|e| format!("Failed to decode '{}': {}", file_path, e))?;
+
+        let channels = source.channels();
+        let sample_rate = source.sample_rate();
+        let samples: Vec<f32> = source.convert_samples().collect();
+
+        let duration_ms = if channels == 0 || sample_rate == 0 {
+            0
+        } else {
+            (samples.len() as u64 * 1000) / (channels as u64 * sample_rate as u64)
+        };
+
+        log::info!(
+            "[audio] Decoded: {} samples, ch={}, rate={}Hz, duration={}ms",
+            samples.len(), channels, sample_rate, duration_ms
+        );
+
+        Ok((SamplesBuffer::new(channels, sample_rate, samples), duration_ms))
+    }
+
+    /// Create a fresh Sink connected to the audio output, with the given volume.
+    /// In rodio 0.20, `Sink::stop()` permanently kills a sink (the `stopped` flag
+    /// is never cleared), so we must create a new Sink each time we want to play
+    /// something new.  New sinks start un-paused.
+    fn make_sink(stream_handle: &OutputStreamHandle, volume: f32) -> Sink {
+        let sink = Sink::try_new(stream_handle).expect("Failed to create audio sink");
+        sink.set_volume(volume);
+        sink
+    }
+
+    /// Try to preload the next track based on current queue state.
+    fn try_preload_next(shared: &Arc<RwLock<SharedState>>) -> Option<(QueueTrack, PreloadedSource, u64)> {
+        let s = shared.read().unwrap();
+        let next_track = s.queue.peek_next(s.playback.repeat == RepeatMode::All)?;
+        let track = next_track.clone();
+        drop(s);
+        match Self::open_track(&track.file_path) {
+            Ok((source, dur)) => {
+                log::debug!("[audio] Preloaded next track: {}", track.title);
+                Some((track, source, dur))
+            }
+            Err(e) => {
+                log::warn!("[audio] Failed to preload next track: {}", e);
+                None
+            }
+        }
     }
 
     fn audio_thread(
         cmd_rx: Receiver<PlayerCommand>,
-        shared: Arc<Mutex<SharedState>>,
+        shared: Arc<RwLock<SharedState>>,
         emit: Box<dyn Fn(PlayerEvent) + Send>,
     ) {
-        // Create audio output on this dedicated thread — OutputStream must stay alive
+        // Create audio output on this dedicated thread -- OutputStream must stay alive
         let (_stream, stream_handle) = match OutputStream::try_default() {
-            Ok(s) => s,
+            Ok(s) => {
+                log::info!("[audio] Audio output device initialized");
+                s
+            }
             Err(e) => {
+                log::error!("[audio] Failed to open audio output: {}", e);
                 emit(PlayerEvent::Error(format!("Failed to open audio output: {}", e)));
-                // Keep thread alive to process commands even without audio
+                // Keep thread alive to drain commands even without audio
                 loop {
                     match cmd_rx.recv() {
-                        Ok(_) => {}
-                        Err(_) => return,
+                        Ok(PlayerCommand::Shutdown) | Err(_) => return,
+                        _ => {}
                     }
                 }
             }
         };
 
-        let sink = Sink::try_new(&stream_handle).unwrap();
-        sink.set_volume(0.75);
-        sink.pause(); // Start paused
+        let mut sink = Self::make_sink(&stream_handle, 0.75);
+        sink.pause(); // Start paused — nothing to play yet
 
         let mut current_duration_ms: u64 = 0;
         let mut play_start: Option<Instant> = None;
         let mut accumulated_ms: u64 = 0;
         let mut last_progress_emit = Instant::now();
+        let mut is_playing = false;
+        let mut preloaded: Option<(QueueTrack, PreloadedSource, u64)> = None;
+
+        log::info!("[audio] Audio thread ready, waiting for commands");
 
         loop {
-            // Non-blocking receive with timeout for progress updates
             match cmd_rx.recv_timeout(Duration::from_millis(250)) {
                 Ok(cmd) => {
                     match cmd {
                         PlayerCommand::Play { tracks, start_index } => {
+                            log::info!("[audio] Play: {} tracks, start_index={}", tracks.len(), start_index);
                             {
-                                let mut s = shared.lock().unwrap();
+                                let mut s = shared.write().unwrap();
                                 s.queue.set_tracks(tracks, start_index);
                             }
-                            Self::play_current(&sink, &stream_handle, &shared, &emit, &mut current_duration_ms, &mut play_start, &mut accumulated_ms);
+                            preloaded = None;
+                            Self::play_current(&mut sink, &stream_handle, &shared, &emit, &mut current_duration_ms, &mut play_start, &mut accumulated_ms, &mut is_playing);
                         }
                         PlayerCommand::PlaySingle(track) => {
+                            log::info!("[audio] PlaySingle: {}", track.title);
                             {
-                                let mut s = shared.lock().unwrap();
+                                let mut s = shared.write().unwrap();
                                 s.queue.set_tracks(vec![track], 0);
                             }
-                            Self::play_current(&sink, &stream_handle, &shared, &emit, &mut current_duration_ms, &mut play_start, &mut accumulated_ms);
+                            preloaded = None;
+                            Self::play_current(&mut sink, &stream_handle, &shared, &emit, &mut current_duration_ms, &mut play_start, &mut accumulated_ms, &mut is_playing);
                         }
                         PlayerCommand::Pause => {
+                            log::info!("[audio] Pause");
                             sink.pause();
-                            // Accumulate elapsed time
                             if let Some(start) = play_start.take() {
                                 accumulated_ms += start.elapsed().as_millis() as u64;
                             }
+                            is_playing = false;
                             {
-                                let mut s = shared.lock().unwrap();
+                                let mut s = shared.write().unwrap();
                                 s.playback.state = PlayerState::Paused;
                                 s.playback.position_ms = accumulated_ms;
                                 emit(PlayerEvent::StateChanged(s.playback.clone()));
                             }
                         }
                         PlayerCommand::Resume => {
+                            log::info!("[audio] Resume");
                             if !sink.empty() {
                                 sink.play();
                                 play_start = Some(Instant::now());
+                                is_playing = true;
                                 {
-                                    let mut s = shared.lock().unwrap();
+                                    let mut s = shared.write().unwrap();
                                     s.playback.state = PlayerState::Playing;
                                     emit(PlayerEvent::StateChanged(s.playback.clone()));
                                 }
+                            } else {
+                                log::warn!("[audio] Resume called but sink is empty");
                             }
                         }
                         PlayerCommand::Stop => {
-                            sink.stop();
+                            log::info!("[audio] Stop");
+                            // Create fresh sink (drops old one, stopping audio)
+                            sink = Self::make_sink(&stream_handle, sink.volume());
+                            sink.pause();
                             play_start = None;
                             accumulated_ms = 0;
                             current_duration_ms = 0;
+                            is_playing = false;
+                            preloaded = None;
                             {
-                                let mut s = shared.lock().unwrap();
+                                let mut s = shared.write().unwrap();
                                 s.playback.state = PlayerState::Stopped;
                                 s.playback.current_track = None;
                                 s.playback.position_ms = 0;
@@ -219,11 +333,11 @@ impl AudioEngine {
                             }
                         }
                         PlayerCommand::Next => {
-                            let repeat = shared.lock().unwrap().playback.repeat.clone();
+                            log::info!("[audio] Next");
                             let next_track = {
-                                let mut s = shared.lock().unwrap();
+                                let mut s = shared.write().unwrap();
+                                let repeat = s.playback.repeat.clone();
                                 if repeat == RepeatMode::One {
-                                    // Re-play current
                                     s.queue.current().cloned()
                                 } else {
                                     let t = s.queue.next().cloned();
@@ -235,14 +349,18 @@ impl AudioEngine {
                                 }
                             };
                             if next_track.is_some() {
-                                Self::play_current(&sink, &stream_handle, &shared, &emit, &mut current_duration_ms, &mut play_start, &mut accumulated_ms);
+                                preloaded = None;
+                                Self::play_current(&mut sink, &stream_handle, &shared, &emit, &mut current_duration_ms, &mut play_start, &mut accumulated_ms, &mut is_playing);
                             } else {
-                                // Queue ended
-                                sink.stop();
+                                log::info!("[audio] Queue ended (Next)");
+                                sink = Self::make_sink(&stream_handle, sink.volume());
+                                sink.pause();
                                 play_start = None;
                                 accumulated_ms = 0;
+                                is_playing = false;
+                                preloaded = None;
                                 {
-                                    let mut s = shared.lock().unwrap();
+                                    let mut s = shared.write().unwrap();
                                     s.playback.state = PlayerState::Stopped;
                                     s.playback.position_ms = 0;
                                     emit(PlayerEvent::StateChanged(s.playback.clone()));
@@ -250,42 +368,59 @@ impl AudioEngine {
                             }
                         }
                         PlayerCommand::Prev => {
-                            // If more than 3s in, restart current track
-                            if accumulated_ms > 3000 || play_start.as_ref().map(|s| s.elapsed().as_millis() as u64 + accumulated_ms).unwrap_or(accumulated_ms) > 3000 {
-                                Self::play_current(&sink, &stream_handle, &shared, &emit, &mut current_duration_ms, &mut play_start, &mut accumulated_ms);
+                            log::info!("[audio] Prev");
+                            let current_pos = accumulated_ms
+                                + play_start.as_ref().map(|s| s.elapsed().as_millis() as u64).unwrap_or(0);
+                            if current_pos > 3000 {
+                                // More than 3s in — restart current track
+                                preloaded = None;
+                                Self::play_current(&mut sink, &stream_handle, &shared, &emit, &mut current_duration_ms, &mut play_start, &mut accumulated_ms, &mut is_playing);
                             } else {
-                                let has_prev = shared.lock().unwrap().queue.prev().is_some();
+                                let has_prev = shared.write().unwrap().queue.prev().is_some();
+                                preloaded = None;
                                 if has_prev {
-                                    Self::play_current(&sink, &stream_handle, &shared, &emit, &mut current_duration_ms, &mut play_start, &mut accumulated_ms);
+                                    Self::play_current(&mut sink, &stream_handle, &shared, &emit, &mut current_duration_ms, &mut play_start, &mut accumulated_ms, &mut is_playing);
                                 } else {
-                                    // At start, restart current
-                                    Self::play_current(&sink, &stream_handle, &shared, &emit, &mut current_duration_ms, &mut play_start, &mut accumulated_ms);
+                                    // At start of queue — restart current
+                                    Self::play_current(&mut sink, &stream_handle, &shared, &emit, &mut current_duration_ms, &mut play_start, &mut accumulated_ms, &mut is_playing);
                                 }
                             }
                         }
                         PlayerCommand::Seek(seconds) => {
-                            // rodio Sink doesn't support seeking directly, so we re-create
                             let pos_ms = (seconds * 1000.0) as u64;
-                            let file_path = shared.lock().unwrap().playback.current_track.as_ref().map(|t| t.file_path.clone());
+                            log::info!("[audio] Seek to {}ms", pos_ms);
+                            let file_path = shared.read().unwrap()
+                                .playback.current_track.as_ref()
+                                .map(|t| t.file_path.clone());
                             if let Some(path) = file_path {
-                                sink.stop();
-                                if let Ok(file) = File::open(&path) {
-                                    let reader = BufReader::new(file);
-                                    if let Ok(source) = Decoder::new(reader) {
-                                        // Try to skip to the desired position
+                                // Create fresh sink for seek
+                                sink = Self::make_sink(&stream_handle, sink.volume());
+                                if let Ok(data) = std::fs::read(&path) {
+                                    let cursor = Cursor::new(data);
+                                    if let Ok(source) = Decoder::new(cursor) {
+                                        let channels = source.channels();
+                                        let sample_rate = source.sample_rate();
                                         let skip_duration = Duration::from_millis(pos_ms);
-                                        let source = source.skip_duration(skip_duration);
-                                        sink.append(source);
-                                        sink.play();
+                                        let samples: Vec<f32> = source
+                                            .skip_duration(skip_duration)
+                                            .convert_samples()
+                                            .collect();
+                                        let buffer = SamplesBuffer::new(channels, sample_rate, samples);
+                                        sink.append(buffer);
                                         accumulated_ms = pos_ms;
                                         play_start = Some(Instant::now());
+                                        is_playing = true;
                                         {
-                                            let mut s = shared.lock().unwrap();
+                                            let mut s = shared.write().unwrap();
                                             s.playback.position_ms = pos_ms;
                                             s.playback.state = PlayerState::Playing;
                                             emit(PlayerEvent::StateChanged(s.playback.clone()));
                                         }
+                                    } else {
+                                        log::error!("[audio] Seek failed: could not decode {}", path);
                                     }
+                                } else {
+                                    log::error!("[audio] Seek failed: could not read {}", path);
                                 }
                             }
                         }
@@ -293,14 +428,15 @@ impl AudioEngine {
                             let vol = vol.clamp(0.0, 1.0);
                             sink.set_volume(vol as f32);
                             {
-                                let mut s = shared.lock().unwrap();
+                                let mut s = shared.write().unwrap();
                                 s.playback.volume = vol;
                                 emit(PlayerEvent::StateChanged(s.playback.clone()));
                             }
                         }
                         PlayerCommand::SetShuffle(shuffle) => {
+                            log::info!("[audio] SetShuffle: {}", shuffle);
                             {
-                                let mut s = shared.lock().unwrap();
+                                let mut s = shared.write().unwrap();
                                 s.queue.set_shuffle(shuffle);
                                 s.playback.shuffle = shuffle;
                                 s.playback.queue_position = s.queue.position();
@@ -309,37 +445,45 @@ impl AudioEngine {
                                 emit(PlayerEvent::QueueUpdated { tracks, position: pos });
                                 emit(PlayerEvent::StateChanged(s.playback.clone()));
                             }
+                            preloaded = None;
                         }
                         PlayerCommand::SetRepeat(mode) => {
+                            log::info!("[audio] SetRepeat: {:?}", mode);
                             {
-                                let mut s = shared.lock().unwrap();
+                                let mut s = shared.write().unwrap();
                                 s.playback.repeat = mode;
                                 emit(PlayerEvent::StateChanged(s.playback.clone()));
                             }
+                            preloaded = None;
                         }
                         PlayerCommand::AddToQueue(track) => {
+                            log::info!("[audio] AddToQueue: {}", track.title);
                             {
-                                let mut s = shared.lock().unwrap();
+                                let mut s = shared.write().unwrap();
                                 s.queue.add_track(track);
                                 s.playback.queue_length = s.queue.len();
                                 let tracks = s.queue.get_ordered_tracks();
                                 let pos = s.queue.position();
                                 emit(PlayerEvent::QueueUpdated { tracks, position: pos });
                             }
+                            preloaded = None;
                         }
                         PlayerCommand::AddNext(track) => {
+                            log::info!("[audio] AddNext: {}", track.title);
                             {
-                                let mut s = shared.lock().unwrap();
+                                let mut s = shared.write().unwrap();
                                 s.queue.add_next(track);
                                 s.playback.queue_length = s.queue.len();
                                 let tracks = s.queue.get_ordered_tracks();
                                 let pos = s.queue.position();
                                 emit(PlayerEvent::QueueUpdated { tracks, position: pos });
                             }
+                            preloaded = None;
                         }
                         PlayerCommand::RemoveFromQueue(order_idx) => {
+                            log::info!("[audio] RemoveFromQueue: index={}", order_idx);
                             {
-                                let mut s = shared.lock().unwrap();
+                                let mut s = shared.write().unwrap();
                                 s.queue.remove_at_order_index(order_idx);
                                 s.playback.queue_length = s.queue.len();
                                 s.playback.queue_position = s.queue.position();
@@ -347,15 +491,18 @@ impl AudioEngine {
                                 let pos = s.queue.position();
                                 emit(PlayerEvent::QueueUpdated { tracks, position: pos });
                             }
+                            preloaded = None;
                         }
                         PlayerCommand::ClearQueue => {
-                            // Keep current track but clear the rest
-                            // For now, full clear + stop
-                            sink.stop();
+                            log::info!("[audio] ClearQueue");
+                            sink = Self::make_sink(&stream_handle, sink.volume());
+                            sink.pause();
                             play_start = None;
                             accumulated_ms = 0;
+                            is_playing = false;
+                            preloaded = None;
                             {
-                                let mut s = shared.lock().unwrap();
+                                let mut s = shared.write().unwrap();
                                 s.queue.clear();
                                 s.playback.state = PlayerState::Stopped;
                                 s.playback.current_track = None;
@@ -368,124 +515,174 @@ impl AudioEngine {
                                 emit(PlayerEvent::QueueUpdated { tracks: vec![], position: None });
                             }
                         }
-                        PlayerCommand::GetState => {
-                            let s = shared.lock().unwrap();
-                            emit(PlayerEvent::StateChanged(s.playback.clone()));
+                        PlayerCommand::Shutdown => {
+                            log::info!("[audio] Audio thread shutting down gracefully");
+                            return;
                         }
                     }
                 }
                 Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
-                    // Check if track ended naturally
+                    // Fall through to progress/end-of-track check
                 }
                 Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
+                    log::info!("[audio] Command channel disconnected, exiting");
                     return;
                 }
             }
 
-            // Update position for playing state
-            if shared.lock().unwrap().playback.state == PlayerState::Playing {
-                let pos = if let Some(start) = &play_start {
-                    accumulated_ms + start.elapsed().as_millis() as u64
-                } else {
-                    accumulated_ms
-                };
+            // Skip the entire progress/end-of-track block when not playing
+            if !is_playing {
+                continue;
+            }
 
+            // Try to preload next track when approaching end (~5s remaining)
+            if preloaded.is_none() && current_duration_ms > 0 {
+                let pos = accumulated_ms
+                    + play_start.as_ref().map(|s| s.elapsed().as_millis() as u64).unwrap_or(0);
+                let remaining = current_duration_ms.saturating_sub(pos);
+                if remaining < 5000 {
+                    preloaded = Self::try_preload_next(&shared);
+                }
+            }
+
+            // Update position for playing state
+            let pos = accumulated_ms
+                + play_start.as_ref().map(|s| s.elapsed().as_millis() as u64).unwrap_or(0);
+
+            // Emit progress every ~500ms
+            if last_progress_emit.elapsed() >= Duration::from_millis(450) {
                 {
-                    let mut s = shared.lock().unwrap();
+                    let mut s = shared.write().unwrap();
                     s.playback.position_ms = pos;
                 }
+                emit(PlayerEvent::Progress {
+                    position_ms: pos,
+                    duration_ms: current_duration_ms,
+                });
+                last_progress_emit = Instant::now();
+            }
 
-                // Emit progress every ~500ms
-                if last_progress_emit.elapsed() >= Duration::from_millis(450) {
-                    let s = shared.lock().unwrap();
-                    emit(PlayerEvent::Progress {
-                        position_ms: pos,
-                        duration_ms: s.playback.duration_ms,
-                    });
-                    last_progress_emit = Instant::now();
-                }
-
-                // Check if track finished (sink is empty)
-                if sink.empty() && current_duration_ms > 0 {
-                    // Track ended — auto-advance
-                    let repeat = shared.lock().unwrap().playback.repeat.clone();
-                    let next_exists = {
-                        let mut s = shared.lock().unwrap();
-                        if repeat == RepeatMode::One {
-                            s.queue.current().is_some()
-                        } else {
-                            let t = s.queue.next().cloned();
-                            if t.is_none() && repeat == RepeatMode::All {
-                                s.queue.restart().is_some()
-                            } else {
-                                t.is_some()
-                            }
-                        }
-                    };
-
-                    if next_exists {
-                        Self::play_current(&sink, &stream_handle, &shared, &emit, &mut current_duration_ms, &mut play_start, &mut accumulated_ms);
+            // Check if track finished (sink is empty)
+            if sink.empty() && current_duration_ms > 0 {
+                log::info!("[audio] Track finished naturally");
+                let (next_exists, use_preloaded) = {
+                    let mut s = shared.write().unwrap();
+                    let repeat = s.playback.repeat.clone();
+                    if repeat == RepeatMode::One {
+                        (s.queue.current().is_some(), false)
                     } else {
-                        play_start = None;
-                        accumulated_ms = 0;
-                        current_duration_ms = 0;
-                        let mut s = shared.lock().unwrap();
-                        s.playback.state = PlayerState::Stopped;
+                        let t = s.queue.next().cloned();
+                        if t.is_none() && repeat == RepeatMode::All {
+                            (s.queue.restart().is_some(), false)
+                        } else if t.is_some() {
+                            let matches_preload = preloaded.as_ref().map_or(false, |(pt, _, _)| {
+                                s.queue.current().map_or(false, |ct| ct.id == pt.id)
+                            });
+                            (true, matches_preload)
+                        } else {
+                            (false, false)
+                        }
+                    }
+                };
+
+                if next_exists && use_preloaded {
+                    log::info!("[audio] Gapless transition (preloaded)");
+                    let (track, source, dur) = preloaded.take().unwrap();
+                    current_duration_ms = dur;
+                    accumulated_ms = 0;
+                    // Fresh sink for the new track
+                    sink = Self::make_sink(&stream_handle, sink.volume());
+                    sink.append(source);
+                    play_start = Some(Instant::now());
+                    {
+                        let mut s = shared.write().unwrap();
+                        s.playback.state = PlayerState::Playing;
+                        s.playback.current_track = Some(track.clone());
                         s.playback.position_ms = 0;
+                        s.playback.duration_ms = current_duration_ms;
+                        s.playback.queue_length = s.queue.len();
+                        s.playback.queue_position = s.queue.position();
+                        emit(PlayerEvent::TrackChanged(Some(track)));
                         emit(PlayerEvent::StateChanged(s.playback.clone()));
                     }
+                } else if next_exists {
+                    preloaded = None;
+                    Self::play_current(&mut sink, &stream_handle, &shared, &emit, &mut current_duration_ms, &mut play_start, &mut accumulated_ms, &mut is_playing);
+                } else {
+                    log::info!("[audio] Queue ended");
+                    play_start = None;
+                    accumulated_ms = 0;
+                    current_duration_ms = 0;
+                    is_playing = false;
+                    preloaded = None;
+                    // Fresh sink in paused state
+                    sink = Self::make_sink(&stream_handle, sink.volume());
+                    sink.pause();
+                    let mut s = shared.write().unwrap();
+                    s.playback.state = PlayerState::Stopped;
+                    s.playback.position_ms = 0;
+                    emit(PlayerEvent::StateChanged(s.playback.clone()));
                 }
             }
         }
     }
 
     fn play_current(
-        sink: &Sink,
-        _stream_handle: &OutputStreamHandle,
-        shared: &Arc<Mutex<SharedState>>,
+        sink: &mut Sink,
+        stream_handle: &OutputStreamHandle,
+        shared: &Arc<RwLock<SharedState>>,
         emit: &dyn Fn(PlayerEvent),
         current_duration_ms: &mut u64,
         play_start: &mut Option<Instant>,
         accumulated_ms: &mut u64,
+        is_playing: &mut bool,
     ) {
-        let track = shared.lock().unwrap().queue.current().cloned();
+        let track = shared.read().unwrap().queue.current().cloned();
 
         if let Some(track) = track {
-            sink.stop();
+            log::info!("[audio] play_current: \"{}\" ({})", track.title, track.file_path);
 
-            match File::open(&track.file_path) {
-                Ok(file) => {
-                    let reader = BufReader::new(file);
-                    match Decoder::new(reader) {
-                        Ok(source) => {
-                            *current_duration_ms = track.duration_ms.unwrap_or(0) as u64;
-                            *accumulated_ms = 0;
+            match Self::open_track(&track.file_path) {
+                Ok((source, dur)) => {
+                    *current_duration_ms = dur;
+                    *accumulated_ms = 0;
 
-                            sink.append(source);
-                            sink.play();
-                            *play_start = Some(Instant::now());
+                    // Create a fresh Sink — dropping the old one stops any current audio.
+                    // rodio's Sink::stop() permanently kills the sink, so we MUST create
+                    // a new one each time instead of reusing it.
+                    *sink = Self::make_sink(stream_handle, sink.volume());
+                    sink.append(source);
+                    // New sinks start un-paused, so playback begins immediately
+                    *play_start = Some(Instant::now());
+                    *is_playing = true;
 
-                            {
-                                let mut s = shared.lock().unwrap();
-                                s.playback.state = PlayerState::Playing;
-                                s.playback.current_track = Some(track.clone());
-                                s.playback.position_ms = 0;
-                                s.playback.duration_ms = *current_duration_ms;
-                                s.playback.queue_length = s.queue.len();
-                                s.playback.queue_position = s.queue.position();
-                                emit(PlayerEvent::TrackChanged(Some(track)));
-                                emit(PlayerEvent::StateChanged(s.playback.clone()));
-                            }
-                        }
-                        Err(e) => {
-                            emit(PlayerEvent::Error(format!("Failed to decode audio: {}", e)));
-                        }
+                    {
+                        let mut s = shared.write().unwrap();
+                        s.playback.state = PlayerState::Playing;
+                        s.playback.current_track = Some(track.clone());
+                        s.playback.position_ms = 0;
+                        s.playback.duration_ms = *current_duration_ms;
+                        s.playback.queue_length = s.queue.len();
+                        s.playback.queue_position = s.queue.position();
+                        emit(PlayerEvent::TrackChanged(Some(track)));
+                        emit(PlayerEvent::StateChanged(s.playback.clone()));
                     }
+                    log::info!("[audio] Playback started (duration={}ms)", dur);
                 }
                 Err(e) => {
-                    emit(PlayerEvent::Error(format!("Failed to open file: {}", e)));
+                    log::error!("[audio] {}", e);
+                    *is_playing = false;
+                    emit(PlayerEvent::Error(e));
                 }
             }
+        } else {
+            log::warn!("[audio] play_current: no current track in queue");
         }
+    }
+}
+
+impl Drop for AudioEngine {
+    fn drop(&mut self) {
+        self.shutdown();
     }
 }

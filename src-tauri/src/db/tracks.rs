@@ -142,14 +142,6 @@ pub fn delete_track(conn: &Connection, id: i64, delete_file: bool) -> Result<Opt
     Ok(file_path)
 }
 
-pub fn increment_play_count(conn: &Connection, id: i64) -> Result<(), rusqlite::Error> {
-    conn.execute(
-        "UPDATE tracks SET play_count = play_count + 1, last_played_at = datetime('now') WHERE id = ?1",
-        params![id],
-    )?;
-    Ok(())
-}
-
 pub fn search_tracks_fts(
     conn: &Connection,
     query: &str,

@@ -1,30 +1,38 @@
 <script lang="ts">
 	import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '$lib/components/ui/card';
+	import { Separator } from '$lib/components/ui/separator';
 	import { Button } from '$lib/components/ui/button';
 	import { Input } from '$lib/components/ui/input';
 	import { Slider } from '$lib/components/ui/slider';
-	import { FolderOpen, Volume2, RotateCcw } from 'lucide-svelte';
-	import { getSetting, setSetting } from '$lib/api/library';
+	import { FolderOpen, Volume2, RotateCcw, Music, Trash2 } from 'lucide-svelte';
+	import { getSetting, setSetting, resetLibrary } from '$lib/api/library';
 	import { player } from '$lib/stores/player.svelte';
 	import { open } from '@tauri-apps/plugin-dialog';
 	import { toast } from 'svelte-sonner';
 
 	let downloadDir = $state('');
+	let downloadFormat = $state('mp3');
 	let defaultVolume = $state(75);
-	let loading = $state(true);
+
+	const formatOptions = ['mp3', 'opus', 'flac', 'm4a'] as const;
 
 	async function load() {
-		loading = true;
 		try {
 			const dir = await getSetting('download_dir');
 			if (dir) downloadDir = dir;
+			const fmt = await getSetting('download_format');
+			if (fmt) downloadFormat = fmt;
 			const vol = await getSetting('default_volume');
 			if (vol) defaultVolume = Math.round(parseFloat(vol) * 100);
 		} catch (e) {
 			console.error('Failed to load settings:', e);
-		} finally {
-			loading = false;
 		}
+	}
+
+	async function setFormat(fmt: string) {
+		downloadFormat = fmt;
+		await setSetting('download_format', fmt);
+		toast.success(`Download format set to ${fmt.toUpperCase()}`);
 	}
 
 	async function chooseDownloadDir() {
@@ -43,10 +51,26 @@
 		player.setVolume(vol);
 	}
 
+	let resettingLibrary = $state(false);
+
+	async function handleResetLibrary() {
+		resettingLibrary = true;
+		try {
+			await resetLibrary(true);
+			toast.success('Library cleared', { description: 'All tracks, playlists, and downloads have been removed' });
+		} catch (e) {
+			toast.error('Failed to reset library', { description: String(e) });
+		} finally {
+			resettingLibrary = false;
+		}
+	}
+
 	async function resetSettings() {
 		downloadDir = '';
+		downloadFormat = 'mp3';
 		defaultVolume = 75;
 		await setSetting('default_volume', '0.75');
+		await setSetting('download_format', 'mp3');
 		player.setVolume(0.75);
 		toast.success('Settings reset to defaults');
 	}
@@ -65,20 +89,46 @@
 	<Card>
 		<CardHeader>
 			<CardTitle>Downloads</CardTitle>
-			<CardDescription>Where downloaded tracks are saved</CardDescription>
+			<CardDescription>Download folder and audio format</CardDescription>
 		</CardHeader>
-		<CardContent>
-			<div class="flex items-center gap-2">
-				<Input
-					value={downloadDir}
-					placeholder="Default download location"
-					readonly
-					class="flex-1"
-				/>
-				<Button variant="outline" onclick={chooseDownloadDir}>
-					<FolderOpen class="size-4" />
-					Browse
-				</Button>
+		<CardContent class="space-y-4">
+			<div class="space-y-2">
+				<label class="text-sm font-medium flex items-center gap-2">
+					<FolderOpen class="size-4 text-muted-foreground" />
+					Download Folder
+				</label>
+				<div class="flex items-center gap-2">
+					<Input
+						value={downloadDir}
+						placeholder="Default download location"
+						readonly
+						class="flex-1"
+					/>
+					<Button variant="outline" onclick={chooseDownloadDir}>
+						<FolderOpen class="size-4" />
+						Browse
+					</Button>
+				</div>
+			</div>
+			<div class="space-y-2">
+				<label class="text-sm font-medium flex items-center gap-2">
+					<Music class="size-4 text-muted-foreground" />
+					Audio Format
+				</label>
+				<div class="flex gap-2">
+					{#each formatOptions as fmt}
+						<Button
+							variant={downloadFormat === fmt ? 'default' : 'outline'}
+							size="sm"
+							onclick={() => setFormat(fmt)}
+						>
+							{fmt.toUpperCase()}
+						</Button>
+					{/each}
+				</div>
+				<p class="text-xs text-muted-foreground">
+					MP3 is most compatible. FLAC is lossless. OPUS has best quality-to-size ratio.
+				</p>
 			</div>
 		</CardContent>
 	</Card>
@@ -109,6 +159,41 @@
 
 	<Card>
 		<CardHeader>
+			<CardTitle class="text-destructive">Danger Zone</CardTitle>
+			<CardDescription>Irreversible actions</CardDescription>
+		</CardHeader>
+		<CardContent class="space-y-4">
+			<div class="flex items-center justify-between gap-4">
+				<div>
+					<p class="text-sm font-medium">Reset Library</p>
+					<p class="text-xs text-muted-foreground">Delete all tracks, playlists, downloads, and downloaded files</p>
+				</div>
+				<Button variant="destructive" size="sm" onclick={handleResetLibrary} disabled={resettingLibrary}>
+					{#if resettingLibrary}
+						<RotateCcw class="size-4 animate-spin" />
+						Resetting...
+					{:else}
+						<Trash2 class="size-4" />
+						Reset Library
+					{/if}
+				</Button>
+			</div>
+			<Separator />
+			<div class="flex items-center justify-between gap-4">
+				<div>
+					<p class="text-sm font-medium">Reset Settings</p>
+					<p class="text-xs text-muted-foreground">Restore all settings to their default values</p>
+				</div>
+				<Button variant="outline" size="sm" onclick={resetSettings}>
+					<RotateCcw class="size-4" />
+					Reset Settings
+				</Button>
+			</div>
+		</CardContent>
+	</Card>
+
+	<Card>
+		<CardHeader>
 			<CardTitle>About</CardTitle>
 			<CardDescription>Application information</CardDescription>
 		</CardHeader>
@@ -124,11 +209,4 @@
 			</div>
 		</CardContent>
 	</Card>
-
-	<div class="flex justify-end">
-		<Button variant="outline" onclick={resetSettings}>
-			<RotateCcw class="size-4" />
-			Reset to Defaults
-		</Button>
-	</div>
 </div>

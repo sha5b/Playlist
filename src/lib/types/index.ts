@@ -178,3 +178,58 @@ export interface SetupProgress {
 	progress: number;
 	message: string;
 }
+
+// --- Manager Types ---
+
+export type MonitoredEntryStatus = 'new' | 'queued' | 'downloading' | 'downloaded' | 'failed' | 'skipped';
+
+export interface MonitoredPlaylist {
+	id: number;
+	name: string;
+	description: string | null;
+	cover_art_path: string | null;
+	source_platform: string | null;
+	source_url: string | null;
+	source_id: string | null;
+	track_count: number;
+	total_duration_ms: number;
+	is_synced: boolean;
+	last_synced_at: string | null;
+	created_at: string;
+	new_count: number;
+	downloaded_count: number;
+	active_count: number;
+	total_entries: number;
+}
+
+export interface MonitoredEntry {
+	id: number;
+	playlist_id: number;
+	source_url: string;
+	title: string | null;
+	artist: string | null;
+	duration_seconds: number | null;
+	thumbnail: string | null;
+	status: MonitoredEntryStatus;
+	download_id: number | null;
+	track_id: number | null;
+	position: number;
+	first_seen_at: string;
+	downloaded_at: string | null;
+}
+
+export interface SyncResult {
+	playlist_id: number;
+	new_count: number;
+	total_count: number;
+}
+
+export interface BatchDownloadResult {
+	queued: number;
+	playlist_id: number;
+}
+
+export interface ManagerEntryEvent {
+	entry_id: number;
+	status: string;
+}

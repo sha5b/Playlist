@@ -1,42 +1,59 @@
-# sv
+# Playlist
 
-Everything you need to build a Svelte project, powered by [`sv`](https://github.com/sveltejs/cli).
+A cross-platform desktop music manager built with Tauri 2, SvelteKit, and Svelte 5. Download music from YouTube, SoundCloud, Bandcamp and more, manage your library, track playlists for new releases, and play everything with the built-in audio player.
 
-## Creating a project
+## Prerequisites
 
-If you're seeing this, you've probably already done this step. Congrats!
+- **Node.js** 20+ and **npm**
+- **Rust** 1.77+ (install via [rustup](https://rustup.rs))
+- Platform-specific Tauri dependencies — see the [Tauri prerequisites guide](https://v2.tauri.app/start/prerequisites/)
 
-```sh
-# create a new project
-npx sv create my-app
-```
-
-To recreate this project with the same configuration:
+## Getting Started
 
 ```sh
-# recreate this project
-npx sv@0.13.1 create --template minimal --types ts --no-install .
+# Install frontend dependencies
+npm install
+
+# Launch the desktop app in development mode
+npx tauri dev
 ```
 
-## Developing
-
-Once you've created a project and installed dependencies with `npm install` (or `pnpm install` or `yarn`), start a development server:
-
-```sh
-npm run dev
-
-# or start the server and open the app in a new browser tab
-npm run dev -- --open
-```
+This starts the Vite dev server and opens the native Tauri window. On first launch, yt-dlp and ffmpeg are downloaded automatically.
 
 ## Building
 
-To create a production version of your app:
-
 ```sh
-npm run build
+# Create a production installer for your platform
+npx tauri build
 ```
 
-You can preview the production build with `npm run preview`.
+Output (`.msi` on Windows, `.dmg` on macOS, `.deb`/`.AppImage` on Linux) is in `src-tauri/target/release/bundle/`.
 
-> To deploy your app, you may need to install an [adapter](https://svelte.dev/docs/kit/adapters) for your target environment.
+## Project Structure
+
+```
+src/                  # SvelteKit frontend (Svelte 5 + shadcn-svelte + Tailwind v4)
+  routes/             # Pages: home, search, library, manager, settings
+  lib/api/            # Typed Tauri invoke() wrappers
+  lib/stores/         # Svelte 5 rune stores
+  lib/components/     # UI components
+src-tauri/            # Rust backend
+  src/db/             # SQLite database (rusqlite, FTS5 search)
+  src/audio/          # Audio playback (rodio + symphonia)
+  src/download/       # Download engine (yt-dlp + ffmpeg)
+  src/metadata/       # Tag reading (lofty)
+  src/commands/       # Tauri IPC command handlers
+```
+
+## Tech Stack
+
+| Layer | Technology |
+|-------|------------|
+| Framework | Tauri 2.x |
+| Frontend | SvelteKit + Svelte 5 |
+| UI | shadcn-svelte + Tailwind CSS v4 |
+| Backend | Rust |
+| Database | SQLite (rusqlite, WAL mode, FTS5) |
+| Audio | rodio + symphonia |
+| Downloads | yt-dlp + ffmpeg (auto-installed) |
+| Tags | lofty |
