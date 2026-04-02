@@ -79,21 +79,13 @@ pub async fn check_deps(bin_dir: &Path) -> DepsStatus {
         }
     };
 
-    // Check ffmpeg: local binary first, then PATH
+    // Check ffmpeg: only the local bundled binary counts.
+    // We must always ship our own ffmpeg so yt-dlp can find it via --ffmpeg-location.
     let ffmpeg_local = get_ffmpeg_path(bin_dir);
     let (ffmpeg_available, ffmpeg_path) = if ffmpeg_local.exists() {
         (true, Some(bin_dir.to_string_lossy().to_string()))
     } else {
-        let result = tokio::process::Command::new("ffmpeg")
-            .arg("-version")
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .await;
-        match result {
-            Ok(s) if s.success() => (true, None),
-            _ => (false, None),
-        }
+        (false, None)
     };
 
     DepsStatus {

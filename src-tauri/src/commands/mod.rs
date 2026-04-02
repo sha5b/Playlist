@@ -2665,9 +2665,9 @@ pub fn metadata_delete_all(
     let conn = db.lock().map_err(|e| e.to_string())?;
     conn.execute_batch("
         UPDATE tracks SET musicbrainz_id=NULL, genre=NULL, isrc=NULL, description=NULL,
-            label=NULL, language=NULL, release_date=NULL, composer=NULL, metadata_completeness=0;
+            label=NULL, language=NULL, release_date=NULL, composer=NULL;
         UPDATE albums SET musicbrainz_id=NULL, label=NULL, release_date=NULL,
-            description=NULL, album_type=NULL, enriched_tracklist=NULL, 
+            description=NULL, album_type=NULL, enriched_tracklist=NULL,
             cover_art_path=NULL, genre=NULL, total_tracks=NULL, total_discs=NULL;
         UPDATE artists SET musicbrainz_id=NULL, bio=NULL, country=NULL,
             begin_year=NULL, artist_type=NULL, enriched_discography=NULL;
@@ -2676,6 +2676,16 @@ pub fn metadata_delete_all(
         UPDATE monitored_playlist_entries SET status='new', download_id=NULL, track_id=NULL, downloaded_at=NULL
             WHERE status IN ('downloaded', 'skipped');
     ").map_err(|e| e.to_string())?;
+
+    // Recalculate metadata_completeness for all tracks to reflect actual state
+    let mut stmt = conn.prepare("SELECT id FROM tracks").map_err(|e| e.to_string())?;
+    let ids: Vec<i64> = stmt.query_map([], |row| row.get(0))
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+    for id in ids {
+        let _ = crate::db::tracks::update_completeness(&conn, id);
+    }
 
     log::info!("All metadata and download history deleted");
     Ok(())

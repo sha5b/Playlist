@@ -935,12 +935,15 @@ async fn import_downloaded_file(
         }
     }).await.ok()?;
 
-    // Use file tags if available, fall back to download metadata from yt-dlp
-    let title = tag_data.title
+    // Use file tags if available, fall back to download metadata from yt-dlp.
+    // Then try to split "Artist / Title" or "Artist - Title" patterns common in YouTube titles.
+    let raw_title = tag_data.title
         .or_else(|| dl_meta.title.clone())
         .unwrap_or_else(|| "Unknown".to_string());
-    let artist_name = tag_data.artist
+    let raw_artist = tag_data.artist
         .or_else(|| dl_meta.artist.clone());
+
+    let (title, artist_name) = split_title_artist(&raw_title, raw_artist.as_deref());
 
     let conn = db.lock().ok()?;
 
@@ -976,8 +979,10 @@ async fn import_downloaded_file(
     let total_discs_val = tag_data.total_discs.map(|d| d as i64);
     let genre_for_album = tag_data.genre.clone();
 
-    // Merge yt-dlp fallback fields with file tags (file tags win)
-    let genre = tag_data.genre.or_else(|| dl_meta.genre.clone());
+    // Merge yt-dlp fallback fields with file tags (file tags win).
+    // Filter out YouTube categories that aren't real music genres.
+    let genre = tag_data.genre.or_else(|| dl_meta.genre.clone())
+        .filter(|g| !is_youtube_category(g));
     let year = tag_data.year.map(|y| y as i64)
         .or_else(|| dl_meta.release_year.as_ref().and_then(|y| y.parse::<i64>().ok()));
     let description = dl_meta.description.clone();
@@ -1296,4 +1301,38 @@ fn clean_search_query(query: &str) -> String {
     // Clean up extra whitespace
     result = result.split_whitespace().collect::<Vec<_>>().join(" ");
     result.trim().to_string()
+}
+
+/// Split "Artist / Title" or "Artist - Title" patterns common in YouTube video titles.
+/// Returns (title, artist_name). If the title doesn't match a pattern, returns the original
+/// title and the provided fallback artist.
+fn split_title_artist(raw_title: &str, fallback_artist: Option<&str>) -> (String, Option<String>) {
+    // Delimiters ordered by specificity — " / " is almost always "Artist / Title"
+    let delimiters = [" / ", " - ", " – ", " — "];
+
+    for delim in &delimiters {
+        if let Some(pos) = raw_title.find(delim) {
+            let left = raw_title[..pos].trim();
+            let right = raw_title[pos + delim.len()..].trim();
+            // Both parts must be non-empty and reasonable length
+            if !left.is_empty() && !right.is_empty() && left.len() < 200 && right.len() < 200 {
+                // "Artist / Title" — left is artist, right is title
+                return (right.to_string(), Some(left.to_string()));
+            }
+        }
+    }
+
+    // No splitting pattern found — return as-is
+    (raw_title.to_string(), fallback_artist.map(|s| s.to_string()))
+}
+
+/// Check if a genre string is actually a YouTube category (not a real music genre).
+fn is_youtube_category(genre: &str) -> bool {
+    let categories = [
+        "People & Blogs", "Entertainment", "Education", "Science & Technology",
+        "News & Politics", "Howto & Style", "Comedy", "Film & Animation",
+        "Autos & Vehicles", "Pets & Animals", "Sports", "Travel & Events",
+        "Gaming", "Nonprofits & Activism",
+    ];
+    categories.iter().any(|c| c.eq_ignore_ascii_case(genre))
 }
