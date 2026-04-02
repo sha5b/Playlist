@@ -139,6 +139,7 @@ pub async fn library_reset(
         }
     }
 
+    let _ = app_handle.emit("library-changed", ());
     log::info!("Library reset complete");
     Ok(())
 }
@@ -1002,10 +1003,7 @@ pub async fn manager_add_playlist(
     let ffmpeg_dir = crate::download::setup::resolve_ffmpeg_dir(&bin_dir);
     let cookies_from_browser = {
         let conn = db.lock().map_err(|e| e.to_string())?;
-        crate::db::settings::get_setting(&conn, "cookies_from_browser")
-            .ok()
-            .flatten()
-            .filter(|s| !s.is_empty())
+        crate::db::settings::get_cookies_browser(&conn)
     };
 
     // For Spotify, skip yt-dlp entirely and use native API to avoid bot detection
@@ -1067,8 +1065,10 @@ pub async fn manager_add_playlist(
                         Some(a) => format!("{} - {}", a, best_title),
                         None => best_title.clone(),
                     };
+                    log::warn!("[add] No webpage_url for '{}', falling back to search: ytsearch1:{}", best_title, query);
                     format!("ytsearch1:{}", query)
                 });
+            log::info!("[add] Entry '{}' -> URL: {}", best_title, url);
             (
                 url,
                 Some(best_title),
@@ -1124,10 +1124,7 @@ pub async fn manager_sync_playlist(
     let ffmpeg_dir = crate::download::setup::resolve_ffmpeg_dir(&bin_dir);
     let cookies_from_browser = {
         let conn = db.lock().map_err(|e| e.to_string())?;
-        crate::db::settings::get_setting(&conn, "cookies_from_browser")
-            .ok()
-            .flatten()
-            .filter(|s| !s.is_empty())
+        crate::db::settings::get_cookies_browser(&conn)
     };
 
     // For Spotify, skip yt-dlp entirely and use native API to avoid bot detection
@@ -1161,8 +1158,10 @@ pub async fn manager_sync_playlist(
                         Some(a) => format!("{} - {}", a, best_title),
                         None => best_title.clone(),
                     };
+                    log::warn!("[sync] No webpage_url for '{}', falling back to search: ytsearch1:{}", best_title, query);
                     format!("ytsearch1:{}", query)
                 });
+            log::info!("[sync] Entry '{}' -> URL: {}", best_title, url);
             (
                 url,
                 Some(best_title),
@@ -1202,6 +1201,22 @@ pub async fn manager_download_entry(
         .ok_or_else(|| "Entry not found".to_string())?;
 
     let parsed = crate::download::url_parser::parse_url(&entry.source_url);
+
+    // Use the playlist's source_platform when the URL-parsed platform is "other"
+    // (e.g. ytsearch1: URLs from Spotify playlists)
+    let playlist_platform: String = conn.query_row(
+        "SELECT COALESCE(p.source_platform, '') FROM playlists p
+         JOIN monitored_playlist_entries e ON e.playlist_id = p.id
+         WHERE e.id = ?1",
+        rusqlite::params![entry_id],
+        |row| row.get(0),
+    ).unwrap_or_default();
+    let platform = if !playlist_platform.is_empty() && parsed.platform == "other" {
+        &playlist_platform
+    } else {
+        &parsed.platform
+    };
+
     let default_format = crate::db::settings::get_setting(&conn, "download_format")
         .ok().flatten()
         .unwrap_or_else(|| "mp3".to_string());
@@ -1211,7 +1226,6 @@ pub async fn manager_download_entry(
     // For Spotify URLs, convert to YouTube search (entry already has metadata)
     let final_url = if parsed.platform == "spotify" && entry.source_url.starts_with("http") {
         log::info!("Converting Spotify entry to YouTube search: {}", entry.source_url);
-        // Entry already has title/artist from playlist fetch, use them for search
         let search_query = match (&entry.artist, &entry.title) {
             (Some(a), Some(t)) => format!("{} - {}", a, t),
             (None, Some(t)) => t.clone(),
@@ -1227,7 +1241,7 @@ pub async fn manager_download_entry(
         &final_url,
         entry.title.as_deref(),
         entry.artist.as_deref(),
-        &parsed.platform,
+        platform,
         &fmt,
         &qual,
         None,
@@ -1259,6 +1273,15 @@ pub async fn manager_download_new(
     let entries = crate::db::monitored::get_new_entries(&conn, playlist_id)
         .map_err(|e| e.to_string())?;
 
+    // Use the playlist's source_platform so DRM entries get the correct platform
+    // (otherwise ytsearch1: URLs from Spotify playlists get platform "other" and
+    // native sources like Deezer are never tried)
+    let playlist_platform: String = conn.query_row(
+        "SELECT COALESCE(source_platform, '') FROM playlists WHERE id = ?1",
+        rusqlite::params![playlist_id],
+        |row| row.get(0),
+    ).unwrap_or_default();
+
     let default_format = crate::db::settings::get_setting(&conn, "download_format")
         .ok().flatten()
         .unwrap_or_else(|| "mp3".to_string());
@@ -1272,12 +1295,18 @@ pub async fn manager_download_new(
         let mut download_ids = Vec::new();
         for entry in &entries {
             let parsed = crate::download::url_parser::parse_url(&entry.source_url);
+            // Prefer the playlist's platform for DRM sources; fall back to URL-parsed platform
+            let platform = if !playlist_platform.is_empty() && parsed.platform == "other" {
+                &playlist_platform
+            } else {
+                &parsed.platform
+            };
             let download = crate::db::downloads::create_download(
                 &conn,
                 &parsed.clean_url,
                 entry.title.as_deref(),
                 entry.artist.as_deref(),
-                &parsed.platform,
+                platform,
                 &fmt,
                 &qual,
                 None,
@@ -1620,8 +1649,7 @@ pub async fn enrich_track(
                     .unwrap_or_else(|| "yt-dlp".to_string());
                 let ffmpeg_dir = crate::download::setup::resolve_ffmpeg_dir(&bin_dir);
                 let cookies = db.lock().ok()
-                    .and_then(|conn| crate::db::settings::get_setting(&conn, "cookies_from_browser").ok().flatten())
-                    .filter(|s| !s.is_empty());
+                    .and_then(|conn| crate::db::settings::get_cookies_browser(&conn));
                 mv_url = crate::download::ytdlp::search_music_video(
                     &binary,
                     ffmpeg_dir.as_deref(),
@@ -1656,8 +1684,7 @@ pub async fn enrich_track(
                         .unwrap_or_else(|| "yt-dlp".to_string());
                     let ffmpeg_dir = crate::download::setup::resolve_ffmpeg_dir(&bin_dir);
                     let cookies = db.lock().ok()
-                        .and_then(|conn| crate::db::settings::get_setting(&conn, "cookies_from_browser").ok().flatten())
-                        .filter(|s| !s.is_empty());
+                        .and_then(|conn| crate::db::settings::get_cookies_browser(&conn));
                     let file_stem = format!("mv_{}", track_id);
                     if let Ok(path) = crate::download::ytdlp::download_video(
                         &binary,
@@ -2645,9 +2672,12 @@ pub fn metadata_delete_all(
         UPDATE artists SET musicbrainz_id=NULL, bio=NULL, country=NULL,
             begin_year=NULL, artist_type=NULL, enriched_discography=NULL;
         DELETE FROM enrichments;
+        DELETE FROM downloads WHERE status IN ('completed', 'failed', 'cancelled');
+        UPDATE monitored_playlist_entries SET status='new', download_id=NULL, track_id=NULL, downloaded_at=NULL
+            WHERE status IN ('downloaded', 'skipped');
     ").map_err(|e| e.to_string())?;
 
-    log::info!("All metadata deleted");
+    log::info!("All metadata and download history deleted");
     Ok(())
 }
 
@@ -3345,10 +3375,7 @@ pub async fn download_music_video(
     let ffmpeg_dir = crate::download::setup::resolve_ffmpeg_dir(&bin_dir);
     let cookies = {
         let conn = db.lock().map_err(|e| e.to_string())?;
-        crate::db::settings::get_setting(&conn, "cookies_from_browser")
-            .ok()
-            .flatten()
-            .filter(|s| !s.is_empty())
+        crate::db::settings::get_cookies_browser(&conn)
     };
 
     let file_stem = format!("mv_{}", track_id);

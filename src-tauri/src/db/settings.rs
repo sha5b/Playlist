@@ -19,6 +19,17 @@ pub fn set_setting(conn: &Connection, key: &str, value: &str) -> Result<(), rusq
     Ok(())
 }
 
+/// Get the cookies-from-browser setting, defaulting to "chrome" to avoid bot detection.
+pub fn get_cookies_browser(conn: &Connection) -> Option<String> {
+    Some(
+        get_setting(conn, "cookies_from_browser")
+            .ok()
+            .flatten()
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "chrome".to_string()),
+    )
+}
+
 pub fn get_all_settings(conn: &Connection) -> Result<Vec<(String, String)>, rusqlite::Error> {
     let mut stmt = conn.prepare("SELECT key, value FROM settings ORDER BY key")?;
     let settings = stmt

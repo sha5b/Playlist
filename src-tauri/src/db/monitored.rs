@@ -131,6 +131,26 @@ pub fn upsert_entries(
     // Batch all upserts in a single transaction for dramatically faster writes
     conn.execute_batch("BEGIN")?;
 
+    // Fix stale ytsearch URLs: if we now have a direct URL for an entry that was
+    // previously stored with a search query, update the source_url in-place so the
+    // ON CONFLICT upsert matches correctly and the download uses the direct URL.
+    {
+        let mut fix_stmt = conn.prepare(
+            "UPDATE monitored_playlist_entries SET source_url = ?1
+             WHERE playlist_id = ?2 AND title = ?3 AND source_url LIKE 'ytsearch%'"
+        )?;
+        for (url, title, _artist, _dur, _thumb) in entries.iter() {
+            if !url.starts_with("ytsearch") {
+                if let Some(t) = title {
+                    let changed = fix_stmt.execute(params![url, playlist_id, t]).unwrap_or(0);
+                    if changed > 0 {
+                        log::info!("Fixed stale search URL for '{}' -> {}", t, url);
+                    }
+                }
+            }
+        }
+    }
+
     // Pre-fetch existing URLs to detect new vs update without per-row queries
     let mut existing_stmt = conn.prepare(
         "SELECT source_url FROM monitored_playlist_entries WHERE playlist_id = ?1",

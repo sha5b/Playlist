@@ -11,10 +11,11 @@
 	import { metadataScanStore } from '$lib/stores/metadataScan.svelte';
 	import { open } from '@tauri-apps/plugin-dialog';
 	import { toast } from 'svelte-sonner';
+	import { downloadStore } from '$lib/stores/downloads.svelte';
 
 	let downloadDir = $state('');
 	let downloadFormat = $state('mp3');
-	let cookiesBrowser = $state('');
+	let cookiesBrowser = $state('chrome');
 	let defaultVolume = $state(75);
 	let autoDownloadMV = $state(false);
 
@@ -133,6 +134,7 @@
 		resettingLibrary = true;
 		try {
 			await resetLibrary(true);
+			downloadStore.reset();
 			toast.success('Library cleared', { description: 'All tracks, playlists, and downloads have been removed' });
 		} catch (e) {
 			toast.error('Failed to reset library', { description: String(e) });
@@ -144,11 +146,11 @@
 	async function resetSettings() {
 		downloadDir = '';
 		downloadFormat = 'mp3';
-		cookiesBrowser = '';
+		cookiesBrowser = 'chrome';
 		defaultVolume = 75;
 		await setSetting('default_volume', '0.75');
 		await setSetting('download_format', 'mp3');
-		await setSetting('cookies_from_browser', '');
+		await setSetting('cookies_from_browser', 'chrome');
 		player.setVolume(0.75);
 		toast.success('Settings reset to defaults');
 	}

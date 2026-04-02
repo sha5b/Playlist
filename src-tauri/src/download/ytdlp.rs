@@ -83,7 +83,7 @@ pub async fn get_info(
         "--no-warnings", 
         "--flat-playlist",
         // Anti-bot detection flags
-        "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
         "--extractor-retries", "3",
     ]);
     if let Some(dir) = ffmpeg_dir {
@@ -162,7 +162,7 @@ pub async fn search_info(
         "--no-download",
         "--no-warnings",
         // Anti-bot detection flags
-        "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
         "--extractor-retries", "3",
     ]);
     if let Some(dir) = ffmpeg_dir {
@@ -293,7 +293,7 @@ pub async fn get_playlist_entries(
         "--no-warnings", 
         "--flat-playlist",
         // Anti-bot detection flags
-        "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
         "--extractor-retries", "3",
     ]);
     if let Some(dir) = ffmpeg_dir {
@@ -332,9 +332,28 @@ pub async fn get_playlist_entries(
                 playlist_title = json["playlist_title"].as_str().map(|s| s.to_string());
             }
             let mut info = video_info_from_json(&json);
-            // For playlist entries, also try "url" field for webpage_url
-            if info.webpage_url.is_none() {
-                info.webpage_url = json["url"].as_str().map(|s| s.to_string());
+
+            // Debug: log raw yt-dlp fields for URL resolution
+            let raw_url = json["url"].as_str().unwrap_or("<missing>");
+            let raw_id = json["id"].as_str().unwrap_or("<missing>");
+            let raw_webpage = json["webpage_url"].as_str().unwrap_or("<missing>");
+            log::info!(
+                "[playlist-entry] title='{}' webpage_url='{}' url='{}' id='{}'",
+                info.title, raw_webpage, raw_url, raw_id
+            );
+
+            // For playlist entries, resolve the video URL from multiple fields.
+            // --flat-playlist often returns just a video ID in "url"/"id", not a full URL.
+            if info.webpage_url.is_none() || info.webpage_url.as_deref() == Some("") {
+                let url_field = json["url"].as_str().unwrap_or("");
+                if url_field.starts_with("http") {
+                    info.webpage_url = Some(url_field.to_string());
+                } else if !url_field.is_empty() {
+                    info.webpage_url = Some(format!("https://www.youtube.com/watch?v={}", url_field));
+                } else if let Some(id) = json["id"].as_str().filter(|s| !s.is_empty()) {
+                    info.webpage_url = Some(format!("https://www.youtube.com/watch?v={}", id));
+                }
+                log::info!("[playlist-entry] resolved URL -> {:?}", info.webpage_url);
             }
             entries.push(info);
         }
@@ -378,19 +397,21 @@ where
         format,
         "--audio-quality",
         "0",
+        // No -f filter: let yt-dlp pick the best available format.
+        // --extract-audio + --audio-format + ffmpeg handle conversion.
+        // This avoids "Requested format is not available" on Topic channels etc.
         "--embed-metadata",
         "--embed-thumbnail",
         "--output",
         &output_template,
         "--newline",
-        "--no-warnings",
         "--no-playlist",
         // Anti-bot detection flags
-        "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
         "--extractor-retries", "3",
-        "--sleep-requests", "1",
         "--force-ipv4",
-        "--extractor-args", "youtube:player_client=mweb,web",
+        "--extractor-args", "youtube:player_client=android_vr,web",
+        "--sleep-requests", "1",
     ]);
     if let Some(dir) = ffmpeg_dir {
         cmd.args(["--ffmpeg-location", dir]);
@@ -421,6 +442,7 @@ where
             .checked_sub(std::time::Duration::from_secs(2))
             .unwrap_or_else(std::time::Instant::now);
         let mut latest: Option<DownloadProgress> = None;
+        let mut error_lines: Vec<String> = Vec::new();
 
         while let Ok(Some(line)) = stderr_lines.next_line().await {
             if let Some(progress) = parse_progress_line(&line) {
@@ -431,12 +453,15 @@ where
                         last_emit = std::time::Instant::now();
                     }
                 }
+            } else if line.starts_with("ERROR:") || line.contains("ERROR:") {
+                error_lines.push(line);
             }
         }
         // Always emit the final progress
         if let Some(p) = latest {
             progress_callback(p);
         }
+        error_lines
     });
 
     // Drain stdout to prevent pipe deadlock
@@ -451,11 +476,16 @@ where
         .await
         .map_err(|e| format!("Failed to wait for yt-dlp: {}", e))?;
 
-    let _ = progress_handle.await;
+    let error_lines = progress_handle.await.unwrap_or_default();
     let _ = stdout_handle.await;
 
     if !status.success() {
-        return Err(format!("yt-dlp exited with status {}", status));
+        let detail = if error_lines.is_empty() {
+            format!("yt-dlp exited with status {}", status)
+        } else {
+            format!("yt-dlp failed: {}", error_lines.join(" | "))
+        };
+        return Err(detail);
     }
 
     // Construct the expected output path deterministically
@@ -497,18 +527,17 @@ pub async fn download_video(
     let mut cmd = Command::new(binary);
     low_priority(&mut cmd);
     cmd.args([
-        "-S", "ext:mp4:m4a",
         "--recode-video", "mp4",
         "--embed-metadata",
         "--output", &output_template,
         "--newline",
         "--no-warnings",
         "--no-playlist",
-        "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
         "--extractor-retries", "3",
         "--sleep-requests", "1",
         "--force-ipv4",
-        "--extractor-args", "youtube:player_client=mweb,web",
+        "--extractor-args", "youtube:player_client=android_vr,web",
     ]);
     if let Some(dir) = ffmpeg_dir {
         cmd.args(["--ffmpeg-location", dir]);

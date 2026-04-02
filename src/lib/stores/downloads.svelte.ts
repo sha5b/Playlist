@@ -42,7 +42,12 @@ async function init() {
 			if (data.track_id) dl.track_id = data.track_id;
 			// Only clone the array when status actually changes (not on progress ticks)
 			if (statusChanged) {
-				downloads = [...downloads];
+				// Remove cancelled downloads from the store immediately
+				if (data.status === 'cancelled') {
+					downloads = downloads.filter((d) => d.id !== data.id);
+				} else {
+					downloads = [...downloads];
+				}
 			}
 		} else if (data.status === 'queued' || data.status === 'downloading') {
 			// Auto-add downloads from bulk operations
@@ -114,5 +119,23 @@ export const downloadStore = {
 
 	clearCompleted() {
 		downloads = downloads.filter(isActive);
+	},
+
+	/** Re-sync with backend — removes stale entries that were cancelled/completed in the DB. */
+	async refresh() {
+		try {
+			const active = await getActiveDownloads();
+			const activeIds = new Set(active.map((d) => d.id));
+			// Keep backend-confirmed active downloads + recent completed/failed ones from the store
+			const kept = downloads.filter((d) => !isActive(d));
+			downloads = [...active, ...kept.slice(0, 50)];
+		} catch {
+			// ignore
+		}
+	},
+
+	/** Clear all downloads from the store (used on library reset). */
+	reset() {
+		downloads = [];
 	},
 };

@@ -161,6 +161,7 @@
 	async function handleCancel(id: number) {
 		try {
 			await cancelDownload(id);
+			downloadStore.removeDownload(id);
 			toast.info('Download cancelled');
 		} catch (e) {
 			toast.error('Failed to cancel', { description: String(e) });
@@ -387,6 +388,7 @@
 				e.id === entryId ? { ...e, status: 'new' as const, download_id: null } : e
 			);
 			await loadPlaylists();
+			await downloadStore.refresh();
 		} catch (e) {
 			toast.error('Failed to cancel', { description: String(e) });
 		}
@@ -399,6 +401,7 @@
 				await loadEntries(playlistId);
 			}
 			await loadPlaylists();
+			await downloadStore.refresh();
 			toast.success(`Cancelled ${count} downloads`);
 		} catch (e) {
 			toast.error('Failed to cancel downloads', { description: String(e) });

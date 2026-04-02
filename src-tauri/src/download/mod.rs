@@ -6,7 +6,7 @@ pub mod spotify;
 pub mod url_parser;
 pub mod ytdlp;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -105,13 +105,11 @@ impl DownloadManager {
         setup::resolve_ffmpeg_dir(&bin_dir)
     }
 
-    /// Get the cookies-from-browser setting (e.g. "chrome", "firefox", "edge")
+    /// Get the cookies-from-browser setting (e.g. "chrome", "firefox", "edge").
+    /// Defaults to "chrome" to avoid bot detection on YouTube.
     fn get_cookies_from_browser(&self) -> Option<String> {
         let conn = self.db.lock().expect("DB mutex poisoned");
-        crate::db::settings::get_setting(&conn, "cookies_from_browser")
-            .ok()
-            .flatten()
-            .filter(|s| !s.is_empty())
+        crate::db::settings::get_cookies_browser(&conn)
     }
 
     /// Resume any downloads that were interrupted by an app shutdown.
@@ -220,12 +218,39 @@ impl DownloadManager {
                 },
             );
         }
-        // Mark all in-progress downloads as cancelled in the DB
+        // Mark all in-progress downloads as cancelled in the DB and emit events for each
         if let Ok(conn) = self.db.lock() {
+            // Collect IDs before updating so we can emit events
+            let ids: Vec<i64> = {
+                let mut stmt = conn.prepare(
+                    "SELECT id FROM downloads WHERE status IN ('queued', 'downloading', 'processing')"
+                ).unwrap();
+                stmt.query_map([], |row| row.get(0))
+                    .unwrap()
+                    .filter_map(|r| r.ok())
+                    .collect()
+            };
             let _ = conn.execute(
                 "UPDATE downloads SET status = 'cancelled' WHERE status IN ('queued', 'downloading', 'processing')",
                 [],
             );
+            // Emit cancel events for downloads that weren't in active_tasks
+            // (e.g. queued but waiting for semaphore)
+            for id in ids {
+                let _ = self.app_handle.emit(
+                    "download-event",
+                    DownloadEvent {
+                        id,
+                        status: "cancelled".into(),
+                        progress: 0.0,
+                        speed: None,
+                        eta: None,
+                        error: None,
+                        title: None,
+                        track_id: None,
+                    },
+                );
+            }
         }
     }
 }
@@ -250,6 +275,8 @@ async fn run_download(
             _ => return,
         }
     };
+
+    log::info!("[download] id={} platform='{}' url='{}' title={:?}", download_id, download.platform, download.url, download.title);
 
     // Convert Spotify URLs to YouTube search on-the-fly for legacy downloads
     if download.url.starts_with("https://open.spotify.com/") || download.url.starts_with("spotify:") {
@@ -321,116 +348,55 @@ async fn run_download(
         None,
     );
 
-    // Fetch metadata first
-    let ytdlp_info = match ytdlp::get_info(
-        &ytdlp_binary,
-        ffmpeg_dir.as_deref(),
-        &download.url,
-        cookies_from_browser.as_deref(),
-    )
-    .await
-    {
-        Ok(info) => {
-            // Prefer music-specific fields: track > title, artist > uploader
-            let best_title = info.track.as_deref().unwrap_or(&info.title);
-            let best_artist = info.artist.as_deref().or(info.uploader.as_deref());
-            if let Ok(conn) = db.lock() {
-                let _ = crate::db::downloads::update_download_title(
-                    &conn,
-                    download_id,
-                    best_title,
-                    best_artist,
-                );
-            }
-            emit_event(
-                &app_handle,
-                download_id,
-                "downloading",
-                0.0,
-                None,
-                None,
-                None,
-                Some(best_title.to_string()),
-            );
-            Some(info)
-        }
-        Err(e) => {
-            log::warn!(
-                "Could not fetch metadata for download {}: {}",
-                download_id,
-                e
-            );
-            None
-        }
-    };
-
-    // Download the audio using download_id as filename to avoid encoding issues
-    let app_handle_progress = app_handle.clone();
-    let dl_id = download_id;
     let file_stem = format!("dl_{}", download_id);
+    let platform = download.platform.clone();
+    let drm_platforms = ["spotify", "apple_music", "tidal", "deezer", "amazon_music"];
+    let is_drm_platform = drm_platforms.contains(&platform.as_str());
+    let is_search_url = download.url.starts_with("ytsearch") || download.url.starts_with("ytmsearch") || download.url.starts_with("scsearch");
 
-    let result = ytdlp::download_audio(
-        &ytdlp_binary,
-        ffmpeg_dir.as_deref(),
-        &download.url,
-        &download_dir,
-        &download.format,
-        &download.quality,
-        &file_stem,
-        cookies_from_browser.as_deref(),
-        move |progress| {
-            emit_event(
-                &app_handle_progress,
-                dl_id,
-                "downloading",
-                progress.percent,
-                progress.speed.clone(),
-                progress.eta.clone(),
-                None,
-                None,
-            );
-        },
-    )
-    .await;
+    // --- Phase 1: Fast direct download ---
+    // For DRM platforms, try native source first (Deezer etc.) — it's a fast direct download.
+    // For direct URLs (YouTube, SoundCloud, etc.), try yt-dlp first.
+    let mut errors: Vec<String> = Vec::new();
+    let mut failed_urls: HashSet<String> = HashSet::new();
+    let mut ytdlp_info: Option<ytdlp::VideoInfo> = None;
 
-    match result {
-        Ok(file_path) => {
-            handle_download_success(&db, &app_handle, download_id, &file_path, &ytdlp_info).await;
-        }
-        Err(e) => {
-            // For all failed downloads, try fallback chain: native source → cross-platform search → YouTube search
-            let platform = {
-                if let Ok(conn) = db.lock() {
-                    conn.query_row(
-                        "SELECT platform FROM downloads WHERE id = ?1",
-                        rusqlite::params![download_id],
-                        |row| row.get::<_, String>(0),
-                    ).unwrap_or_default()
-                } else {
-                    String::new()
-                }
-            };
-            let drm_platforms = ["spotify", "apple_music", "tidal", "deezer", "amazon_music"];
-            
-            // Always try fallback for failed downloads
-            let is_drm_platform = drm_platforms.contains(&platform.as_str());
-            {
-                let mut errors = vec![format!("yt-dlp: {}", e)];
-
-                // Step 1: Try native platform source (only for DRM platforms)
-                let native_result = if is_drm_platform {
-                    let sources_guard = sources.read().await;
-                    if let Some(src) = sources_guard.get_for_platform(&platform) {
-                        log::info!("Trying native {} source for download {}", platform, download_id);
-                        let app_handle_native = app_handle.clone();
-                        let dl_id_native = download_id;
-                        Some(src.download(
-                            &download.url,
+    // Try native source FIRST for DRM platforms (fast, no searching)
+    if is_drm_platform {
+        let native_result = {
+            let sources_guard = sources.read().await;
+            if let Some(src) = sources_guard.get_for_platform(&platform) {
+                log::info!("Trying native {} source for download {} (fast path)", platform, download_id);
+                let app_handle_native = app_handle.clone();
+                let dl_id_native = download_id;
+                Some(src.download(
+                    &download.url,
+                    &download_dir,
+                    &file_stem,
+                    &download.format,
+                    Box::new(move |pct| {
+                        emit_event(&app_handle_native, dl_id_native, "downloading", pct, None, None, None, None);
+                    }),
+                ).await)
+            } else {
+                // Try cross-platform search with title/artist (e.g. Deezer search for Spotify tracks)
+                let query = match (&download.artist, &download.title) {
+                    (Some(a), Some(t)) => Some(format!("{} - {}", a, t)),
+                    (None, Some(t)) => Some(t.clone()),
+                    _ => None,
+                };
+                if let Some(ref q) = query {
+                    if let Some(src) = sources_guard.get_best_search_source() {
+                        log::info!("Trying {} search for download {} (fast path): {}", src.platform(), download_id, q);
+                        let app_handle_search = app_handle.clone();
+                        let dl_id_search = download_id;
+                        Some(src.search_download(
+                            q,
                             &download_dir,
                             &file_stem,
                             &download.format,
                             Box::new(move |pct| {
-                                emit_event(&app_handle_native, dl_id_native, "downloading", pct, None, None, None, None);
+                                emit_event(&app_handle_search, dl_id_search, "downloading", pct, None, None, None, None);
                             }),
                         ).await)
                     } else {
@@ -438,17 +404,152 @@ async fn run_download(
                     }
                 } else {
                     None
+                }
+            }
+        };
+
+        if let Some(Ok(file_path)) = native_result {
+            handle_download_success(&db, &app_handle, download_id, &file_path, &None).await;
+            return;
+        }
+        if let Some(Err(native_err)) = native_result {
+            errors.push(format!("native {}: {}", platform, native_err));
+        }
+    }
+
+    // Try yt-dlp direct download (fast for YouTube/SoundCloud/Bandcamp URLs, skipped if search URL on DRM platform)
+    let skip_ytdlp_initial = is_drm_platform && is_search_url;
+    let ytdlp_success = if !skip_ytdlp_initial {
+        // Only fetch metadata separately for search URLs (need it for duration matching later).
+        // For direct URLs, skip the extra yt-dlp call — download immediately for speed.
+        if is_search_url {
+            ytdlp_info = match ytdlp::get_info(
+                &ytdlp_binary,
+                ffmpeg_dir.as_deref(),
+                &download.url,
+                cookies_from_browser.as_deref(),
+            ).await {
+                Ok(info) => {
+                    let best_title = info.track.as_deref().unwrap_or(&info.title);
+                    let best_artist = info.artist.as_deref().or(info.uploader.as_deref());
+                    if let Ok(conn) = db.lock() {
+                        let _ = crate::db::downloads::update_download_title(&conn, download_id, best_title, best_artist);
+                    }
+                    emit_event(&app_handle, download_id, "downloading", 0.0, None, None, None, Some(best_title.to_string()));
+                    Some(info)
+                }
+                Err(e) => {
+                    log::warn!("Could not fetch metadata for download {}: {}", download_id, e);
+                    None
+                }
+            };
+        }
+
+        let app_handle_progress = app_handle.clone();
+        let dl_id = download_id;
+        let result = ytdlp::download_audio(
+            &ytdlp_binary,
+            ffmpeg_dir.as_deref(),
+            &download.url,
+            &download_dir,
+            &download.format,
+            &download.quality,
+            &file_stem,
+            cookies_from_browser.as_deref(),
+            move |progress| {
+                emit_event(&app_handle_progress, dl_id, "downloading", progress.percent, progress.speed.clone(), progress.eta.clone(), None, None);
+            },
+        ).await;
+
+        match result {
+            Ok(file_path) => {
+                handle_download_success(&db, &app_handle, download_id, &file_path, &ytdlp_info).await;
+                return;
+            }
+            Err(e) => {
+                log::warn!("[download] id={} yt-dlp direct download FAILED: {}", download_id, e);
+                errors.push(format!("yt-dlp: {}", e));
+                failed_urls.insert(download.url.clone());
+                false
+            }
+        }
+    } else {
+        log::info!("Skipping yt-dlp search for DRM download {} (will use search fallback)", download_id);
+        false
+    };
+
+    // --- Phase 2: All fast methods failed — search fallbacks for this track ---
+    if !ytdlp_success {
+                // Check if the track already exists in the library
+                let library_match = {
+                    let search_query = if let Some(ref info) = ytdlp_info {
+                        let title = info.track.as_deref().unwrap_or(&info.title);
+                        let artist = info.artist.as_deref().or(info.uploader.as_deref());
+                        match artist {
+                            Some(a) => Some(format!("{} {}", a, title)),
+                            None => Some(title.to_string()),
+                        }
+                    } else if let Ok(conn) = db.lock() {
+                        conn.query_row(
+                            "SELECT title, artist FROM downloads WHERE id = ?1",
+                            rusqlite::params![download_id],
+                            |row| {
+                                let t: Option<String> = row.get(0)?;
+                                let a: Option<String> = row.get(1)?;
+                                Ok(match (t, a) {
+                                    (Some(t), Some(a)) => Some(format!("{} {}", a, t)),
+                                    (Some(t), None) => Some(t),
+                                    _ => None,
+                                })
+                            },
+                        ).ok().flatten()
+                    } else {
+                        None
+                    };
+
+                    if let Some(ref q) = search_query {
+                        if let Ok(conn) = db.lock() {
+                            crate::db::tracks::search_tracks_fts(&conn, q, 1)
+                                .ok()
+                                .and_then(|tracks| tracks.into_iter().next())
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
                 };
 
-                if let Some(Ok(file_path)) = native_result {
-                    handle_download_success(&db, &app_handle, download_id, &file_path, &ytdlp_info).await;
+                if let Some(track) = library_match {
+                    log::info!("Download {} matched existing library track {} ('{}')", download_id, track.id, track.title);
+                    let entry_id = if let Ok(conn) = db.lock() {
+                        let _ = conn.execute_batch("BEGIN");
+                        let _ = crate::db::downloads::update_download_file(&conn, download_id, &track.file_path, Some(track.id));
+                        let _ = crate::db::downloads::update_download_status(&conn, download_id, "completed", None);
+                        let eid: Option<i64> = conn.query_row(
+                            "SELECT id FROM monitored_playlist_entries WHERE download_id = ?1",
+                            rusqlite::params![download_id],
+                            |row| row.get(0),
+                        ).ok();
+                        if let Some(eid) = eid {
+                            let _ = crate::db::monitored::update_entry_status(&conn, eid, "downloaded", Some(download_id), Some(track.id));
+                        }
+                        let _ = conn.execute_batch("COMMIT");
+                        eid
+                    } else {
+                        None
+                    };
+                    emit_event(&app_handle, download_id, "completed", 100.0, None, None, None, Some(track.title.clone()));
+                    if let Some(eid) = entry_id {
+                        let _ = app_handle.emit("manager-entry-updated", serde_json::json!({
+                            "entry_id": eid, "status": "downloaded", "track_id": track.id
+                        }));
+                    }
+                    let _ = app_handle.emit("library-changed", ());
                     return;
                 }
-                if let Some(Err(native_err)) = native_result {
-                    errors.push(format!("native {}: {}", platform, native_err));
-                }
 
-                // Step 2: Try cross-platform search via best available source (e.g. Deezer search)
+                // Cross-platform search via best available source (e.g. Deezer search)
                 let search_query = if let Some(ref info) = ytdlp_info {
                     let title = info.track.as_deref().unwrap_or(&info.title);
                     let artist = info.artist.as_deref().or(info.uploader.as_deref());
@@ -573,6 +674,10 @@ async fn run_download(
                         ).await {
                             Ok(results) => {
                                 if let Some(best_url) = pick_best_duration_match(&results, expected_duration_secs) {
+                                    if failed_urls.contains(&best_url) {
+                                        log::info!("YouTube search attempt {}: skipping already-failed URL {}", attempt + 1, best_url);
+                                        continue;
+                                    }
                                     log::info!("YouTube search attempt {}: downloading best match from {}", attempt + 1, best_url);
                                     let app_handle_yt = app_handle.clone();
                                     let dl_id_yt = download_id;
@@ -597,6 +702,7 @@ async fn run_download(
                                             return;
                                         }
                                         Err(e) => {
+                                            failed_urls.insert(best_url.clone());
                                             errors.push(format!("YouTube download attempt {}: {}", attempt + 1, e));
                                         }
                                     }
@@ -651,8 +757,6 @@ async fn run_download(
 
                 // If all fallbacks failed, mark as failed
                 fail_download(&db, &app_handle, download_id, &errors.join("; "));
-            }
-        }
     }
 }
 
