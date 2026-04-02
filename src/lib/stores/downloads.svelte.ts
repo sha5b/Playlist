@@ -125,7 +125,6 @@ export const downloadStore = {
 	async refresh() {
 		try {
 			const active = await getActiveDownloads();
-			const activeIds = new Set(active.map((d) => d.id));
 			// Keep backend-confirmed active downloads + recent completed/failed ones from the store
 			const kept = downloads.filter((d) => !isActive(d));
 			downloads = [...active, ...kept.slice(0, 50)];

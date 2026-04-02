@@ -18,11 +18,6 @@ static METADATA_SCAN_CANCELLED: AtomicBool = AtomicBool::new(false);
 // --- Library Stats ---
 
 #[tauri::command]
-pub fn greet(name: &str) -> String {
-    format!("Hello, {}! Welcome to Playlist.", name)
-}
-
-#[tauri::command]
 pub fn get_library_stats(db: State<'_, Arc<DbPool>>) -> Result<LibraryStats, String> {
     let conn = db.lock().map_err(|e| e.to_string())?;
 

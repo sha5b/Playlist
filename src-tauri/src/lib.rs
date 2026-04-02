@@ -181,7 +181,6 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            commands::greet,
             commands::get_library_stats,
             // Tracks
             commands::library_get_tracks,

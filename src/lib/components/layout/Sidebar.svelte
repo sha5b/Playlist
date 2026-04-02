@@ -12,7 +12,6 @@
 		{ href: '/', label: 'Home', icon: Home },
 		{ href: '/playing', label: 'Playing', icon: AudioLines },
 		{ href: '/manager', label: 'Manager', icon: LayoutDashboard },
-		{ href: '/metadata', label: 'Metadata', icon: Sparkles },
 	];
 
 	const libraryItems = [

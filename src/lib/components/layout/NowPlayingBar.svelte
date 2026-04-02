@@ -61,10 +61,13 @@
 
 <footer class="flex h-20 items-center border-t border-border bg-card px-4 gap-4">
 	<!-- Left: Track info (click to open Playing page) -->
-	<!-- svelte-ignore a11y_no_static_element_interactions -->
+	<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
 	<div
+		role={hasTrack ? 'button' : undefined}
+		tabindex={hasTrack ? 0 : undefined}
 		class="flex items-center gap-3 w-[200px] lg:w-[280px] min-w-0 rounded-lg -m-1 p-1 transition-colors {hasTrack ? 'cursor-pointer hover:bg-muted/30' : ''}"
 		onclick={() => { if (hasTrack) goto('/playing'); }}
+		onkeydown={(e) => { if (hasTrack && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); goto('/playing'); } }}
 	>
 		<div class="size-12 shrink-0 rounded-md bg-muted flex items-center justify-center overflow-hidden">
 			{#if player.currentTrack?.cover_art_path}
@@ -184,8 +187,8 @@
 			class="w-20 lg:w-24"
 			onValueChange={handleVolumeChange}
 		/>
-		<!-- svelte-ignore a11y_no_static_element_interactions -->
 		<div
+			role="presentation"
 			class="rounded-md transition-colors {queueDragOver ? 'ring-2 ring-primary bg-primary/10' : ''}"
 			ondragover={onQueueDragOver}
 			ondragleave={() => { queueDragOver = false; }}

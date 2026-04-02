@@ -203,6 +203,7 @@
 									{isCurrentTrack ? 'bg-primary/5' : ''}"
 								style="height: {ROW_HEIGHT}px;"
 								onclick={() => { if (wasDragging) return; if (navigable) goto(`/library/songs/${track.id}`); }}
+								onkeydown={(e) => { if (e.key === 'Enter' && navigable) goto(`/library/songs/${track.id}`); }}
 							>
 								<div
 									class="w-12 px-4 text-center text-sm tabular-nums
@@ -247,9 +248,7 @@
 									{formatDuration(track.duration_ms)}
 								</div>
 								<div class="w-10 px-2">
-									<!-- svelte-ignore a11y_click_events_have_key_events -->
-									<!-- svelte-ignore a11y_no_static_element_interactions -->
-									<div onclick={(e) => e.stopPropagation()}>
+									<div role="presentation" onclick={(e) => e.stopPropagation()} onkeydown={(e) => e.stopPropagation()}>
 										<DropdownMenu.Root>
 											<DropdownMenu.Trigger>
 												<Button

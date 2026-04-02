@@ -6,8 +6,8 @@ export function assetUrl(filePath: string | null | undefined): string {
 	return convertFileSrc(filePath);
 }
 
-export function formatDuration(ms: number | null): string {
-	if (!ms) return '--:--';
+export function formatDuration(ms: number | null | undefined): string {
+	if (ms == null) return '--:--';
 	const totalSeconds = Math.floor(ms / 1000);
 	const minutes = Math.floor(totalSeconds / 60);
 	const seconds = totalSeconds % 60;
@@ -54,8 +54,8 @@ export function shuffleArray<T>(array: T[]): T[] {
 }
 
 /** Format seconds as m:ss */
-export function formatSeconds(seconds: number | null): string {
-	if (!seconds) return '--:--';
+export function formatSeconds(seconds: number | null | undefined): string {
+	if (seconds == null) return '--:--';
 	const m = Math.floor(seconds / 60);
 	const s = Math.round(seconds % 60);
 	return `${m}:${s.toString().padStart(2, '0')}`;

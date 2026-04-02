@@ -33,10 +33,6 @@ export function invalidateCache() {
 	cache.clear();
 }
 
-export async function greet(name: string): Promise<string> {
-	return invoke('greet', { name });
-}
-
 export async function getLibraryStats(): Promise<LibraryStats> {
 	const cached = getCached<LibraryStats>('stats');
 	if (cached) return cached;

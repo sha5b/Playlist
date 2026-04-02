@@ -35,7 +35,7 @@ export function groupDownloadsByAlbum(
 		const firstWithTitle = dls.find((d) => d.title);
 		groups.push({
 			albumId,
-			albumTitle: albumNames[albumId] ?? (firstWithTitle?.artist ? `Album #${albumId}` : `Album #${albumId}`),
+			albumTitle: albumNames[albumId] ?? `Album #${albumId}`,
 			downloads: dls,
 		});
 	}
