@@ -310,6 +310,15 @@ impl AudioEngine {
         let mut is_playing = false;
         let mut preloaded: Option<(QueueTrack, PreloadedSource, u64)> = None;
 
+        // Track the current default device so we can auto-switch when it changes
+        // (e.g., user plugs in Bluetooth headphones)
+        let mut current_device_name: Option<String> = {
+            use cpal::traits::{DeviceTrait, HostTrait};
+            cpal::default_host().default_output_device().and_then(|d| d.name().ok())
+        };
+        let mut explicit_device: Option<String> = None; // set when user manually picks a device
+        let mut last_device_check = Instant::now();
+
         log::info!("[audio] Audio thread ready, waiting for commands");
 
         loop {
@@ -611,6 +620,7 @@ impl AudioEngine {
                         }
                         PlayerCommand::SwitchDevice(device_name) => {
                             log::info!("[audio] SwitchDevice: {:?}", device_name);
+                            explicit_device = device_name.clone();
                             let result = if let Some(ref name) = device_name {
                                 use cpal::traits::{DeviceTrait, HostTrait};
                                 let host = cpal::default_host();
@@ -639,6 +649,10 @@ impl AudioEngine {
                                     accumulated_ms = 0;
                                     is_playing = false;
                                     preloaded = None;
+                                    current_device_name = device_name.clone().or_else(|| {
+                                        use cpal::traits::{DeviceTrait, HostTrait};
+                                        cpal::default_host().default_output_device().and_then(|d| d.name().ok())
+                                    });
                                     {
                                         let mut s = shared.write().unwrap();
                                         s.playback.state = PlayerState::Stopped;
@@ -660,7 +674,69 @@ impl AudioEngine {
                     }
                 }
                 Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
-                    // Fall through to progress/end-of-track check
+                    // Periodically check if the OS default audio device changed
+                    // (e.g., Bluetooth headphones connected/disconnected).
+                    // Only auto-switch if the user hasn't manually selected a device.
+                    if explicit_device.is_none() && last_device_check.elapsed() >= Duration::from_secs(2) {
+                        last_device_check = Instant::now();
+                        let new_default: Option<String> = {
+                            use cpal::traits::{DeviceTrait, HostTrait};
+                            cpal::default_host().default_output_device().and_then(|d| d.name().ok())
+                        };
+                        if new_default != current_device_name {
+                            log::info!(
+                                "[audio] Default device changed: {:?} -> {:?}, auto-switching",
+                                current_device_name, new_default
+                            );
+                            match OutputStream::try_default() {
+                                Ok((new_stream, new_handle)) => {
+                                    let vol = sink.volume();
+                                    let was_playing = is_playing;
+                                    let position = accumulated_ms
+                                        + play_start.as_ref().map(|s| s.elapsed().as_millis() as u64).unwrap_or(0);
+                                    sink.stop();
+                                    _stream = new_stream;
+                                    stream_handle = new_handle;
+                                    sink = Self::make_sink(&stream_handle, vol);
+
+                                    // If a track was playing, re-decode and seek to resume playback
+                                    let current_track = shared.read().unwrap().playback.current_track.clone();
+                                    if was_playing {
+                                        if let Some(ref track) = current_track {
+                                            match Self::decode_track(&track.file_path, ffmpeg_path.as_deref()) {
+                                                Ok((source, dur)) => {
+                                                    current_duration_ms = if dur > 0 { dur } else { current_duration_ms };
+                                                    sink.append(source);
+                                                    // Seek to the position we were at
+                                                    if position > 0 {
+                                                        sink.try_seek(std::time::Duration::from_millis(position))
+                                                            .unwrap_or_else(|e| log::warn!("[audio] Seek after device switch failed: {}", e));
+                                                    }
+                                                    accumulated_ms = position;
+                                                    play_start = Some(Instant::now());
+                                                    is_playing = true;
+                                                }
+                                                Err(e) => {
+                                                    log::warn!("[audio] Failed to re-decode after device switch: {}", e);
+                                                    is_playing = false;
+                                                    sink.pause();
+                                                }
+                                            }
+                                        }
+                                    } else {
+                                        sink.pause();
+                                    }
+                                    preloaded = None;
+                                    current_device_name = new_default;
+                                    log::info!("[audio] Auto-switched to new default device: {:?}", current_device_name);
+                                }
+                                Err(e) => {
+                                    log::warn!("[audio] Failed to auto-switch to new default device: {}", e);
+                                    current_device_name = new_default;
+                                }
+                            }
+                        }
+                    }
                 }
                 Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
                     log::info!("[audio] Command channel disconnected, exiting");
