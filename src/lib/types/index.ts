@@ -27,6 +27,10 @@ export interface Track {
 	composer: string | null;
 	language: string | null;
 	metadata_completeness: number;
+	tags: string | null;
+	lyrics: string | null;
+	music_video_url: string | null;
+	music_video_path: string | null;
 	artist_name: string | null;
 	album_title: string | null;
 }
@@ -46,6 +50,7 @@ export interface Artist {
 	country: string | null;
 	begin_year: number | null;
 	artist_type: string | null;
+	website_url: string | null;
 	enriched_discography: string | null;
 	track_count: number;
 }
@@ -66,6 +71,7 @@ export interface Album {
 	description: string | null;
 	album_type: string | null;
 	enriched_tracklist: string | null;
+	purchase_url: string | null;
 	artist_name: string | null;
 	track_count: number;
 }

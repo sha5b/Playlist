@@ -537,40 +537,75 @@ async fn run_download(
                     }
                 }
 
-                // Step 3: YouTube search fallback with multiple query variations
+                // Step 3: YouTube search fallback with duration validation
                 if let Some(ref query) = search_query {
-                    // Build comprehensive search query variations for better matching
+                    // Get expected duration from yt-dlp info or monitored entry
+                    let expected_duration_secs = ytdlp_info.as_ref().and_then(|i| i.duration).or_else(|| {
+                        if let Ok(conn) = db.lock() {
+                            conn.query_row(
+                                "SELECT e.duration_seconds FROM monitored_playlist_entries e WHERE e.download_id = ?1",
+                                rusqlite::params![download_id],
+                                |row| row.get::<_, Option<f64>>(0),
+                            ).ok().flatten()
+                        } else {
+                            None
+                        }
+                    });
+
+                    // Build search queries, using ytsearch5: to get multiple results for duration matching
                     let query_variations = build_search_variations(query);
 
                     for (attempt, yt_query) in query_variations.iter().enumerate() {
-                        log::info!("YouTube search attempt {}: '{}'", attempt + 1, yt_query);
+                        // Replace ytsearch1: with ytsearch5: to get multiple candidates
+                        let info_query = yt_query
+                            .replace("ytsearch1:", "ytsearch5:")
+                            .replace("ytmsearch1:", "ytmsearch5:")
+                            .replace("scsearch1:", "scsearch5:");
 
-                        let app_handle_yt = app_handle.clone();
-                        let dl_id_yt = download_id;
-                        let yt_result = ytdlp::download_audio(
+                        log::info!("YouTube search attempt {}: searching '{}'", attempt + 1, info_query);
+
+                        // First, search and get info for duration matching
+                        match ytdlp::search_info(
                             &ytdlp_binary,
                             ffmpeg_dir.as_deref(),
-                            yt_query,
-                            &download_dir,
-                            &download.format,
-                            &download.quality,
-                            &file_stem,
+                            &info_query,
                             cookies_from_browser.as_deref(),
-                            move |progress| {
-                                emit_event(&app_handle_yt, dl_id_yt, "downloading", progress.percent, progress.speed.clone(), progress.eta.clone(), None, None);
-                            },
-                        )
-                        .await;
+                        ).await {
+                            Ok(results) => {
+                                if let Some(best_url) = pick_best_duration_match(&results, expected_duration_secs) {
+                                    log::info!("YouTube search attempt {}: downloading best match from {}", attempt + 1, best_url);
+                                    let app_handle_yt = app_handle.clone();
+                                    let dl_id_yt = download_id;
+                                    let yt_result = ytdlp::download_audio(
+                                        &ytdlp_binary,
+                                        ffmpeg_dir.as_deref(),
+                                        &best_url,
+                                        &download_dir,
+                                        &download.format,
+                                        &download.quality,
+                                        &file_stem,
+                                        cookies_from_browser.as_deref(),
+                                        move |progress| {
+                                            emit_event(&app_handle_yt, dl_id_yt, "downloading", progress.percent, progress.speed.clone(), progress.eta.clone(), None, None);
+                                        },
+                                    ).await;
 
-                        match yt_result {
-                            Ok(file_path) => {
-                                log::info!("YouTube search succeeded on attempt {}", attempt + 1);
-                                handle_download_success(&db, &app_handle, download_id, &file_path, &ytdlp_info).await;
-                                return;
+                                    match yt_result {
+                                        Ok(file_path) => {
+                                            log::info!("YouTube search succeeded on attempt {}", attempt + 1);
+                                            handle_download_success(&db, &app_handle, download_id, &file_path, &ytdlp_info).await;
+                                            return;
+                                        }
+                                        Err(e) => {
+                                            errors.push(format!("YouTube download attempt {}: {}", attempt + 1, e));
+                                        }
+                                    }
+                                } else {
+                                    errors.push(format!("YouTube search attempt {}: no duration-matching results", attempt + 1));
+                                }
                             }
                             Err(e) => {
                                 errors.push(format!("YouTube search attempt {}: {}", attempt + 1, e));
-                                // If bot detection (exit code 1 or 120), wait before next attempt
                                 if e.contains("exit code: 1") || e.contains("exit code: 120") {
                                     log::info!("Bot detection likely, waiting 3 seconds before retry...");
                                     tokio::time::sleep(std::time::Duration::from_secs(3)).await;
@@ -677,6 +712,10 @@ async fn handle_download_success(
             release_year: ytdlp_info.as_ref().and_then(|i| i.release_year.clone()),
             language: ytdlp_info.as_ref().and_then(|i| i.language.clone()),
             composer: ytdlp_info.as_ref().and_then(|i| i.composer.clone()),
+            tags: ytdlp_info.as_ref().and_then(|i| {
+                i.tags.as_ref().map(|t| serde_json::to_string(t).unwrap_or_default())
+            }),
+            channel_url: ytdlp_info.as_ref().and_then(|i| i.channel_url.clone()),
             target_album_id,
             target_artist_id,
         }
@@ -707,6 +746,17 @@ async fn handle_download_success(
             let _ = crate::db::monitored::update_entry_status(
                 &conn, eid, "downloaded", Some(download_id), track_id,
             );
+            // Auto-add downloaded track to the library playlist
+            if let Some(tid) = track_id {
+                // Find the playlist_id for this entry
+                if let Ok(playlist_id) = conn.query_row(
+                    "SELECT playlist_id FROM monitored_playlist_entries WHERE id = ?1",
+                    rusqlite::params![eid],
+                    |row| row.get::<_, i64>(0),
+                ) {
+                    let _ = crate::db::playlists::add_track_to_playlist(&conn, playlist_id, tid);
+                }
+            }
         }
         let _ = conn.execute_batch("COMMIT");
         eid
@@ -748,6 +798,8 @@ struct DownloadMeta {
     release_year: Option<String>,
     language: Option<String>,
     composer: Option<String>,
+    tags: Option<String>,
+    channel_url: Option<String>,
     target_album_id: Option<i64>,
     target_artist_id: Option<i64>,
 }
@@ -829,12 +881,14 @@ async fn import_downloaded_file(
     let composer = dl_meta.composer.clone();
     let release_date = dl_meta.release_year.clone();
 
+    let tags = dl_meta.tags.clone();
+
     let result = conn.execute(
         "INSERT INTO tracks (title, artist_id, album_id, album_artist, duration_ms,
             track_number, disc_number, genre, year, file_path, file_size, format,
             bitrate, sample_rate, channels, cover_art_path, source_platform, source_url,
-            description, language, composer, release_date)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, 'download', ?17, ?18, ?19, ?20, ?21)",
+            description, language, composer, release_date, tags)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, 'download', ?17, ?18, ?19, ?20, ?21, ?22)",
         rusqlite::params![
             title,
             artist_id,
@@ -857,6 +911,7 @@ async fn import_downloaded_file(
             language,
             composer,
             release_date,
+            tags,
         ],
     );
 
@@ -865,6 +920,16 @@ async fn import_downloaded_file(
             let track_id = conn.last_insert_rowid();
             let _ = crate::db::tracks::update_fts(&conn, track_id);
             let _ = crate::db::tracks::update_completeness(&conn, track_id);
+
+            // Propagate channel_url to artist website_url
+            if let Some(ref url) = dl_meta.channel_url {
+                if let Some(aid) = artist_id {
+                    let _ = conn.execute(
+                        "UPDATE artists SET website_url = ?1 WHERE id = ?2 AND website_url IS NULL",
+                        rusqlite::params![url, aid],
+                    );
+                }
+            }
 
             // Propagate cover art to album and artist
             if let Some(ref cover) = cover_art_path {
@@ -961,6 +1026,66 @@ fn emit_event(
             track_id: None,
         },
     );
+}
+
+/// Check if a candidate duration is "in the ballpark" of the expected duration.
+/// Returns true if within 30% or 30 seconds (whichever is more lenient).
+fn duration_acceptable(expected_secs: f64, candidate_secs: f64) -> bool {
+    if expected_secs <= 0.0 || candidate_secs <= 0.0 {
+        return true; // Can't validate, allow it
+    }
+    let diff = (expected_secs - candidate_secs).abs();
+    let pct_threshold = expected_secs * 0.30;
+    diff <= pct_threshold.max(30.0)
+}
+
+/// Pick the best duration-matching result from a list of search results.
+/// Returns the URL of the best match, or None if no acceptable match found.
+fn pick_best_duration_match(
+    results: &[ytdlp::VideoInfo],
+    expected_duration_secs: Option<f64>,
+) -> Option<String> {
+    if results.is_empty() {
+        return None;
+    }
+    let expected = match expected_duration_secs {
+        Some(d) if d > 0.0 => d,
+        _ => {
+            // No expected duration — just return the first result with a URL
+            return results.iter().find_map(|r| r.webpage_url.clone());
+        }
+    };
+
+    // Find all results with acceptable duration, pick the closest
+    let mut best: Option<(&ytdlp::VideoInfo, f64)> = None;
+    for result in results {
+        let candidate_dur = match result.duration {
+            Some(d) if d > 0.0 => d,
+            _ => continue,
+        };
+        if !duration_acceptable(expected, candidate_dur) {
+            log::info!(
+                "Skipping '{}' — duration {:.0}s vs expected {:.0}s",
+                result.title, candidate_dur, expected
+            );
+            continue;
+        }
+        let diff = (expected - candidate_dur).abs();
+        if best.is_none() || diff < best.unwrap().1 {
+            best = Some((result, diff));
+        }
+    }
+
+    if let Some((result, diff)) = best {
+        log::info!(
+            "Best match: '{}' — duration diff {:.0}s",
+            result.title, diff
+        );
+        result.webpage_url.clone()
+    } else {
+        log::warn!("No search results had acceptable duration (expected {:.0}s)", expected);
+        None
+    }
 }
 
 /// Build comprehensive search query variations for YouTube/SoundCloud fallback.

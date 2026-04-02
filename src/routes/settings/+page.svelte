@@ -5,7 +5,7 @@
 	import { Input } from '$lib/components/ui/input';
 	import { Slider } from '$lib/components/ui/slider';
 	import { FolderOpen, Volume2, RotateCcw, Music, Trash2, Cookie, Sparkles, Loader2, CircleX } from 'lucide-svelte';
-	import { getSetting, setSetting, resetLibrary, getMetadataStats, scanMissingMetadata, stopMetadataScan, deleteAllMetadata, cleanupDuplicateAlbums } from '$lib/api/library';
+	import { getSetting, setSetting, resetLibrary, getMetadataStats, scanMissingMetadata, stopMetadataScan, deleteAllMetadata } from '$lib/api/library';
 	import type { MetadataStats } from '$lib/types';
 	import { player } from '$lib/stores/player.svelte';
 	import { metadataScanStore } from '$lib/stores/metadataScan.svelte';
@@ -16,6 +16,7 @@
 	let downloadFormat = $state('mp3');
 	let cookiesBrowser = $state('');
 	let defaultVolume = $state(75);
+	let autoDownloadMV = $state(false);
 
 	const formatOptions = ['mp3', 'opus', 'flac', 'm4a'] as const;
 	const browserOptions = [
@@ -38,6 +39,8 @@
 			if (cookies) cookiesBrowser = cookies;
 			const vol = await getSetting('default_volume');
 			if (vol) defaultVolume = Math.round(parseFloat(vol) * 100);
+			const mvSetting = await getSetting('auto_download_music_videos');
+			autoDownloadMV = mvSetting === 'true';
 		} catch (e) {
 			console.error('Failed to load settings:', e);
 		}
@@ -101,21 +104,6 @@
 	}
 
 	let deletingMetadata = $state(false);
-	let cleaningDuplicates = $state(false);
-
-	async function handleCleanupDuplicates() {
-		cleaningDuplicates = true;
-		try {
-			const result = await cleanupDuplicateAlbums();
-			toast.success('Duplicates cleaned up', { 
-				description: `Merged ${result.merged_groups} album groups, removed ${result.deleted_duplicates} duplicates and ${result.orphaned_removed} orphaned albums` 
-			});
-		} catch (e) {
-			toast.error('Failed to cleanup duplicates', { description: String(e) });
-		} finally {
-			cleaningDuplicates = false;
-		}
-	}
 
 	async function handleStopMetadata() {
 		try {
@@ -269,7 +257,7 @@
 		</CardContent>
 	</Card>
 
-	<Card>
+	<Card id="metadata">
 		<CardHeader>
 			<CardTitle>Metadata</CardTitle>
 			<CardDescription>Enrich your library with MusicBrainz data</CardDescription>
@@ -321,6 +309,20 @@
 
 			<div class="flex items-center justify-between gap-4">
 				<div>
+					<p class="text-sm font-medium">Auto-download Music Videos</p>
+					<p class="text-xs text-muted-foreground">Download music videos automatically during metadata enrichment</p>
+				</div>
+				<Button
+					variant={autoDownloadMV ? 'default' : 'outline'}
+					size="sm"
+					onclick={async () => { autoDownloadMV = !autoDownloadMV; await setSetting('auto_download_music_videos', autoDownloadMV ? 'true' : 'false'); }}
+				>
+					{autoDownloadMV ? 'On' : 'Off'}
+				</Button>
+			</div>
+
+			<div class="flex items-center justify-between gap-4">
+				<div>
 					<p class="text-sm font-medium">Scan for Missing Metadata</p>
 					<p class="text-xs text-muted-foreground">Looks up all tracks with incomplete data on MusicBrainz and Last.fm</p>
 				</div>
@@ -361,22 +363,6 @@
 					{:else}
 						<Trash2 class="size-4" />
 						Delete Metadata
-					{/if}
-				</Button>
-			</div>
-			<Separator />
-			<div class="flex items-center justify-between gap-4">
-				<div>
-					<p class="text-sm font-medium">Cleanup Duplicate Albums</p>
-					<p class="text-xs text-muted-foreground">Merge duplicate albums with the same title and artist, and remove orphaned albums</p>
-				</div>
-				<Button variant="outline" size="sm" onclick={handleCleanupDuplicates} disabled={cleaningDuplicates}>
-					{#if cleaningDuplicates}
-						<Loader2 class="size-4 animate-spin" />
-						Cleaning...
-					{:else}
-						<Sparkles class="size-4" />
-						Cleanup
 					{/if}
 				</Button>
 			</div>

@@ -197,6 +197,7 @@ pub fn run() {
             // Playlists
             commands::library_get_playlists,
             commands::library_get_playlist,
+            commands::library_get_playlist_tracks,
             commands::library_create_playlist,
             commands::library_update_playlist,
             commands::library_delete_playlist,
@@ -274,6 +275,7 @@ pub fn run() {
             commands::metadata_stop_scan,
             commands::metadata_delete_all,
             commands::metadata_cleanup_duplicates,
+            commands::metadata_cleanup_duplicate_tracks,
             // Album download status
             commands::library_get_album_download_status,
             commands::library_get_albums_download_status,
@@ -281,6 +283,7 @@ pub fn run() {
             commands::enrich_artist,
             commands::library_get_artist_missing_albums,
             commands::download_artist_missing,
+            commands::download_music_video,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

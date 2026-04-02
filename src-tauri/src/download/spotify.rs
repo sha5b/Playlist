@@ -135,6 +135,8 @@ pub async fn fetch_playlist_entries(url: &str) -> Result<super::ytdlp::PlaylistF
                         disc_number: None,
                         composer: None,
                         language: None,
+                        tags: None,
+                        channel_url: None,
                     });
                 }
             }

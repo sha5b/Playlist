@@ -127,6 +127,14 @@ export async function getPlaylist(id: number): Promise<PlaylistDetail | null> {
 	return invoke('library_get_playlist', { id });
 }
 
+export async function getPlaylistTracks(
+	playlistId: number,
+	offset: number,
+	limit: number
+): Promise<TrackPage> {
+	return invoke('library_get_playlist_tracks', { playlistId, offset, limit });
+}
+
 export async function createPlaylist(
 	name: string,
 	description?: string
@@ -227,6 +235,12 @@ export async function enrichTrack(trackId: number): Promise<EnrichResult> {
 	return result;
 }
 
+export async function downloadMusicVideo(trackId: number): Promise<string> {
+	const result = await invoke<string>('download_music_video', { trackId });
+	invalidateCache();
+	return result;
+}
+
 export async function scanMissingMetadata(): Promise<ScanMissingResult> {
 	const result = await invoke<ScanMissingResult>('scan_missing_metadata');
 	invalidateCache();
@@ -247,15 +261,28 @@ export async function deleteAllMetadata(): Promise<void> {
 }
 
 export interface CleanupResult {
-	merged_groups: number;
-	deleted_duplicates: number;
-	orphaned_removed: number;
+	merged_album_groups: number;
+	deleted_duplicate_albums: number;
+	orphaned_albums_removed: number;
+	merged_track_groups: number;
+	deleted_duplicate_tracks: number;
 }
 
 export async function cleanupDuplicateAlbums(): Promise<CleanupResult> {
 	const result = await invoke('metadata_cleanup_duplicates');
 	invalidateCache();
 	return result as CleanupResult;
+}
+
+export interface TrackCleanupResult {
+	merged_track_groups: number;
+	deleted_duplicate_tracks: number;
+}
+
+export async function cleanupDuplicateTracks(): Promise<TrackCleanupResult> {
+	const result = await invoke('metadata_cleanup_duplicate_tracks');
+	invalidateCache();
+	return result as TrackCleanupResult;
 }
 
 // --- Album Download Status ---

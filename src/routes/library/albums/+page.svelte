@@ -42,7 +42,7 @@
 		try {
 			const result = await cleanupDuplicateAlbums();
 			toast.success('Duplicates cleaned up', { 
-				description: `Merged ${result.merged_groups} album groups, removed ${result.deleted_duplicates} duplicates and ${result.orphaned_removed} orphaned albums` 
+				description: `Merged ${result.merged_album_groups} album groups, removed ${result.deleted_duplicate_albums} duplicate albums, ${result.orphaned_albums_removed} orphaned. Merged ${result.merged_track_groups} track groups, removed ${result.deleted_duplicate_tracks} duplicate tracks.` 
 			});
 			load(); // Reload albums after cleanup
 		} catch (e) {

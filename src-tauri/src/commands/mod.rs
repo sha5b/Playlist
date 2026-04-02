@@ -198,12 +198,27 @@ pub fn library_get_playlist(
     let playlist = crate::db::playlists::get_playlist(&conn, id).map_err(|e| e.to_string())?;
     match playlist {
         Some(p) => {
+            // Backfill playlist_tracks from monitored entries for already-downloaded tracks
+            let _ = crate::db::playlists::backfill_playlist_tracks(&conn, id);
             let tracks = crate::db::playlists::get_playlist_tracks(&conn, id)
                 .map_err(|e| e.to_string())?;
             Ok(Some(PlaylistDetail { playlist: p, tracks }))
         }
         None => Ok(None),
     }
+}
+
+#[tauri::command]
+pub fn library_get_playlist_tracks(
+    db: State<'_, Arc<DbPool>>,
+    playlist_id: i64,
+    offset: i64,
+    limit: i64,
+) -> Result<TrackPage, String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    let _ = crate::db::playlists::backfill_playlist_tracks(&conn, playlist_id);
+    crate::db::playlists::get_playlist_tracks_page(&conn, playlist_id, offset, limit)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -326,6 +341,7 @@ pub fn search(
                 description: None,
                 album_type: None,
                 enriched_tracklist: None,
+                purchase_url: None,
                 artist_name: row.get(10)?,
                 track_count: row.get(11)?,
             })
@@ -363,6 +379,7 @@ pub fn search(
                 country: None,
                 begin_year: None,
                 artist_type: None,
+                website_url: None,
                 track_count: row.get(6)?,
             })
         })
@@ -952,8 +969,11 @@ pub fn manager_get_entries(
     db: State<'_, Arc<DbPool>>,
     playlist_id: i64,
 ) -> Result<Vec<MonitoredEntry>, String> {
+    log::info!("manager_get_entries called with playlist_id: {}", playlist_id);
     let conn = db.lock().map_err(|e| e.to_string())?;
-    crate::db::monitored::get_entries(&conn, playlist_id).map_err(|e| e.to_string())
+    let entries = crate::db::monitored::get_entries(&conn, playlist_id).map_err(|e| e.to_string())?;
+    log::info!("manager_get_entries returning {} entries", entries.len());
+    Ok(entries)
 }
 
 #[tauri::command]
@@ -1422,22 +1442,24 @@ pub struct ScanMissingResult {
 #[tauri::command]
 pub async fn enrich_track(
     db: State<'_, Arc<DbPool>>,
+    app_handle: tauri::AppHandle,
     track_id: i64,
 ) -> Result<EnrichResult, String> {
     // Get track info for MusicBrainz search
-    let (title, artist_name) = {
+    let (title, artist_name, duration_ms, has_lyrics, has_mv) = {
         let conn = db.lock().map_err(|e| e.to_string())?;
         let track = crate::db::tracks::get_track(&conn, track_id)
             .map_err(|e| e.to_string())?
             .ok_or_else(|| "Track not found".to_string())?;
-        (track.title, track.artist_name)
+        (track.title, track.artist_name, track.duration_ms, track.lyrics.is_some(), track.music_video_url.is_some())
     };
 
     let enrichment = crate::metadata::musicbrainz::enrich_track(&title, artist_name.as_deref()).await?;
 
-    // Apply enrichment to DB (only fill missing fields)
-    let conn = db.lock().map_err(|e| e.to_string())?;
+    // Apply enrichment to DB (only fill missing fields) — scoped to drop conn before async work
     let mut updated = 0i64;
+    {
+    let conn = db.lock().map_err(|e| e.to_string())?;
 
     macro_rules! update_if_missing {
         ($col:expr, $val:expr) => {
@@ -1458,6 +1480,33 @@ pub async fn enrich_track(
     update_if_missing!("description", enrichment.description);
     update_if_missing!("label", enrichment.label);
     update_if_missing!("language", enrichment.language);
+
+    // Merge MusicBrainz tags with existing tags
+    if let Some(ref new_tags) = enrichment.tags {
+        let existing_json: Option<String> = conn.query_row(
+            "SELECT tags FROM tracks WHERE id = ?1",
+            rusqlite::params![track_id],
+            |row| row.get(0),
+        ).ok().flatten();
+        let mut all_tags: Vec<String> = existing_json
+            .and_then(|j| serde_json::from_str::<Vec<String>>(&j).ok())
+            .unwrap_or_default();
+        for tag in new_tags {
+            let lower = tag.to_lowercase();
+            if !all_tags.iter().any(|t| t.to_lowercase() == lower) {
+                all_tags.push(tag.clone());
+            }
+        }
+        if !all_tags.is_empty() {
+            if let Ok(json) = serde_json::to_string(&all_tags) {
+                let changed = conn.execute(
+                    "UPDATE tracks SET tags = ?1 WHERE id = ?2",
+                    rusqlite::params![json, track_id],
+                ).unwrap_or(0);
+                updated += changed as i64;
+            }
+        }
+    }
 
     // Update artist info if we have MusicBrainz data
     if let Some(ref mb_artist_id) = enrichment.artist_musicbrainz_id {
@@ -1496,6 +1545,12 @@ pub async fn enrich_track(
                     rusqlite::params![by, aid],
                 );
             }
+            if let Some(ref url) = enrichment.artist_website_url {
+                let _ = conn.execute(
+                    "UPDATE artists SET website_url = ?1 WHERE id = ?2 AND website_url IS NULL",
+                    rusqlite::params![url, aid],
+                );
+            }
         }
     }
 
@@ -1523,9 +1578,108 @@ pub async fn enrich_track(
                     rusqlite::params![at, aid],
                 );
             }
+            if let Some(ref url) = enrichment.album_purchase_url {
+                let _ = conn.execute(
+                    "UPDATE albums SET purchase_url = ?1 WHERE id = ?2 AND purchase_url IS NULL",
+                    rusqlite::params![url, aid],
+                );
+            }
         }
     }
 
+    // Release DB lock before async lyrics/MV fetches
+    let _ = crate::db::tracks::update_fts(&conn, track_id);
+    } // conn dropped here
+
+    // Fetch lyrics if missing
+    if !has_lyrics {
+        if let Some(ref art) = artist_name {
+            let duration_secs = duration_ms.map(|ms| ms as f64 / 1000.0);
+            if let Ok(lyrics) = crate::metadata::lyrics::fetch_lyrics(&title, art, duration_secs).await {
+                if let Ok(conn) = db.lock() {
+                    let changed = conn.execute(
+                        "UPDATE tracks SET lyrics = ?1 WHERE id = ?2 AND lyrics IS NULL",
+                        rusqlite::params![lyrics, track_id],
+                    ).unwrap_or(0);
+                    updated += changed as i64;
+                }
+            }
+        }
+    }
+
+    // Find official music video if missing
+    if !has_mv {
+        // Step 1: Use MusicBrainz confirmed MV URL if available
+        let mut mv_url = enrichment.music_video_url.clone();
+
+        // Step 2: Fall back to YouTube search for official music video
+        if mv_url.is_none() {
+            if let Some(ref art) = artist_name {
+                let bin_dir = crate::download::setup::get_bin_dir(&app_handle);
+                let binary = crate::download::setup::resolve_ytdlp(&bin_dir)
+                    .unwrap_or_else(|| "yt-dlp".to_string());
+                let ffmpeg_dir = crate::download::setup::resolve_ffmpeg_dir(&bin_dir);
+                let cookies = db.lock().ok()
+                    .and_then(|conn| crate::db::settings::get_setting(&conn, "cookies_from_browser").ok().flatten())
+                    .filter(|s| !s.is_empty());
+                mv_url = crate::download::ytdlp::search_music_video(
+                    &binary,
+                    ffmpeg_dir.as_deref(),
+                    art,
+                    &title,
+                    cookies.as_deref(),
+                ).await;
+            }
+        }
+
+        if let Some(ref mv) = mv_url {
+            if let Ok(conn) = db.lock() {
+                let changed = conn.execute(
+                    "UPDATE tracks SET music_video_url = ?1 WHERE id = ?2 AND music_video_url IS NULL",
+                    rusqlite::params![mv, track_id],
+                ).unwrap_or(0);
+                updated += changed as i64;
+            }
+
+            // Auto-download music video if setting is enabled
+            let auto_dl = db.lock().ok()
+                .and_then(|conn| crate::db::settings::get_setting(&conn, "auto_download_music_videos").ok().flatten())
+                .map_or(false, |v| v == "true");
+            if auto_dl {
+                let mv_dir = app_handle.path().app_data_dir()
+                    .ok()
+                    .map(|d| d.join("music_videos"));
+                if let Some(ref mv_dir) = mv_dir {
+                    let _ = std::fs::create_dir_all(mv_dir);
+                    let bin_dir = crate::download::setup::get_bin_dir(&app_handle);
+                    let binary = crate::download::setup::resolve_ytdlp(&bin_dir)
+                        .unwrap_or_else(|| "yt-dlp".to_string());
+                    let ffmpeg_dir = crate::download::setup::resolve_ffmpeg_dir(&bin_dir);
+                    let cookies = db.lock().ok()
+                        .and_then(|conn| crate::db::settings::get_setting(&conn, "cookies_from_browser").ok().flatten())
+                        .filter(|s| !s.is_empty());
+                    let file_stem = format!("mv_{}", track_id);
+                    if let Ok(path) = crate::download::ytdlp::download_video(
+                        &binary,
+                        ffmpeg_dir.as_deref(),
+                        mv,
+                        mv_dir,
+                        &file_stem,
+                        cookies.as_deref(),
+                    ).await {
+                        if let Ok(conn) = db.lock() {
+                            let _ = conn.execute(
+                                "UPDATE tracks SET music_video_path = ?1 WHERE id = ?2",
+                                rusqlite::params![path, track_id],
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let conn = db.lock().map_err(|e| e.to_string())?;
     let completeness = crate::db::tracks::update_completeness(&conn, track_id)
         .map_err(|e| e.to_string())?;
 
@@ -1835,6 +1989,27 @@ pub async fn scan_missing_metadata(
                     update_if_missing!("label", enrichment.label);
                     update_if_missing!("language", enrichment.language);
 
+                    // Merge MusicBrainz tags
+                    if let Some(ref new_tags) = enrichment.tags {
+                        let existing_json: Option<String> = conn.query_row(
+                            "SELECT tags FROM tracks WHERE id = ?1",
+                            rusqlite::params![track_id],
+                            |row| row.get(0),
+                        ).ok().flatten();
+                        let mut all_tags: Vec<String> = existing_json
+                            .and_then(|j| serde_json::from_str::<Vec<String>>(&j).ok())
+                            .unwrap_or_default();
+                        for tag in new_tags {
+                            let lower = tag.to_lowercase();
+                            if !all_tags.iter().any(|t| t.to_lowercase() == lower) {
+                                all_tags.push(tag.clone());
+                            }
+                        }
+                        if let Ok(json) = serde_json::to_string(&all_tags) {
+                            let _ = conn.execute("UPDATE tracks SET tags = ?1 WHERE id = ?2", rusqlite::params![json, track_id]);
+                        }
+                    }
+
                     // Update artist
                     if let Some(ref mb_id) = enrichment.artist_musicbrainz_id {
                         let artist_id: Option<i64> = conn.query_row(
@@ -1880,6 +2055,32 @@ pub async fn scan_missing_metadata(
                 if let Ok(conn) = db.lock() {
                     let _ = crate::db::tracks::update_completeness(&conn, *track_id);
                 }
+
+                // Collect which fields were found from MusicBrainz
+                let mut mb_fields = Vec::new();
+                if enrichment.musicbrainz_id.is_some() { mb_fields.push("musicbrainz_id"); }
+                if enrichment.genre.is_some() { mb_fields.push("genre"); }
+                if enrichment.release_date.is_some() { mb_fields.push("release_date"); }
+                if enrichment.isrc.is_some() { mb_fields.push("isrc"); }
+                if enrichment.description.is_some() { mb_fields.push("description"); }
+                if enrichment.label.is_some() { mb_fields.push("label"); }
+                if enrichment.language.is_some() { mb_fields.push("language"); }
+                if enrichment.tags.is_some() { mb_fields.push("tags"); }
+                if enrichment.music_video_url.is_some() { mb_fields.push("music_video_url"); }
+                if enrichment.artist_website_url.is_some() { mb_fields.push("artist_website"); }
+                if enrichment.album_purchase_url.is_some() { mb_fields.push("album_purchase_url"); }
+
+                let _ = app_handle.emit("metadata-enrich-detail", serde_json::json!({
+                    "item_type": "track",
+                    "id": track_id,
+                    "title": title,
+                    "artist": artist_name,
+                    "status": "success",
+                    "sources": {
+                        "musicbrainz": mb_fields,
+                    },
+                }));
+
                 enriched += 1;
             }
             Err(e) => {
@@ -1914,13 +2115,46 @@ pub async fn scan_missing_metadata(
 
                                 let _ = crate::db::tracks::update_completeness(&conn, *track_id);
                             }
+
+                            let mut lfm_fields = Vec::new();
+                            if has_genre { lfm_fields.push("genre"); }
+                            if has_desc { lfm_fields.push("description"); }
+
+                            let _ = app_handle.emit("metadata-enrich-detail", serde_json::json!({
+                                "item_type": "track",
+                                "id": track_id,
+                                "title": title,
+                                "artist": artist_name,
+                                "status": "partial",
+                                "sources": {
+                                    "lastfm": lfm_fields,
+                                },
+                                "note": "MusicBrainz failed, used Last.fm fallback",
+                            }));
+
                             enriched += 1;
                         } else {
+                            let _ = app_handle.emit("metadata-enrich-detail", serde_json::json!({
+                                "item_type": "track",
+                                "id": track_id,
+                                "title": title,
+                                "artist": artist_name,
+                                "status": "failed",
+                                "error": format!("{}", e),
+                            }));
                             failed += 1;
                         }
                     }
                     Err(lastfm_err) => {
                         log::warn!("Last.fm fallback also failed for track {} ({}): {}", track_id, title, lastfm_err);
+                        let _ = app_handle.emit("metadata-enrich-detail", serde_json::json!({
+                            "item_type": "track",
+                            "id": track_id,
+                            "title": title,
+                            "artist": artist_name,
+                            "status": "failed",
+                            "error": format!("MusicBrainz: {} | Last.fm: {}", e, lastfm_err),
+                        }));
                         failed += 1;
                     }
                 }
@@ -1970,6 +2204,12 @@ pub async fn auto_enrich_library(
                      FROM albums al
                      LEFT JOIN artists a ON al.artist_id = a.id
                      WHERE al.musicbrainz_id IS NULL
+                     ORDER BY (CASE WHEN al.cover_art_path IS NULL THEN 0 ELSE 1 END)
+                            + (CASE WHEN al.year IS NULL THEN 0 ELSE 1 END)
+                            + (CASE WHEN al.genre IS NULL THEN 0 ELSE 1 END)
+                            + (CASE WHEN al.label IS NULL THEN 0 ELSE 1 END)
+                            + (CASE WHEN al.description IS NULL THEN 0 ELSE 1 END)
+                     ASC
                      LIMIT 100"
                 ) {
                     Ok(s) => s,
@@ -2023,6 +2263,14 @@ pub async fn auto_enrich_library(
             Ok(e) => e,
             Err(e) => {
                 log::warn!("Failed to enrich album '{}': {}", title, e);
+                let _ = app_handle.emit("metadata-enrich-detail", serde_json::json!({
+                    "item_type": "album",
+                    "id": album_id,
+                    "title": title,
+                    "artist": artist_name,
+                    "status": "failed",
+                    "error": format!("{}", e),
+                }));
                 continue;
             }
         };
@@ -2152,6 +2400,35 @@ pub async fn auto_enrich_library(
                 }
             }
         }
+
+        // Emit detail event for album enrichment
+        let mut mb_fields = Vec::new();
+        if enrichment.musicbrainz_id.is_some() { mb_fields.push("musicbrainz_id"); }
+        if enrichment.release_date.is_some() { mb_fields.push("release_date"); }
+        if enrichment.label.is_some() { mb_fields.push("label"); }
+        if enrichment.album_type.is_some() { mb_fields.push("album_type"); }
+        if enrichment.genre.is_some() { mb_fields.push("genre"); }
+        if !enrichment.tracklist.is_empty() { mb_fields.push("tracklist"); }
+        if enrichment.total_tracks.is_some() { mb_fields.push("total_tracks"); }
+
+        let mut lfm_fields = Vec::new();
+        if let Some(ref d) = lastfm_data {
+            if !d.tags.is_empty() { lfm_fields.push("genre"); }
+            if d.description.is_some() { lfm_fields.push("description"); }
+            if d.image_url.is_some() { lfm_fields.push("cover_art"); }
+        }
+
+        let _ = app_handle.emit("metadata-enrich-detail", serde_json::json!({
+            "item_type": "album",
+            "id": album_id,
+            "title": title,
+            "artist": artist_name,
+            "status": "success",
+            "sources": {
+                "musicbrainz": mb_fields,
+                "lastfm": lfm_fields,
+            },
+        }));
     }
 
     // 2. Enrich tracks with low completeness
@@ -2232,6 +2509,27 @@ pub async fn auto_enrich_library(
                     update_track!("description", enrichment.description);
                     update_track!("label", enrichment.label);
                     update_track!("language", enrichment.language);
+
+                    // Merge tags
+                    if let Some(ref new_tags) = enrichment.tags {
+                        let existing_json: Option<String> = conn.query_row(
+                            "SELECT tags FROM tracks WHERE id = ?1",
+                            rusqlite::params![track_id],
+                            |row| row.get(0),
+                        ).ok().flatten();
+                        let mut all_tags: Vec<String> = existing_json
+                            .and_then(|j| serde_json::from_str::<Vec<String>>(&j).ok())
+                            .unwrap_or_default();
+                        for tag in new_tags {
+                            let lower = tag.to_lowercase();
+                            if !all_tags.iter().any(|t| t.to_lowercase() == lower) {
+                                all_tags.push(tag.clone());
+                            }
+                        }
+                        if let Ok(json) = serde_json::to_string(&all_tags) {
+                            let _ = conn.execute("UPDATE tracks SET tags = ?1 WHERE id = ?2", rusqlite::params![json, track_id]);
+                        }
+                    }
                 }
                 // conn is dropped here
 
@@ -2259,9 +2557,38 @@ pub async fn auto_enrich_library(
                 if let Ok(conn) = db.lock() {
                     let _ = crate::db::tracks::update_completeness(&conn, *track_id);
                 }
+
+                let mut mb_fields = Vec::new();
+                if enrichment.musicbrainz_id.is_some() { mb_fields.push("musicbrainz_id"); }
+                if enrichment.genre.is_some() { mb_fields.push("genre"); }
+                if enrichment.release_date.is_some() { mb_fields.push("release_date"); }
+                if enrichment.isrc.is_some() { mb_fields.push("isrc"); }
+                if enrichment.description.is_some() { mb_fields.push("description"); }
+                if enrichment.label.is_some() { mb_fields.push("label"); }
+                if enrichment.language.is_some() { mb_fields.push("language"); }
+                if enrichment.tags.is_some() { mb_fields.push("tags"); }
+
+                let _ = app_handle.emit("metadata-enrich-detail", serde_json::json!({
+                    "item_type": "track",
+                    "id": track_id,
+                    "title": title,
+                    "artist": artist_name,
+                    "status": "success",
+                    "sources": {
+                        "musicbrainz": mb_fields,
+                    },
+                }));
             }
             Err(e) => {
                 log::warn!("Failed to enrich track '{}': {}", title, e);
+                let _ = app_handle.emit("metadata-enrich-detail", serde_json::json!({
+                    "item_type": "track",
+                    "id": track_id,
+                    "title": title,
+                    "artist": artist_name,
+                    "status": "failed",
+                    "error": format!("{}", e),
+                }));
             }
         }
     }
@@ -2329,61 +2656,93 @@ pub fn metadata_cleanup_duplicates(
     db: State<'_, Arc<DbPool>>,
 ) -> Result<serde_json::Value, String> {
     let conn = db.lock().map_err(|e| e.to_string())?;
-    
-    // Find duplicate albums (same title + artist)
-    let duplicates: Vec<(String, Option<i64>)> = conn.prepare(
-        "SELECT title, artist_id FROM albums 
-         GROUP BY LOWER(title), artist_id 
-         HAVING COUNT(*) > 1"
+
+    // === PHASE 1: Merge duplicate albums ===
+    // Group by LOWER(title) only — same album name with different artist_ids
+    // (e.g. different featured artists) should be merged into one album.
+    let dup_titles: Vec<String> = conn.prepare(
+        "SELECT LOWER(title) FROM albums GROUP BY LOWER(title) HAVING COUNT(*) > 1"
     )
     .map_err(|e| e.to_string())?
-    .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<i64>>(1)?)))
+    .query_map([], |row| row.get(0))
     .map_err(|e| e.to_string())?
     .filter_map(|r| r.ok())
     .collect();
 
-    let mut merged_count = 0;
+    let mut merged_album_groups = 0;
     let mut deleted_albums = 0;
 
-    for (title, artist_id) in duplicates {
-        // Get all album IDs with this title + artist
-        let album_ids: Vec<i64> = if let Some(aid) = artist_id {
-            conn.prepare("SELECT id FROM albums WHERE LOWER(title) = LOWER(?1) AND artist_id = ?2 ORDER BY id ASC")
-                .map_err(|e| e.to_string())?
-                .query_map(params![&title, aid], |row| row.get(0))
-                .map_err(|e| e.to_string())?
-                .filter_map(|r| r.ok())
-                .collect()
-        } else {
-            conn.prepare("SELECT id FROM albums WHERE LOWER(title) = LOWER(?1) AND artist_id IS NULL ORDER BY id ASC")
-                .map_err(|e| e.to_string())?
-                .query_map(params![&title], |row| row.get(0))
-                .map_err(|e| e.to_string())?
-                .filter_map(|r| r.ok())
-                .collect()
-        };
+    for lower_title in &dup_titles {
+        // Get all album IDs with this title, ordered so the one with the most tracks comes first
+        let album_ids: Vec<i64> = conn.prepare(
+            "SELECT a.id FROM albums a
+             LEFT JOIN (SELECT album_id, COUNT(*) as cnt FROM tracks WHERE album_id IS NOT NULL GROUP BY album_id) tc
+               ON tc.album_id = a.id
+             WHERE LOWER(a.title) = ?1
+             ORDER BY COALESCE(tc.cnt, 0) DESC, a.id ASC"
+        )
+        .map_err(|e| e.to_string())?
+        .query_map(params![lower_title], |row| row.get(0))
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
 
-        if album_ids.len() > 1 {
-            let keep_id = album_ids[0];
-            let delete_ids = &album_ids[1..];
-
-            // Move all tracks from duplicate albums to the kept album
-            for &dup_id in delete_ids {
-                conn.execute(
-                    "UPDATE tracks SET album_id = ?1 WHERE album_id = ?2",
-                    params![keep_id, dup_id],
-                ).map_err(|e| e.to_string())?;
-            }
-
-            // Delete duplicate albums
-            for &dup_id in delete_ids {
-                conn.execute("DELETE FROM albums WHERE id = ?1", params![dup_id])
-                    .map_err(|e| e.to_string())?;
-                deleted_albums += 1;
-            }
-
-            merged_count += 1;
+        if album_ids.len() <= 1 {
+            continue;
         }
+
+        let keep_id = album_ids[0];
+        let delete_ids = &album_ids[1..];
+
+        // Merge: move all tracks from duplicate albums to the kept album
+        for &dup_id in delete_ids {
+            conn.execute(
+                "UPDATE tracks SET album_id = ?1 WHERE album_id = ?2",
+                params![keep_id, dup_id],
+            ).map_err(|e| e.to_string())?;
+        }
+
+        // If the kept album has no artist_id but a duplicate does, adopt it
+        let keep_artist: Option<i64> = conn.query_row(
+            "SELECT artist_id FROM albums WHERE id = ?1", params![keep_id], |row| row.get(0),
+        ).map_err(|e| e.to_string())?;
+        if keep_artist.is_none() {
+            for &dup_id in delete_ids {
+                let dup_artist: Option<i64> = conn.query_row(
+                    "SELECT artist_id FROM albums WHERE id = ?1", params![dup_id], |row| row.get(0),
+                ).map_err(|e| e.to_string())?;
+                if dup_artist.is_some() {
+                    conn.execute(
+                        "UPDATE albums SET artist_id = ?2 WHERE id = ?1",
+                        params![keep_id, dup_artist],
+                    ).map_err(|e| e.to_string())?;
+                    break;
+                }
+            }
+        }
+
+        // Fill in missing metadata fields from duplicates
+        conn.execute(
+            "UPDATE albums SET
+                cover_art_path = COALESCE(cover_art_path, (SELECT cover_art_path FROM albums WHERE LOWER(title) = ?2 AND cover_art_path IS NOT NULL AND id != ?1 LIMIT 1)),
+                year = COALESCE(year, (SELECT year FROM albums WHERE LOWER(title) = ?2 AND year IS NOT NULL AND id != ?1 LIMIT 1)),
+                genre = COALESCE(genre, (SELECT genre FROM albums WHERE LOWER(title) = ?2 AND genre IS NOT NULL AND id != ?1 LIMIT 1)),
+                musicbrainz_id = COALESCE(musicbrainz_id, (SELECT musicbrainz_id FROM albums WHERE LOWER(title) = ?2 AND musicbrainz_id IS NOT NULL AND id != ?1 LIMIT 1)),
+                label = COALESCE(label, (SELECT label FROM albums WHERE LOWER(title) = ?2 AND label IS NOT NULL AND id != ?1 LIMIT 1)),
+                release_date = COALESCE(release_date, (SELECT release_date FROM albums WHERE LOWER(title) = ?2 AND release_date IS NOT NULL AND id != ?1 LIMIT 1)),
+                description = COALESCE(description, (SELECT description FROM albums WHERE LOWER(title) = ?2 AND description IS NOT NULL AND id != ?1 LIMIT 1))
+             WHERE id = ?1",
+            params![keep_id, lower_title],
+        ).map_err(|e| e.to_string())?;
+
+        // Delete the duplicate albums
+        for &dup_id in delete_ids {
+            conn.execute("DELETE FROM albums WHERE id = ?1", params![dup_id])
+                .map_err(|e| e.to_string())?;
+            deleted_albums += 1;
+        }
+
+        merged_album_groups += 1;
     }
 
     // Clean up orphaned albums (no tracks)
@@ -2392,13 +2751,197 @@ pub fn metadata_cleanup_duplicates(
         [],
     ).map_err(|e| e.to_string())?;
 
-    log::info!("Cleaned up {} duplicate album groups, deleted {} duplicate albums, removed {} orphaned albums", 
-               merged_count, deleted_albums, orphaned);
+    // === PHASE 2: Deduplicate tracks ===
+    // Find tracks with same title + same artist (case-insensitive) that are duplicates.
+    // Keep the one with: highest metadata_completeness, then largest file_size, then lowest id.
+    let dup_track_groups: Vec<(String, Option<i64>)> = conn.prepare(
+        "SELECT LOWER(title), artist_id FROM tracks
+         GROUP BY LOWER(title), artist_id
+         HAVING COUNT(*) > 1"
+    )
+    .map_err(|e| e.to_string())?
+    .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+    .map_err(|e| e.to_string())?
+    .filter_map(|r| r.ok())
+    .collect();
+
+    let mut merged_track_groups = 0;
+    let mut deleted_tracks = 0;
+
+    for (lower_title, artist_id) in &dup_track_groups {
+        // Get all track IDs for this group, best quality first
+        let track_ids: Vec<i64> = if let Some(aid) = artist_id {
+            conn.prepare(
+                "SELECT id FROM tracks
+                 WHERE LOWER(title) = ?1 AND artist_id = ?2
+                 ORDER BY COALESCE(metadata_completeness, 0) DESC, COALESCE(file_size, 0) DESC, id ASC"
+            )
+            .map_err(|e| e.to_string())?
+            .query_map(params![lower_title, aid], |row| row.get(0))
+            .map_err(|e| e.to_string())?
+            .filter_map(|r| r.ok())
+            .collect()
+        } else {
+            conn.prepare(
+                "SELECT id FROM tracks
+                 WHERE LOWER(title) = ?1 AND artist_id IS NULL
+                 ORDER BY COALESCE(metadata_completeness, 0) DESC, COALESCE(file_size, 0) DESC, id ASC"
+            )
+            .map_err(|e| e.to_string())?
+            .query_map(params![lower_title], |row| row.get(0))
+            .map_err(|e| e.to_string())?
+            .filter_map(|r| r.ok())
+            .collect()
+        };
+
+        if track_ids.len() <= 1 {
+            continue;
+        }
+
+        let keep_id = track_ids[0];
+        let delete_ids = &track_ids[1..];
+
+        // Update playlist_tracks to point to the kept track
+        for &dup_id in delete_ids {
+            // Only update if the kept track isn't already in the same playlist
+            conn.execute(
+                "UPDATE OR IGNORE playlist_tracks SET track_id = ?1 WHERE track_id = ?2",
+                params![keep_id, dup_id],
+            ).map_err(|e| e.to_string())?;
+            // Remove any remaining references that conflicted
+            conn.execute(
+                "DELETE FROM playlist_tracks WHERE track_id = ?1",
+                params![dup_id],
+            ).map_err(|e| e.to_string())?;
+        }
+
+        // Delete duplicate tracks (and their files)
+        for &dup_id in delete_ids {
+            // Get file path before deleting so we can clean up the file
+            let file_path: Option<String> = conn.query_row(
+                "SELECT file_path FROM tracks WHERE id = ?1",
+                params![dup_id],
+                |row| row.get(0),
+            ).ok();
+
+            conn.execute("DELETE FROM tracks WHERE id = ?1", params![dup_id])
+                .map_err(|e| e.to_string())?;
+
+            // Remove the duplicate file from disk
+            if let Some(path) = file_path {
+                let _ = std::fs::remove_file(&path);
+            }
+
+            deleted_tracks += 1;
+        }
+
+        merged_track_groups += 1;
+    }
+
+    log::info!(
+        "Cleanup: merged {} album groups (deleted {}), removed {} orphaned albums, merged {} track groups (deleted {} duplicate tracks)",
+        merged_album_groups, deleted_albums, orphaned, merged_track_groups, deleted_tracks
+    );
 
     Ok(serde_json::json!({
-        "merged_groups": merged_count,
-        "deleted_duplicates": deleted_albums,
-        "orphaned_removed": orphaned
+        "merged_album_groups": merged_album_groups,
+        "deleted_duplicate_albums": deleted_albums,
+        "orphaned_albums_removed": orphaned,
+        "merged_track_groups": merged_track_groups,
+        "deleted_duplicate_tracks": deleted_tracks
+    }))
+}
+
+/// Deduplicate tracks only (same title + artist, keep best quality).
+#[tauri::command]
+pub fn metadata_cleanup_duplicate_tracks(
+    db: State<'_, Arc<DbPool>>,
+) -> Result<serde_json::Value, String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+
+    let dup_track_groups: Vec<(String, Option<i64>)> = conn.prepare(
+        "SELECT LOWER(title), artist_id FROM tracks
+         GROUP BY LOWER(title), artist_id
+         HAVING COUNT(*) > 1"
+    )
+    .map_err(|e| e.to_string())?
+    .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+    .map_err(|e| e.to_string())?
+    .filter_map(|r| r.ok())
+    .collect();
+
+    let mut merged_track_groups = 0;
+    let mut deleted_tracks = 0;
+
+    for (lower_title, artist_id) in &dup_track_groups {
+        let track_ids: Vec<i64> = if let Some(aid) = artist_id {
+            conn.prepare(
+                "SELECT id FROM tracks
+                 WHERE LOWER(title) = ?1 AND artist_id = ?2
+                 ORDER BY COALESCE(metadata_completeness, 0) DESC, COALESCE(file_size, 0) DESC, id ASC"
+            )
+            .map_err(|e| e.to_string())?
+            .query_map(params![lower_title, aid], |row| row.get(0))
+            .map_err(|e| e.to_string())?
+            .filter_map(|r| r.ok())
+            .collect()
+        } else {
+            conn.prepare(
+                "SELECT id FROM tracks
+                 WHERE LOWER(title) = ?1 AND artist_id IS NULL
+                 ORDER BY COALESCE(metadata_completeness, 0) DESC, COALESCE(file_size, 0) DESC, id ASC"
+            )
+            .map_err(|e| e.to_string())?
+            .query_map(params![lower_title], |row| row.get(0))
+            .map_err(|e| e.to_string())?
+            .filter_map(|r| r.ok())
+            .collect()
+        };
+
+        if track_ids.len() <= 1 {
+            continue;
+        }
+
+        let keep_id = track_ids[0];
+        let delete_ids = &track_ids[1..];
+
+        for &dup_id in delete_ids {
+            conn.execute(
+                "UPDATE OR IGNORE playlist_tracks SET track_id = ?1 WHERE track_id = ?2",
+                params![keep_id, dup_id],
+            ).map_err(|e| e.to_string())?;
+            conn.execute(
+                "DELETE FROM playlist_tracks WHERE track_id = ?1",
+                params![dup_id],
+            ).map_err(|e| e.to_string())?;
+
+            let file_path: Option<String> = conn.query_row(
+                "SELECT file_path FROM tracks WHERE id = ?1",
+                params![dup_id],
+                |row| row.get(0),
+            ).ok();
+
+            conn.execute("DELETE FROM tracks WHERE id = ?1", params![dup_id])
+                .map_err(|e| e.to_string())?;
+
+            if let Some(path) = file_path {
+                let _ = std::fs::remove_file(&path);
+            }
+
+            deleted_tracks += 1;
+        }
+
+        merged_track_groups += 1;
+    }
+
+    log::info!(
+        "Track cleanup: merged {} groups, deleted {} duplicate tracks",
+        merged_track_groups, deleted_tracks
+    );
+
+    Ok(serde_json::json!({
+        "merged_track_groups": merged_track_groups,
+        "deleted_duplicate_tracks": deleted_tracks
     }))
 }
 
@@ -2767,4 +3310,67 @@ pub async fn download_artist_missing(
     }
 
     Ok(all_downloads)
+}
+
+#[tauri::command]
+pub async fn download_music_video(
+    db: State<'_, Arc<DbPool>>,
+    app_handle: tauri::AppHandle,
+    track_id: i64,
+) -> Result<String, String> {
+    // Get track info
+    let mv_url = {
+        let conn = db.lock().map_err(|e| e.to_string())?;
+        let url: Option<String> = conn.query_row(
+            "SELECT music_video_url FROM tracks WHERE id = ?1",
+            params![track_id],
+            |row| row.get(0),
+        ).map_err(|e| e.to_string())?;
+        url
+    };
+
+    let mv_url = mv_url.ok_or("Track has no music video URL")?;
+
+    // Store music videos in app data dir (not user's download dir)
+    let mv_dir = app_handle.path().app_data_dir()
+        .map_err(|e| format!("Failed to get app data dir: {}", e))?
+        .join("music_videos");
+    std::fs::create_dir_all(&mv_dir)
+        .map_err(|e| format!("Failed to create music_videos dir: {}", e))?;
+    let download_dir = mv_dir.to_string_lossy().to_string();
+
+    let bin_dir = crate::download::setup::get_bin_dir(&app_handle);
+    let binary = crate::download::setup::resolve_ytdlp(&bin_dir)
+        .unwrap_or_else(|| "yt-dlp".to_string());
+    let ffmpeg_dir = crate::download::setup::resolve_ffmpeg_dir(&bin_dir);
+    let cookies = {
+        let conn = db.lock().map_err(|e| e.to_string())?;
+        crate::db::settings::get_setting(&conn, "cookies_from_browser")
+            .ok()
+            .flatten()
+            .filter(|s| !s.is_empty())
+    };
+
+    let file_stem = format!("mv_{}", track_id);
+    let output_dir = std::path::Path::new(&download_dir);
+
+    let path = crate::download::ytdlp::download_video(
+        &binary,
+        ffmpeg_dir.as_deref(),
+        &mv_url,
+        output_dir,
+        &file_stem,
+        cookies.as_deref(),
+    ).await?;
+
+    // Save path to DB
+    {
+        let conn = db.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE tracks SET music_video_path = ?1 WHERE id = ?2",
+            params![path, track_id],
+        ).map_err(|e| e.to_string())?;
+    }
+
+    Ok(path)
 }

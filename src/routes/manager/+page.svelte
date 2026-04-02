@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { page } from '$app/stores';
 	import { listen } from '@tauri-apps/api/event';
 	import { Input } from '$lib/components/ui/input';
 	import { Button } from '$lib/components/ui/button';
@@ -73,6 +74,8 @@
 	// --- Download tab state ---
 	let urlInput = $state('');
 	let submitting = $state(false);
+	let completedPage = $state(0);
+	const completedPageSize = 50;
 
 	// --- History tab state ---
 	let history: DownloadType[] = $state([]);
@@ -94,8 +97,17 @@
 	let entriesPage = $state(0);
 	const entriesPageSize = 50;
 
-	// --- Active tab ---
-	let activeTab = $state('playlists');
+	// --- Active tab (read from URL param) ---
+	const validTabs = ['playlists', 'downloads', 'history'];
+	let activeTab = $state($page.url.searchParams.get('tab') || 'playlists');
+
+	// Sync tab with URL param changes
+	$effect(() => {
+		const tabParam = $page.url.searchParams.get('tab');
+		if (tabParam && validTabs.includes(tabParam)) {
+			activeTab = tabParam;
+		}
+	});
 
 	// --- Initialize ---
 	$effect(() => {
@@ -296,16 +308,19 @@
 	}
 
 	async function openPlaylist(pl: MonitoredPlaylist) {
+		toast.info(`Loading ${pl.name}...`);
 		selectedPlaylist = pl;
+		entriesPage = 0;
 		await loadEntries(pl.id);
+		toast.success(`Loaded ${selectedEntries.length} entries`);
 	}
 
 	async function loadEntries(playlistId: number) {
 		loadingEntries = true;
 		try {
 			selectedEntries = await getEntries(playlistId);
-		} catch {
-			toast.error('Failed to load entries');
+		} catch (e) {
+			toast.error('Failed to load entries', { description: String(e) });
 		} finally {
 			loadingEntries = false;
 		}
@@ -425,10 +440,15 @@
 		)
 	);
 
-	const completedDownloads = $derived(
+	const allCompletedDownloads = $derived(
 		downloadStore.downloads.filter(
 			(d) => d.status === 'completed' || d.status === 'failed' || d.status === 'cancelled'
 		)
+	);
+
+	const completedTotalPages = $derived(Math.ceil(allCompletedDownloads.length / completedPageSize));
+	const completedDownloads = $derived(
+		allCompletedDownloads.slice(completedPage * completedPageSize, (completedPage + 1) * completedPageSize)
 	);
 
 	// Cache album names for grouped downloads
@@ -590,7 +610,7 @@
 							<Badge variant="default" class="ml-1 h-5 min-w-5 px-1 text-xs">{totalNewAcrossPlaylists}</Badge>
 						{/if}
 					</Tabs.Trigger>
-					<Tabs.Trigger value="download" class="gap-1.5">
+					<Tabs.Trigger value="downloads" class="gap-1.5">
 						<Download class="size-4" />
 						Downloads
 						{#if activeDownloads.length > 0}
@@ -775,18 +795,27 @@
 								</div>
 								
 								{#if sortedEntries.length > entriesPageSize}
-									<div class="flex items-center justify-between pt-2 border-t">
-										<p class="text-xs text-muted-foreground">
-											Showing {entriesPage * entriesPageSize + 1}-{Math.min((entriesPage + 1) * entriesPageSize, sortedEntries.length)} of {sortedEntries.length}
-										</p>
-										<div class="flex gap-1">
-											<Button variant="outline" size="sm" onclick={prevEntriesPage} disabled={entriesPage === 0}>
-												<ChevronLeft class="size-4" />
-											</Button>
-											<Button variant="outline" size="sm" onclick={nextEntriesPage} disabled={(entriesPage + 1) * entriesPageSize >= sortedEntries.length}>
-												<ChevronRight class="size-4" />
-											</Button>
-										</div>
+									{@const totalPages = Math.ceil(sortedEntries.length / entriesPageSize)}
+									<div class="flex items-center justify-center gap-2 pt-2 border-t">
+										<Button
+											variant="outline"
+											size="sm"
+											onclick={prevEntriesPage}
+											disabled={entriesPage === 0}
+										>
+											Previous
+										</Button>
+										<span class="text-sm text-muted-foreground">
+											Page {entriesPage + 1} of {totalPages}
+										</span>
+										<Button
+											variant="outline"
+											size="sm"
+											onclick={nextEntriesPage}
+											disabled={entriesPage >= totalPages - 1}
+										>
+											Next
+										</Button>
 									</div>
 								{/if}
 							</div>
@@ -930,8 +959,8 @@
 				{/if}
 			</Tabs.Content>
 
-			<!-- ==================== DOWNLOAD TAB ==================== -->
-			<Tabs.Content value="download" class="space-y-4 mt-4">
+			<!-- ==================== DOWNLOADS TAB ==================== -->
+			<Tabs.Content value="downloads" class="space-y-4 mt-4">
 				<!-- URL Input -->
 				<div class="flex gap-2 max-w-2xl">
 					<div class="relative flex-1">
@@ -970,28 +999,37 @@
 									</div>
 									<div class="divide-y divide-border">
 										{#each group.downloads.slice(0, 20) as dl (dl.id)}
-											<div class="flex items-center gap-4 px-4 py-3">
-												<div class="flex-1 min-w-0 space-y-1.5">
-													<div class="flex items-center gap-2">
-														<p class="text-sm truncate">{dl.title || dl.url}</p>
-														<Badge variant={platformColor(dl.platform)} class="text-xs shrink-0">
-															{platformLabel(dl.platform)}
-														</Badge>
-													</div>
+											<div class="flex items-center gap-3 px-4 py-3">
+												<div class="shrink-0">
 													{#if dl.status === 'downloading'}
-														<div class="flex items-center gap-3">
-															<Progress value={dl.progress} class="flex-1" />
-															<span class="text-xs text-muted-foreground w-12 text-right">{Math.round(dl.progress)}%</span>
-														</div>
+														<Loader2 class="size-4 animate-spin text-muted-foreground" />
 													{:else if dl.status === 'processing'}
-														<div class="flex items-center gap-2">
-															<Loader2 class="size-3 animate-spin text-muted-foreground" />
-															<span class="text-xs text-muted-foreground">Importing...</span>
-														</div>
+														<Loader2 class="size-4 animate-spin text-green-500" />
 													{:else}
-														<span class="text-xs text-muted-foreground">Queued</span>
+														<Clock class="size-4 text-muted-foreground" />
 													{/if}
 												</div>
+												<div class="flex-1 min-w-0">
+													<p class="text-sm truncate">{dl.title || dl.url}</p>
+													<div class="flex items-center gap-2 mt-0.5">
+														{#if dl.artist}
+															<span class="text-xs text-muted-foreground truncate">{dl.artist}</span>
+														{/if}
+														{#if dl.status === 'downloading'}
+															<span class="text-xs text-muted-foreground">{Math.round(dl.progress)}%</span>
+														{:else if dl.status === 'processing'}
+															<span class="text-xs text-muted-foreground">Importing...</span>
+														{:else}
+															<span class="text-xs text-muted-foreground">Queued</span>
+														{/if}
+													</div>
+													{#if dl.status === 'downloading'}
+														<Progress value={dl.progress} class="mt-1.5 h-1" />
+													{/if}
+												</div>
+												<Badge variant={platformColor(dl.platform)} class="text-xs shrink-0">
+													{platformLabel(dl.platform)}
+												</Badge>
 												<Button variant="ghost" size="sm" onclick={() => handleCancel(dl.id)}>
 													<X class="size-4" />
 												</Button>
@@ -1006,34 +1044,45 @@
 								</div>
 							{:else}
 								<!-- Ungrouped downloads -->
-								{#each group.downloads.slice(0, 20) as dl (dl.id)}
-									<div class="flex items-center gap-4 rounded-lg border border-border p-4">
-										<div class="flex-1 min-w-0 space-y-2">
-											<div class="flex items-center gap-2">
-												<p class="text-sm font-medium truncate">{dl.title || dl.url}</p>
-												<Badge variant={platformColor(dl.platform)} class="text-xs shrink-0">
-													{platformLabel(dl.platform)}
-												</Badge>
+								<div class="space-y-1">
+									{#each group.downloads.slice(0, 20) as dl (dl.id)}
+										<div class="flex items-center gap-3 rounded-lg border border-border p-3 hover:bg-accent/50 transition-colors">
+											<div class="shrink-0">
+												{#if dl.status === 'downloading'}
+													<Loader2 class="size-4 animate-spin text-muted-foreground" />
+												{:else if dl.status === 'processing'}
+													<Loader2 class="size-4 animate-spin text-green-500" />
+												{:else}
+													<Clock class="size-4 text-muted-foreground" />
+												{/if}
 											</div>
-											{#if dl.status === 'downloading'}
-												<div class="flex items-center gap-3">
-													<Progress value={dl.progress} class="flex-1" />
-													<span class="text-xs text-muted-foreground w-12 text-right">{Math.round(dl.progress)}%</span>
+											<div class="flex-1 min-w-0">
+												<p class="text-sm truncate">{dl.title || dl.url}</p>
+												<div class="flex items-center gap-2 mt-0.5">
+													{#if dl.artist}
+														<span class="text-xs text-muted-foreground truncate">{dl.artist}</span>
+													{/if}
+													{#if dl.status === 'downloading'}
+														<span class="text-xs text-muted-foreground">{Math.round(dl.progress)}%</span>
+													{:else if dl.status === 'processing'}
+														<span class="text-xs text-muted-foreground">Importing...</span>
+													{:else}
+														<span class="text-xs text-muted-foreground">Queued</span>
+													{/if}
 												</div>
-											{:else if dl.status === 'processing'}
-												<div class="flex items-center gap-2">
-													<Loader2 class="size-3 animate-spin text-muted-foreground" />
-													<span class="text-xs text-muted-foreground">Importing to library...</span>
-												</div>
-											{:else}
-												<span class="text-xs text-muted-foreground">Queued</span>
-											{/if}
+												{#if dl.status === 'downloading'}
+													<Progress value={dl.progress} class="mt-1.5 h-1" />
+												{/if}
+											</div>
+											<Badge variant={platformColor(dl.platform)} class="text-xs shrink-0">
+												{platformLabel(dl.platform)}
+											</Badge>
+											<Button variant="ghost" size="sm" onclick={() => handleCancel(dl.id)}>
+												<X class="size-4" />
+											</Button>
 										</div>
-										<Button variant="ghost" size="sm" onclick={() => handleCancel(dl.id)}>
-											<X class="size-4" />
-										</Button>
-									</div>
-								{/each}
+									{/each}
+								</div>
 								{#if group.downloads.length > 20}
 									<p class="text-xs text-muted-foreground text-center py-2">
 										and {group.downloads.length - 20} more queued...
@@ -1045,45 +1094,74 @@
 				{/if}
 
 				<!-- Completed -->
-				{#if completedDownloads.length > 0}
+				{#if allCompletedDownloads.length > 0}
 					<div class="space-y-3">
-						<h2 class="text-lg font-semibold">Recent</h2>
-						{#each completedDownloads as dl (dl.id)}
-							<div class="flex items-center gap-4 rounded-lg border border-border p-3">
-								<div class="shrink-0">
-									{#if dl.status === 'completed'}
-										<CheckCircle2 class="size-5 text-green-500" />
-									{:else if dl.status === 'failed'}
-										<XCircle class="size-5 text-destructive" />
-									{:else}
-										<XCircle class="size-5 text-muted-foreground" />
-									{/if}
-								</div>
-								<div class="flex-1 min-w-0">
-									<p class="text-sm font-medium truncate">{dl.title || dl.url}</p>
-									<div class="flex items-center gap-2 mt-0.5">
-										<Badge variant={platformColor(dl.platform)} class="text-xs">
-											{platformLabel(dl.platform)}
-										</Badge>
-										{#if dl.status === 'failed' && dl.error_message}
-											<span class="text-xs text-destructive truncate">{dl.error_message}</span>
+						<h2 class="text-lg font-semibold">Recent ({allCompletedDownloads.length})</h2>
+						<div class="space-y-1">
+							{#each completedDownloads as dl (dl.id)}
+								<div class="flex items-center gap-3 rounded-lg border border-border p-3 hover:bg-accent/50 transition-colors">
+									<div class="shrink-0">
+										{#if dl.status === 'completed'}
+											<CheckCircle2 class="size-4 text-green-500" />
+										{:else if dl.status === 'failed'}
+											<XCircle class="size-4 text-destructive" />
 										{:else}
-											<span class="text-xs text-muted-foreground">{dl.format.toUpperCase()}</span>
+											<XCircle class="size-4 text-muted-foreground" />
 										{/if}
 									</div>
+									<div class="flex-1 min-w-0">
+										<p class="text-sm truncate">{dl.title || dl.url}</p>
+										<div class="flex items-center gap-2 mt-0.5">
+											{#if dl.artist}
+												<span class="text-xs text-muted-foreground truncate">{dl.artist}</span>
+											{/if}
+											{#if dl.status === 'failed' && dl.error_message}
+												<span class="text-xs text-destructive truncate">{dl.error_message}</span>
+											{:else}
+												<span class="text-xs text-muted-foreground">{dl.format.toUpperCase()}</span>
+											{/if}
+										</div>
+									</div>
+									<Badge variant={platformColor(dl.platform)} class="text-xs shrink-0">
+										{platformLabel(dl.platform)}
+									</Badge>
+									{#if dl.status === 'failed'}
+										<Button variant="ghost" size="sm" onclick={() => handleRetry(dl.id)}>
+											<RotateCcw class="size-4" />
+										</Button>
+									{/if}
 								</div>
-								{#if dl.status === 'failed'}
-									<Button variant="ghost" size="sm" onclick={() => handleRetry(dl.id)}>
-										<RotateCcw class="size-4" />
-									</Button>
-								{/if}
+							{/each}
+						</div>
+
+						{#if completedTotalPages > 1}
+							<div class="flex items-center justify-center gap-2 pt-2">
+								<Button
+									variant="outline"
+									size="sm"
+									disabled={completedPage === 0}
+									onclick={() => completedPage--}
+								>
+									Previous
+								</Button>
+								<span class="text-sm text-muted-foreground">
+									Page {completedPage + 1} of {completedTotalPages}
+								</span>
+								<Button
+									variant="outline"
+									size="sm"
+									disabled={completedPage >= completedTotalPages - 1}
+									onclick={() => completedPage++}
+								>
+									Next
+								</Button>
 							</div>
-						{/each}
+						{/if}
 					</div>
 				{/if}
 
 				<!-- Empty state -->
-				{#if activeDownloads.length === 0 && completedDownloads.length === 0}
+				{#if activeDownloads.length === 0 && allCompletedDownloads.length === 0}
 					<div class="flex flex-col items-center justify-center h-32 rounded-lg border border-dashed border-border gap-2">
 						<Download class="size-6 text-muted-foreground" />
 						<p class="text-muted-foreground text-sm">Paste a URL above to start downloading</p>
@@ -1117,7 +1195,7 @@
 						<div class="space-y-3">
 							<div class="space-y-1">
 								{#each history as dl (dl.id)}
-									<div class="flex items-center gap-3 rounded-lg border border-border p-3">
+									<div class="flex items-center gap-3 rounded-lg border border-border p-3 hover:bg-accent/50 transition-colors">
 										<div class="shrink-0">
 											{#if dl.status === 'completed'}
 												<CheckCircle2 class="size-4 text-green-500" />
@@ -1131,30 +1209,46 @@
 										</div>
 										<div class="flex-1 min-w-0">
 											<p class="text-sm truncate">{dl.title || dl.url}</p>
-											<span class="text-xs text-muted-foreground">
-												{platformLabel(dl.platform)} &middot; {formatDate(dl.created_at)}
-											</span>
+											<div class="flex items-center gap-2 mt-0.5">
+												{#if dl.artist}
+													<span class="text-xs text-muted-foreground truncate">{dl.artist}</span>
+													<span class="text-xs text-muted-foreground">&middot;</span>
+												{/if}
+												<span class="text-xs text-muted-foreground">{formatDate(dl.created_at)}</span>
+											</div>
 										</div>
+										<Badge variant={platformColor(dl.platform)} class="text-xs shrink-0">
+											{platformLabel(dl.platform)}
+										</Badge>
 										<Badge variant="outline" class="text-xs shrink-0">
 											{dl.status}
 										</Badge>
 									</div>
 								{/each}
 							</div>
-							
+
 							{#if historyTotal > historyPageSize}
-								<div class="flex items-center justify-between pt-2 border-t">
-									<p class="text-xs text-muted-foreground">
-										Showing {historyPage * historyPageSize + 1}-{Math.min((historyPage + 1) * historyPageSize, historyTotal)} of {historyTotal}
-									</p>
-									<div class="flex gap-1">
-										<Button variant="outline" size="sm" onclick={prevHistoryPage} disabled={historyPage === 0}>
-											<ChevronLeft class="size-4" />
-										</Button>
-										<Button variant="outline" size="sm" onclick={nextHistoryPage} disabled={(historyPage + 1) * historyPageSize >= historyTotal}>
-											<ChevronRight class="size-4" />
-										</Button>
-									</div>
+								{@const totalPages = Math.ceil(historyTotal / historyPageSize)}
+								<div class="flex items-center justify-center gap-2 pt-2 border-t">
+									<Button
+										variant="outline"
+										size="sm"
+										onclick={prevHistoryPage}
+										disabled={historyPage === 0}
+									>
+										Previous
+									</Button>
+									<span class="text-sm text-muted-foreground">
+										Page {historyPage + 1} of {totalPages}
+									</span>
+									<Button
+										variant="outline"
+										size="sm"
+										onclick={nextHistoryPage}
+										disabled={historyPage >= totalPages - 1}
+									>
+										Next
+									</Button>
 								</div>
 							{/if}
 						</div>

@@ -4,7 +4,7 @@ use super::models::Artist;
 
 const ARTIST_COLUMNS: &str =
     "a.id, a.name, a.sort_name, a.musicbrainz_id, a.image_path, a.bio,
-     a.country, a.begin_year, a.artist_type,
+     a.country, a.begin_year, a.artist_type, a.website_url,
      COUNT(t.id) as track_count";
 
 fn row_to_artist(row: &Row) -> Result<Artist, rusqlite::Error> {
@@ -18,7 +18,8 @@ fn row_to_artist(row: &Row) -> Result<Artist, rusqlite::Error> {
         country: row.get(6)?,
         begin_year: row.get(7)?,
         artist_type: row.get(8)?,
-        track_count: row.get(9)?,
+        website_url: row.get(9)?,
+        track_count: row.get(10)?,
     })
 }
 

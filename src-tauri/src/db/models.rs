@@ -30,6 +30,10 @@ pub struct Track {
     pub composer: Option<String>,
     pub language: Option<String>,
     pub metadata_completeness: i64,
+    pub tags: Option<String>,
+    pub lyrics: Option<String>,
+    pub music_video_url: Option<String>,
+    pub music_video_path: Option<String>,
     // Denormalized for display
     pub artist_name: Option<String>,
     pub album_title: Option<String>,
@@ -52,6 +56,7 @@ pub struct Artist {
     pub country: Option<String>,
     pub begin_year: Option<i64>,
     pub artist_type: Option<String>,
+    pub website_url: Option<String>,
     pub track_count: i64,
 }
 
@@ -72,6 +77,7 @@ pub struct Album {
     pub description: Option<String>,
     pub album_type: Option<String>,
     pub enriched_tracklist: Option<String>,
+    pub purchase_url: Option<String>,
     pub artist_name: Option<String>,
     pub track_count: i64,
 }

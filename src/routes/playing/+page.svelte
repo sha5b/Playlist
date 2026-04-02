@@ -3,11 +3,38 @@
 	import { Slider } from '$lib/components/ui/slider';
 	import {
 		Shuffle, SkipBack, Play, Pause, SkipForward,
-		Repeat, Repeat1, Music, Trash2, AudioLines, History
+		Repeat, Repeat1, Music, Trash2, AudioLines, History,
+		Image, Film, Type, Info
 	} from 'lucide-svelte';
 	import { player } from '$lib/stores/player.svelte';
+	import { getTrack } from '$lib/api/library';
 	import { formatDuration, assetUrl } from '$lib/utils/format';
 	import DndQueueList from '$lib/components/player/DndQueueList.svelte';
+	import SyncedLyrics from '$lib/components/player/SyncedLyrics.svelte';
+	import type { Track } from '$lib/types';
+
+	type DisplayMode = 'artwork' | 'video' | 'lyrics';
+	let preferredMode = $state<DisplayMode>('artwork');
+	let fullTrack = $state<Track | null>(null);
+
+	const hasVideo = $derived(!!fullTrack?.music_video_path);
+	const hasLyrics = $derived(!!fullTrack?.lyrics);
+
+	// Effective mode: use preferred if available, otherwise fall back to artwork
+	const displayMode = $derived.by(() => {
+		if (preferredMode === 'video' && hasVideo) return 'video';
+		if (preferredMode === 'lyrics' && hasLyrics) return 'lyrics';
+		return 'artwork';
+	});
+
+	$effect(() => {
+		const id = player.currentTrack?.id;
+		if (id) {
+			getTrack(id).then(t => { fullTrack = t; });
+		} else {
+			fullTrack = null;
+		}
+	});
 
 	function handleProgressChange(value: number) {
 		const seconds = (value / 100) * (player.durationMs / 1000);
@@ -44,9 +71,19 @@
 		<div class="p-6 space-y-8">
 			<!-- Hero: Current Track -->
 			<div class="flex gap-8 items-start">
-				<!-- Large album art -->
+				<!-- Display area: artwork / video / lyrics -->
 				<div class="size-64 lg:size-72 shrink-0 rounded-xl bg-muted overflow-hidden shadow-2xl shadow-black/40">
-					{#if player.currentTrack?.cover_art_path}
+					{#if displayMode === 'video' && fullTrack?.music_video_path}
+						<!-- svelte-ignore a11y_media_has_caption -->
+						<video
+							src={assetUrl(fullTrack.music_video_path)}
+							controls
+							autoplay
+							class="size-full object-cover"
+						></video>
+					{:else if displayMode === 'lyrics' && fullTrack?.lyrics}
+						<SyncedLyrics lyrics={fullTrack.lyrics} positionMs={player.positionMs} />
+					{:else if player.currentTrack?.cover_art_path}
 						<img
 							src={assetUrl(player.currentTrack.cover_art_path)}
 							alt=""
@@ -60,7 +97,37 @@
 				</div>
 
 				<!-- Track info + controls -->
-				<div class="flex flex-col flex-1 min-w-0 pt-2">
+				<div class="relative flex flex-col flex-1 min-w-0 pt-2">
+					<!-- Mode toggle overlay (top-right of info area) -->
+					<div class="absolute top-2 right-0 flex gap-1">
+						<Button
+							variant={displayMode === 'artwork' ? 'default' : 'ghost'}
+							size="icon"
+							class="size-7"
+							onclick={() => preferredMode = 'artwork'}
+						>
+							<Image class="size-3.5" />
+						</Button>
+						<Button
+							variant={displayMode === 'video' ? 'default' : 'ghost'}
+							size="icon"
+							class="size-7"
+							disabled={!hasVideo}
+							onclick={() => preferredMode = 'video'}
+						>
+							<Film class="size-3.5" />
+						</Button>
+						<Button
+							variant={displayMode === 'lyrics' ? 'default' : 'ghost'}
+							size="icon"
+							class="size-7"
+							disabled={!hasLyrics}
+							onclick={() => preferredMode = 'lyrics'}
+						>
+							<Type class="size-3.5" />
+						</Button>
+					</div>
+
 					<p class="text-xs font-semibold uppercase tracking-wider text-primary mb-2">Now Playing</p>
 					<h1 class="text-3xl lg:text-4xl font-bold tracking-tight truncate">
 						{player.currentTrack?.title}
@@ -73,6 +140,14 @@
 							{player.currentTrack.album_title}
 						</p>
 					{/if}
+
+					<a
+						href="/library/songs/{player.currentTrack?.id}"
+						class="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors mt-2 w-fit"
+					>
+						<Info class="size-3.5" />
+						Song Details
+					</a>
 
 					<!-- Playback controls -->
 					<div class="flex flex-col gap-3 mt-8 max-w-md">

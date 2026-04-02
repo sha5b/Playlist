@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
-	import { Music, Clock, Hash, Play, ListPlus, ListStart, Trash2, MoreHorizontal, Download } from 'lucide-svelte';
+	import { Music, Clock, Hash, Play, ListPlus, ListStart, Trash2, MoreHorizontal, Download, ArrowUp, ArrowDown } from 'lucide-svelte';
 	import { formatDuration, assetUrl } from '$lib/utils/format';
 	import { player } from '$lib/stores/player.svelte';
 	import * as DropdownMenu from '$lib/components/ui/dropdown-menu';
@@ -27,6 +27,9 @@
 		ondelete,
 		ondownload,
 		navigable = true,
+		sortBy = '',
+		sortDir = 'asc',
+		onsort,
 	}: {
 		tracks: Track[];
 		placeholders?: { track_number: number; disc_number: number; title?: string }[];
@@ -34,6 +37,9 @@
 		ondelete?: (track: Track) => void;
 		ondownload?: (placeholder: { track_number: number; disc_number: number; title?: string }) => void;
 		navigable?: boolean;
+		sortBy?: string;
+		sortDir?: 'asc' | 'desc';
+		onsort?: (column: string) => void;
 	} = $props();
 
 	// Merge tracks and placeholders, sorted by disc/track number (only when placeholders exist)
@@ -112,12 +118,25 @@
 			<div class="w-12 px-4 py-3 text-center">
 				<Hash class="size-3 inline" />
 			</div>
-			<div class="flex-1 px-4 py-3 text-left">Title</div>
-			<div class="w-40 px-4 py-3 text-left">Artist</div>
+			<button class="flex-1 px-4 py-3 text-left flex items-center gap-1 hover:text-foreground transition-colors" onclick={() => onsort?.('title')}>
+				Title
+				{#if sortBy === 'title'}
+					{#if sortDir === 'asc'}<ArrowUp class="size-3" />{:else}<ArrowDown class="size-3" />{/if}
+				{/if}
+			</button>
+			<button class="w-40 px-4 py-3 text-left flex items-center gap-1 hover:text-foreground transition-colors" onclick={() => onsort?.('artist_name')}>
+				Artist
+				{#if sortBy === 'artist_name'}
+					{#if sortDir === 'asc'}<ArrowUp class="size-3" />{:else}<ArrowDown class="size-3" />{/if}
+				{/if}
+			</button>
 			<div class="w-40 px-4 py-3 text-left hidden lg:block">Album</div>
-			<div class="w-20 px-4 py-3 text-right">
-				<Clock class="size-3 inline" />
-			</div>
+			<button class="w-20 px-4 py-3 text-right flex items-center justify-end gap-1 hover:text-foreground transition-colors" onclick={() => onsort?.('duration_ms')}>
+				<Clock class="size-3" />
+				{#if sortBy === 'duration_ms'}
+					{#if sortDir === 'asc'}<ArrowUp class="size-3" />{:else}<ArrowDown class="size-3" />{/if}
+				{/if}
+			</button>
 			<div class="w-10"></div>
 		</div>
 		<!-- Virtualized scrollable body -->

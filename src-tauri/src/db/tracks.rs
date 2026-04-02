@@ -2,7 +2,7 @@ use rusqlite::{params, Connection, Row};
 
 use super::models::{Track, TrackPage};
 
-/// Shared column list for track queries. Indexes 0–27.
+/// Shared column list for track queries. Indexes 0–32.
 const TRACK_COLUMNS: &str =
     "t.id, t.title, t.duration_ms, t.track_number, t.disc_number,
      t.genre, t.year, t.file_path, t.file_size, t.format, t.bitrate,
@@ -11,7 +11,7 @@ const TRACK_COLUMNS: &str =
      a.name as artist_name, al.title as album_title, t.album_artist,
      t.artist_id, t.album_id,
      t.description, t.label, t.release_date, t.composer, t.language,
-     t.metadata_completeness";
+     t.metadata_completeness, t.tags, t.lyrics, t.music_video_url, t.music_video_path";
 
 /// Map a row (using TRACK_COLUMNS order) into a Track.
 fn row_to_track(row: &Row) -> Result<Track, rusqlite::Error> {
@@ -46,6 +46,10 @@ fn row_to_track(row: &Row) -> Result<Track, rusqlite::Error> {
         composer: row.get(27)?,
         language: row.get(28)?,
         metadata_completeness: row.get(29)?,
+        tags: row.get(30)?,
+        lyrics: row.get(31)?,
+        music_video_url: row.get(32)?,
+        music_video_path: row.get(33)?,
     })
 }
 
@@ -57,11 +61,15 @@ pub fn get_tracks(
     sort_dir: &str,
     search: Option<&str>,
 ) -> Result<TrackPage, rusqlite::Error> {
-    let allowed_sort = match sort_by {
-        "title" | "date_added" | "duration_ms" | "play_count" | "year" => sort_by,
-        _ => "date_added",
+    let order_clause = match sort_by {
+        "title" => format!("t.title {}", if sort_dir == "asc" { "ASC" } else { "DESC" }),
+        "artist_name" => format!("a.name {}", if sort_dir == "asc" { "ASC" } else { "DESC" }),
+        "duration_ms" => format!("t.duration_ms {}", if sort_dir == "asc" { "ASC" } else { "DESC" }),
+        "play_count" => format!("t.play_count {}", if sort_dir == "asc" { "ASC" } else { "DESC" }),
+        "year" => format!("t.year {}", if sort_dir == "asc" { "ASC" } else { "DESC" }),
+        "random" => "RANDOM()".to_string(),
+        _ => format!("t.date_added {}", if sort_dir == "asc" { "ASC" } else { "DESC" }),
     };
-    let dir = if sort_dir == "asc" { "ASC" } else { "DESC" };
 
     // When searching, use FTS for matching then apply sort/pagination
     let (where_clause, count_sql, use_fts) = match search {
@@ -88,9 +96,9 @@ pub fn get_tracks(
          LEFT JOIN artists a ON t.artist_id = a.id
          LEFT JOIN albums al ON t.album_id = al.id
          {}
-         ORDER BY t.{} {}
+         ORDER BY {}
          LIMIT ?1 OFFSET ?2",
-        TRACK_COLUMNS, where_clause, allowed_sort, dir
+        TRACK_COLUMNS, where_clause, order_clause
     );
 
     let mut stmt = conn.prepare(&sql)?;

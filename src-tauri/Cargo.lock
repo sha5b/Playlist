@@ -3430,6 +3430,7 @@ dependencies = [
  "crossbeam-channel",
  "futures-util",
  "hex",
+ "libc",
  "lofty",
  "log",
  "md-5",

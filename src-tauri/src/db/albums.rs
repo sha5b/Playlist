@@ -7,7 +7,7 @@ const ALBUM_COLUMNS: &str =
     "al.id, al.title, al.artist_id, al.album_artist, al.year, al.genre,
      al.total_tracks, al.total_discs, al.musicbrainz_id, al.cover_art_path,
      al.label, al.release_date, al.description, al.album_type,
-     al.enriched_tracklist, a.name as artist_name, COUNT(t.id) as track_count";
+     al.enriched_tracklist, al.purchase_url, a.name as artist_name, COUNT(t.id) as track_count";
 
 fn row_to_album(row: &Row) -> Result<Album, rusqlite::Error> {
     Ok(Album {
@@ -26,8 +26,9 @@ fn row_to_album(row: &Row) -> Result<Album, rusqlite::Error> {
         description: row.get(12)?,
         album_type: row.get(13)?,
         enriched_tracklist: row.get(14)?,
-        artist_name: row.get(15)?,
-        track_count: row.get(16)?,
+        purchase_url: row.get(15)?,
+        artist_name: row.get(16)?,
+        track_count: row.get(17)?,
     })
 }
 
@@ -38,24 +39,22 @@ pub fn find_or_create(
     album_artist: Option<&str>,
     year: Option<i64>,
 ) -> Result<i64, rusqlite::Error> {
-    // Try to find existing album by title + artist
-    let existing = if let Some(aid) = artist_id {
-        conn.query_row(
-            "SELECT id FROM albums WHERE title = ?1 COLLATE NOCASE AND artist_id = ?2",
-            params![title, aid],
-            |row| row.get::<_, i64>(0),
-        )
-        .ok()
-    } else {
-        conn.query_row(
-            "SELECT id FROM albums WHERE title = ?1 COLLATE NOCASE AND artist_id IS NULL",
-            params![title],
-            |row| row.get::<_, i64>(0),
-        )
-        .ok()
-    };
+    // Match by title alone (case-insensitive) — the same album with different
+    // featured artists should not create separate album records.
+    let existing: Option<i64> = conn.query_row(
+        "SELECT id FROM albums WHERE title = ?1 COLLATE NOCASE LIMIT 1",
+        params![title],
+        |row| row.get(0),
+    ).ok();
 
     if let Some(id) = existing {
+        // Back-fill artist_id if the existing album doesn't have one yet
+        if artist_id.is_some() {
+            conn.execute(
+                "UPDATE albums SET artist_id = COALESCE(artist_id, ?2) WHERE id = ?1",
+                params![id, artist_id],
+            )?;
+        }
         return Ok(id);
     }
 

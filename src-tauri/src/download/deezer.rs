@@ -434,6 +434,8 @@ pub async fn fetch_playlist_entries(url: &str) -> Result<super::ytdlp::PlaylistF
                     disc_number: track["disk_number"].as_i64(),
                     composer: None,
                     language: None,
+                    tags: None,
+                    channel_url: None,
                 });
             }
         }

@@ -3,14 +3,16 @@
 	import { Separator } from '$lib/components/ui/separator';
 	import { Button } from '$lib/components/ui/button';
 	import * as Tooltip from '$lib/components/ui/tooltip';
-	import { Home, Music, Disc, Users, ListMusic, Settings, PanelLeftClose, PanelLeft, LayoutDashboard, Download, AudioLines } from 'lucide-svelte';
+	import { Home, Music, Disc, Users, ListMusic, Settings, PanelLeftClose, PanelLeft, LayoutDashboard, Download, AudioLines, Sparkles } from 'lucide-svelte';
 	import { ui } from '$lib/stores/ui.svelte';
 	import { downloadStore } from '$lib/stores/downloads.svelte';
+	import { metadataScanStore } from '$lib/stores/metadataScan.svelte';
 
 	const navItems = [
 		{ href: '/', label: 'Home', icon: Home },
 		{ href: '/playing', label: 'Playing', icon: AudioLines },
 		{ href: '/manager', label: 'Manager', icon: LayoutDashboard },
+		{ href: '/metadata', label: 'Metadata', icon: Sparkles },
 	];
 
 	const libraryItems = [
@@ -128,7 +130,7 @@
 				<Tooltip.Root>
 					<Tooltip.Trigger>
 						<a
-							href="/manager"
+							href="/manager?tab=downloads"
 							class="flex items-center justify-center rounded-lg p-2 transition-colors text-primary"
 						>
 							<div class="relative">
@@ -145,11 +147,61 @@
 				</Tooltip.Root>
 			{:else}
 				<a
-					href="/manager"
+					href="/manager?tab=downloads"
 					class="flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition-colors text-primary hover:bg-sidebar-accent/50"
 				>
 					<Download class="size-4 shrink-0 animate-pulse" />
 					<span class="flex-1">{downloadStore.activeCount} downloading</span>
+				</a>
+			{/if}
+		{/if}
+
+		{#if metadataScanStore.active}
+			{@const isScan = metadataScanStore.scanning}
+			{@const scanProg = metadataScanStore.progress}
+			{@const label = isScan
+				? (scanProg ? `Enriching ${scanProg.current}/${scanProg.total}` : 'Enriching…')
+				: `${metadataScanStore.autoPhase === 'albums' ? 'Albums' : 'Tracks'} ${metadataScanStore.autoCurrent}/${metadataScanStore.autoTotal}`}
+			{@const pct = isScan
+				? (scanProg ? Math.round((scanProg.current / scanProg.total) * 100) : 0)
+				: (metadataScanStore.autoTotal > 0 ? Math.round((metadataScanStore.autoCurrent / metadataScanStore.autoTotal) * 100) : 0)}
+			{@const subtitle = isScan ? scanProg?.track_title : metadataScanStore.autoTitle}
+			{#if collapsed}
+				<Tooltip.Root>
+					<Tooltip.Trigger>
+						<a
+							href="/metadata"
+							class="flex items-center justify-center rounded-lg p-2 transition-colors text-amber-400"
+						>
+							<Sparkles class="size-4 shrink-0 animate-pulse" />
+						</a>
+					</Tooltip.Trigger>
+					<Tooltip.Content side="right">
+						{label}
+					</Tooltip.Content>
+				</Tooltip.Root>
+			{:else}
+				<a
+					href="/metadata"
+					class="flex flex-col gap-1 rounded-lg px-3 py-2 text-sm transition-colors text-amber-400 hover:bg-sidebar-accent/50"
+				>
+					<div class="flex items-center gap-3">
+						<Sparkles class="size-4 shrink-0 animate-pulse" />
+						<span class="flex-1 truncate">{label}</span>
+					</div>
+					{#if pct > 0 || subtitle}
+						<div class="ml-7 flex flex-col gap-0.5">
+							<div class="h-1 w-full rounded-full bg-amber-400/20">
+								<div
+									class="h-1 rounded-full bg-amber-400 transition-all"
+									style="width: {pct}%"
+								></div>
+							</div>
+							{#if subtitle}
+								<span class="text-[10px] text-amber-400/70 truncate">{subtitle}</span>
+							{/if}
+						</div>
+					{/if}
 				</a>
 			{/if}
 		{/if}

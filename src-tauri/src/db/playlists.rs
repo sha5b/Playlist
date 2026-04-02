@@ -1,6 +1,6 @@
 use rusqlite::{params, Connection};
 
-use super::models::{Playlist, Track};
+use super::models::{Playlist, Track, TrackPage};
 
 pub fn get_playlists(conn: &Connection) -> Result<Vec<Playlist>, rusqlite::Error> {
     let mut stmt = conn.prepare(
@@ -173,6 +173,25 @@ pub fn reorder_playlist(
     Ok(())
 }
 
+/// Backfill playlist_tracks from monitored_playlist_entries for downloaded tracks
+/// that haven't been linked yet (e.g. tracks downloaded before auto-link was added).
+pub fn backfill_playlist_tracks(conn: &Connection, playlist_id: i64) -> Result<(), rusqlite::Error> {
+    let inserted: usize = conn.execute(
+        "INSERT OR IGNORE INTO playlist_tracks (playlist_id, track_id, position)
+         SELECT ?1, e.track_id,
+                COALESCE((SELECT MAX(position) FROM playlist_tracks WHERE playlist_id = ?1), 0) + ROW_NUMBER() OVER (ORDER BY e.position)
+         FROM monitored_playlist_entries e
+         WHERE e.playlist_id = ?1
+           AND e.track_id IS NOT NULL
+           AND e.track_id NOT IN (SELECT track_id FROM playlist_tracks WHERE playlist_id = ?1)",
+        params![playlist_id],
+    )?;
+    if inserted > 0 {
+        refresh_playlist_counts(conn, playlist_id)?;
+    }
+    Ok(())
+}
+
 pub fn get_playlist_tracks(conn: &Connection, playlist_id: i64) -> Result<Vec<Track>, rusqlite::Error> {
     let mut stmt = conn.prepare(
         "SELECT t.id, t.title, t.duration_ms, t.track_number, t.disc_number,
@@ -182,7 +201,7 @@ pub fn get_playlist_tracks(conn: &Connection, playlist_id: i64) -> Result<Vec<Tr
                 a.name as artist_name, al.title as album_title, t.album_artist,
                 t.artist_id, t.album_id,
                 t.description, t.label, t.release_date, t.composer, t.language,
-                t.metadata_completeness
+                t.metadata_completeness, t.tags, t.lyrics, t.music_video_url, t.music_video_path
          FROM playlist_tracks pt
          JOIN tracks t ON t.id = pt.track_id
          LEFT JOIN artists a ON t.artist_id = a.id
@@ -224,11 +243,89 @@ pub fn get_playlist_tracks(conn: &Connection, playlist_id: i64) -> Result<Vec<Tr
                 composer: row.get(27)?,
                 language: row.get(28)?,
                 metadata_completeness: row.get(29)?,
+                tags: row.get(30)?,
+                lyrics: row.get(31)?,
+                music_video_url: row.get(32)?,
+                music_video_path: row.get(33)?,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
 
     Ok(tracks)
+}
+
+pub fn get_playlist_tracks_page(
+    conn: &Connection,
+    playlist_id: i64,
+    offset: i64,
+    limit: i64,
+) -> Result<TrackPage, rusqlite::Error> {
+    let total: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM playlist_tracks WHERE playlist_id = ?1",
+        params![playlist_id],
+        |row| row.get(0),
+    )?;
+
+    let mut stmt = conn.prepare(
+        "SELECT t.id, t.title, t.duration_ms, t.track_number, t.disc_number,
+                t.genre, t.year, t.file_path, t.file_size, t.format, t.bitrate,
+                t.sample_rate, t.channels, t.cover_art_path, t.source_platform,
+                t.source_url, t.play_count, t.last_played_at, t.date_added,
+                a.name as artist_name, al.title as album_title, t.album_artist,
+                t.artist_id, t.album_id,
+                t.description, t.label, t.release_date, t.composer, t.language,
+                t.metadata_completeness, t.tags, t.lyrics, t.music_video_url, t.music_video_path
+         FROM playlist_tracks pt
+         JOIN tracks t ON t.id = pt.track_id
+         LEFT JOIN artists a ON t.artist_id = a.id
+         LEFT JOIN albums al ON t.album_id = al.id
+         WHERE pt.playlist_id = ?1
+         ORDER BY pt.position
+         LIMIT ?2 OFFSET ?3",
+    )?;
+
+    let tracks = stmt
+        .query_map(params![playlist_id, limit, offset], |row| {
+            Ok(Track {
+                id: row.get(0)?,
+                title: row.get(1)?,
+                artist_id: row.get(22)?,
+                album_id: row.get(23)?,
+                album_artist: row.get(21)?,
+                duration_ms: row.get(2)?,
+                track_number: row.get(3)?,
+                disc_number: row.get(4)?,
+                genre: row.get(5)?,
+                year: row.get(6)?,
+                file_path: row.get(7)?,
+                file_size: row.get(8)?,
+                format: row.get(9)?,
+                bitrate: row.get(10)?,
+                sample_rate: row.get(11)?,
+                channels: row.get(12)?,
+                cover_art_path: row.get(13)?,
+                source_platform: row.get(14)?,
+                source_url: row.get(15)?,
+                play_count: row.get(16)?,
+                last_played_at: row.get(17)?,
+                date_added: row.get(18)?,
+                artist_name: row.get(19)?,
+                album_title: row.get(20)?,
+                description: row.get(24)?,
+                label: row.get(25)?,
+                release_date: row.get(26)?,
+                composer: row.get(27)?,
+                language: row.get(28)?,
+                metadata_completeness: row.get(29)?,
+                tags: row.get(30)?,
+                lyrics: row.get(31)?,
+                music_video_url: row.get(32)?,
+                music_video_path: row.get(33)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok(TrackPage { tracks, total })
 }
 
 fn refresh_playlist_counts(conn: &Connection, playlist_id: i64) -> Result<(), rusqlite::Error> {

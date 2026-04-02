@@ -125,6 +125,7 @@ pub fn upsert_entries(
     playlist_id: i64,
     entries: &[(String, Option<String>, Option<String>, Option<f64>, Option<String>)], // (url, title, artist, duration, thumbnail)
 ) -> Result<(i64, i64), rusqlite::Error> {
+    log::info!("upsert_entries called for playlist_id: {} with {} entries", playlist_id, entries.len());
     let mut new_count = 0i64;
 
     // Batch all upserts in a single transaction for dramatically faster writes
@@ -182,6 +183,7 @@ pub fn upsert_entries(
 
     conn.execute_batch("COMMIT")?;
 
+    log::info!("upsert_entries completed: new={}, total={} for playlist_id={}", new_count, total_count, playlist_id);
     Ok((new_count, total_count))
 }
 
@@ -232,7 +234,10 @@ fn query_entries(conn: &Connection, playlist_id: i64, status_filter: Option<&str
 
 /// Get all entries for a monitored playlist
 pub fn get_entries(conn: &Connection, playlist_id: i64) -> Result<Vec<MonitoredEntry>, rusqlite::Error> {
-    query_entries(conn, playlist_id, None)
+    log::info!("get_entries called for playlist_id: {}", playlist_id);
+    let entries = query_entries(conn, playlist_id, None)?;
+    log::info!("get_entries returning {} entries for playlist_id: {}", entries.len(), playlist_id);
+    Ok(entries)
 }
 
 /// Get new (not yet downloaded) entries for a monitored playlist

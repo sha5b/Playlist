@@ -1,23 +1,50 @@
 <script lang="ts">
 	import { page } from '$app/state';
-	import { getTrack, enrichTrack } from '$lib/api/library';
+	import { getTrack, enrichTrack, getAlbum, getArtist, downloadMusicVideo } from '$lib/api/library';
 	import { Button } from '$lib/components/ui/button';
 	import { player } from '$lib/stores/player.svelte';
-	import { formatDuration, formatFileSize, formatDate, assetUrl } from '$lib/utils/format';
-	import { ArrowLeft, Music, Play, ListStart, ListPlus, Loader2, Sparkles } from 'lucide-svelte';
+	import { formatDuration, formatFileSize, formatDate, assetUrl, platformLabel } from '$lib/utils/format';
+	import { ArrowLeft, Music, Play, ListStart, ListPlus, Loader2, Sparkles, ExternalLink, User, Disc3, Download } from 'lucide-svelte';
 	import { toast } from 'svelte-sonner';
-	import type { Track } from '$lib/types';
+	import type { Track, Album, Artist } from '$lib/types';
 
 	let track = $state<Track | null>(null);
+	let album = $state<Album | null>(null);
+	let artist = $state<Artist | null>(null);
 	let loading = $state(true);
 	let enriching = $state(false);
+	let downloadingMV = $state(false);
+	let lyricsOpen = $state(false);
 
 	const trackId = $derived(Number(page.params.id));
 
+	const parsedTags = $derived.by(() => {
+		if (!track?.tags) return [];
+		try { return JSON.parse(track.tags) as string[]; } catch { return []; }
+	});
+
+	const plainLyrics = $derived.by(() => {
+		if (!track?.lyrics) return '';
+		// Strip LRC timestamps [mm:ss.xx] for plain display
+		return track.lyrics.replace(/\[\d{2}:\d{2}(?:\.\d{2,3})?\]/g, '').trim();
+	});
+
 	async function load(id: number) {
 		loading = true;
+		album = null;
+		artist = null;
 		try {
-			track = await getTrack(id);
+			const t = await getTrack(id);
+			track = t;
+			if (t) {
+				// Load album and artist in parallel
+				const [albumResult, artistResult] = await Promise.all([
+					t.album_id ? getAlbum(t.album_id).catch(() => null) : null,
+					t.artist_id ? getArtist(t.artist_id).catch(() => null) : null,
+				]);
+				album = albumResult;
+				artist = artistResult;
+			}
 		} catch (e) {
 			console.error('Failed to load track:', e);
 		} finally {
@@ -56,6 +83,30 @@
 			toast.error('Failed to enrich metadata', { description: String(e) });
 		} finally {
 			enriching = false;
+		}
+	}
+
+	function youtubeVideoId(url: string): string | null {
+		const m = url.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([\w-]+)/);
+		return m ? m[1] : null;
+	}
+
+	function youtubeThumbnail(url: string): string | null {
+		const id = youtubeVideoId(url);
+		return id ? `https://img.youtube.com/vi/${id}/maxresdefault.jpg` : null;
+	}
+
+	async function handleDownloadMV() {
+		if (!track || downloadingMV) return;
+		downloadingMV = true;
+		try {
+			await downloadMusicVideo(track.id);
+			toast.success('Music video downloaded');
+			track = await getTrack(track.id);
+		} catch (e) {
+			toast.error('Failed to download music video', { description: String(e) });
+		} finally {
+			downloadingMV = false;
 		}
 	}
 
@@ -155,6 +206,117 @@
 			</div>
 		{/if}
 
+		{#if parsedTags.length > 0}
+			<div class="rounded-lg border border-border p-5">
+				<h2 class="text-sm font-semibold uppercase tracking-wider text-muted-foreground mb-3">Tags</h2>
+				<div class="flex flex-wrap gap-2">
+					{#each parsedTags as tag}
+						<span class="inline-flex items-center rounded-full bg-secondary px-3 py-1 text-xs font-medium text-secondary-foreground">
+							{tag}
+						</span>
+					{/each}
+				</div>
+			</div>
+		{/if}
+
+		{@const hasCards = !!(album || artist || track.source_url)}
+		{#if track.music_video_url || hasCards}
+			<div class="flex gap-4">
+				{#if track.music_video_url}
+					<div class="flex-1 min-w-0 rounded-lg overflow-hidden self-start">
+						{#if track.music_video_path}
+							<!-- svelte-ignore a11y_media_has_caption -->
+							<video
+								src={assetUrl(track.music_video_path)}
+								controls
+								class="w-full block bg-black"
+							></video>
+						{:else}
+							{@const thumb = youtubeThumbnail(track.music_video_url)}
+							<button
+								class="relative w-full aspect-video bg-black group cursor-pointer block p-0 m-0 border-0"
+								onclick={handleDownloadMV}
+								disabled={downloadingMV}
+							>
+								{#if thumb}
+									<img src={thumb} alt="" class="absolute inset-0 w-full h-full object-cover opacity-40 group-hover:opacity-60 transition-opacity" />
+								{/if}
+								<div class="absolute inset-0 flex flex-col items-center justify-center gap-2">
+									{#if downloadingMV}
+										<Loader2 class="size-8 text-white animate-spin" />
+										<span class="text-xs text-white/80 font-medium">Downloading...</span>
+									{:else}
+										<div class="size-12 rounded-full bg-white/10 backdrop-blur-sm flex items-center justify-center group-hover:bg-white/20 transition-colors">
+											<Download class="size-6 text-white" />
+										</div>
+										<span class="text-xs text-white/70 font-medium">Download to watch</span>
+									{/if}
+								</div>
+							</button>
+						{/if}
+					</div>
+				{/if}
+				{#if hasCards}
+					<div class="flex-1 min-w-0 flex flex-col gap-3">
+						{#if album}
+							<div class="rounded-lg border border-border p-4 flex gap-4 items-center hover:bg-muted/50 transition-colors">
+								<a href="/library/albums/{album.id}" class="size-12 rounded-md bg-muted overflow-hidden shrink-0">
+									{#if album.cover_art_path}
+										<img src={assetUrl(album.cover_art_path)} alt={album.title} class="size-full object-cover" />
+									{:else}
+										<div class="size-full flex items-center justify-center"><Disc3 class="size-5 text-muted-foreground" /></div>
+									{/if}
+								</a>
+								<div class="min-w-0 flex-1">
+									<p class="text-xs text-muted-foreground uppercase">{album.album_type ?? 'Album'}</p>
+									<a href="/library/albums/{album.id}" class="text-sm font-medium truncate block hover:underline">{album.title}</a>
+									{#if album.year}<p class="text-xs text-muted-foreground">{album.year}</p>{/if}
+									{#if album.purchase_url}
+										<a href={album.purchase_url} target="_blank" rel="noopener noreferrer" class="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground mt-1">
+											<ExternalLink class="size-3" />
+											Buy Album
+										</a>
+									{/if}
+								</div>
+							</div>
+						{/if}
+						{#if artist}
+							<div class="rounded-lg border border-border p-4 flex gap-4 items-center hover:bg-muted/50 transition-colors">
+								<a href="/library/artists/{artist.id}" class="size-12 rounded-md bg-muted overflow-hidden shrink-0">
+									{#if artist.image_path}
+										<img src={assetUrl(artist.image_path)} alt={artist.name} class="size-full object-cover" />
+									{:else}
+										<div class="size-full flex items-center justify-center"><User class="size-5 text-muted-foreground" /></div>
+									{/if}
+								</a>
+								<div class="min-w-0 flex-1">
+									<p class="text-xs text-muted-foreground uppercase">Artist</p>
+									<a href="/library/artists/{artist.id}" class="text-sm font-medium truncate block hover:underline">{artist.name}</a>
+									{#if artist.website_url}
+										<a href={artist.website_url} target="_blank" rel="noopener noreferrer" class="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground mt-1">
+											<ExternalLink class="size-3" />
+											Website
+										</a>
+									{/if}
+								</div>
+							</div>
+						{/if}
+						{#if track.source_url}
+							<a href={track.source_url} target="_blank" rel="noopener noreferrer" class="rounded-lg border border-border p-4 flex gap-4 items-center hover:bg-muted/50 transition-colors">
+								<div class="size-12 rounded-md bg-muted overflow-hidden shrink-0 flex items-center justify-center">
+									<ExternalLink class="size-5 text-muted-foreground" />
+								</div>
+								<div class="min-w-0">
+									<p class="text-xs text-muted-foreground uppercase">{track.source_platform ? platformLabel(track.source_platform) : 'Source'}</p>
+									<p class="text-sm font-medium truncate">{track.source_url}</p>
+								</div>
+							</a>
+						{/if}
+					</div>
+				{/if}
+			</div>
+		{/if}
+
 		<div class="rounded-lg border border-border p-6">
 			<h2 class="text-sm font-semibold uppercase tracking-wider text-muted-foreground mb-4">Details</h2>
 			<div class="grid grid-cols-2 gap-x-8 gap-y-3 text-sm">
@@ -238,14 +400,31 @@
 					<span class="text-muted-foreground">Date Added</span>
 					<p class="font-medium">{formatDate(track.date_added)}</p>
 				</div>
-				{#if track.source_url}
-					<div class="col-span-2">
-						<span class="text-muted-foreground">Source</span>
-						<p class="font-medium truncate">{track.source_url}</p>
+			</div>
+		</div>
+		{#if plainLyrics}
+			<div class="rounded-lg border border-border overflow-hidden">
+				<button
+					class="w-full px-6 py-4 flex items-center justify-between hover:bg-muted/30 transition-colors"
+					onclick={() => lyricsOpen = !lyricsOpen}
+				>
+					<h2 class="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Lyrics</h2>
+					<span class="text-xs text-muted-foreground">{lyricsOpen ? '▲' : '▼'}</span>
+				</button>
+				{#if lyricsOpen}
+					<div class="px-6 pb-6 max-h-[32rem] overflow-y-auto">
+						{#each plainLyrics.split('\n') as line}
+							{#if line.trim() === ''}
+								<div class="h-4"></div>
+							{:else}
+								<p class="text-sm leading-7 text-foreground/80">{line}</p>
+							{/if}
+						{/each}
 					</div>
 				{/if}
 			</div>
-		</div>
+		{/if}
+
 	{:else}
 		<p class="text-muted-foreground">Track not found.</p>
 	{/if}

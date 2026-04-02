@@ -183,7 +183,24 @@ ALTER TABLE downloads ADD COLUMN target_artist_id INTEGER;
 ALTER TABLE artists ADD COLUMN enriched_discography TEXT;
 ";
 
-const MIGRATIONS: &[&str] = &[MIGRATION_001, MIGRATION_002, MIGRATION_003, MIGRATION_004, MIGRATION_005, MIGRATION_006];
+const MIGRATION_007: &str = "
+ALTER TABLE tracks ADD COLUMN tags TEXT;
+ALTER TABLE artists ADD COLUMN website_url TEXT;
+";
+
+const MIGRATION_008: &str = "
+ALTER TABLE tracks ADD COLUMN music_video_url TEXT;
+";
+
+const MIGRATION_009: &str = "
+ALTER TABLE tracks ADD COLUMN music_video_path TEXT;
+";
+
+const MIGRATION_010: &str = "
+ALTER TABLE albums ADD COLUMN purchase_url TEXT;
+";
+
+const MIGRATIONS: &[&str] = &[MIGRATION_001, MIGRATION_002, MIGRATION_003, MIGRATION_004, MIGRATION_005, MIGRATION_006, MIGRATION_007, MIGRATION_008, MIGRATION_009, MIGRATION_010];
 
 pub fn run(conn: &Connection) -> Result<(), Box<dyn std::error::Error>> {
     conn.execute(

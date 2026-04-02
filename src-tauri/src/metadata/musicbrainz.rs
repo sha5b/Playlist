@@ -76,6 +76,123 @@ struct MbTag {
     count: Option<i64>,
 }
 
+// ── Recording URL relations (for music video detection) ───────────────────
+
+#[derive(Debug, Deserialize)]
+struct RecordingDetail {
+    relations: Option<Vec<MbRelation>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct MbRelation {
+    #[serde(rename = "type")]
+    relation_type: Option<String>,
+    url: Option<MbUrl>,
+}
+
+#[derive(Debug, Deserialize)]
+struct MbUrl {
+    resource: Option<String>,
+}
+
+/// Look up a recording's URL relations to find a confirmed music video link.
+async fn lookup_music_video_url(recording_mbid: &str) -> Option<String> {
+    // Rate limit: 1 req/sec
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+
+    let url = format!(
+        "{}/recording/{}?inc=url-rels&fmt=json",
+        MB_BASE, recording_mbid
+    );
+    let resp = client().get(&url).send().await.ok()?;
+    let detail: RecordingDetail = resp.json().await.ok()?;
+
+    let relations = detail.relations?;
+    // Look for "streaming music" or "free streaming" relations pointing to video platforms
+    for rel in &relations {
+        let rtype = rel.relation_type.as_deref().unwrap_or("");
+        let resource = rel.url.as_ref().and_then(|u| u.resource.as_deref()).unwrap_or("");
+
+        // MusicBrainz relation types for music videos:
+        // "streaming music" — links to YouTube, Vimeo, etc.
+        // Check if the URL points to a video platform
+        let is_video_url = resource.contains("youtube.com/watch")
+            || resource.contains("youtu.be/")
+            || resource.contains("vimeo.com/");
+
+        if is_video_url && (rtype == "streaming music" || rtype == "free streaming" || rtype == "streaming") {
+            return Some(resource.to_string());
+        }
+    }
+
+    // Fallback: any YouTube/Vimeo URL in relations regardless of type
+    for rel in &relations {
+        let resource = rel.url.as_ref().and_then(|u| u.resource.as_deref()).unwrap_or("");
+        if resource.contains("youtube.com/watch") || resource.contains("youtu.be/") {
+            return Some(resource.to_string());
+        }
+    }
+
+    None
+}
+
+/// Look up an artist's URL relations to find their official website.
+async fn lookup_artist_website(artist_mbid: &str) -> Option<String> {
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    let url = format!("{}/artist/{}?inc=url-rels&fmt=json", MB_BASE, artist_mbid);
+    let resp = client().get(&url).send().await.ok()?;
+    let detail: RecordingDetail = resp.json().await.ok()?;
+    let relations = detail.relations?;
+
+    // Prefer "official homepage", fall back to any social/streaming profile
+    for rel in &relations {
+        let rtype = rel.relation_type.as_deref().unwrap_or("");
+        if rtype == "official homepage" {
+            return rel.url.as_ref().and_then(|u| u.resource.clone());
+        }
+    }
+    // Fallback: social media or wiki
+    for rel in &relations {
+        let rtype = rel.relation_type.as_deref().unwrap_or("");
+        let resource = rel.url.as_ref().and_then(|u| u.resource.as_deref()).unwrap_or("");
+        if rtype == "social network" && (resource.contains("instagram.com") || resource.contains("twitter.com") || resource.contains("x.com") || resource.contains("facebook.com")) {
+            return Some(resource.to_string());
+        }
+    }
+    None
+}
+
+/// Look up a release's URL relations to find purchase/streaming links.
+async fn lookup_album_purchase_url(release_mbid: &str) -> Option<String> {
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    let url = format!("{}/release/{}?inc=url-rels&fmt=json", MB_BASE, release_mbid);
+    let resp = client().get(&url).send().await.ok()?;
+    let detail: RecordingDetail = resp.json().await.ok()?;
+    let relations = detail.relations?;
+
+    // Prefer purchase links, then streaming
+    for rel in &relations {
+        let rtype = rel.relation_type.as_deref().unwrap_or("");
+        if rtype == "purchase for download" || rtype == "purchase for mail-order" || rtype == "mail-order" {
+            return rel.url.as_ref().and_then(|u| u.resource.clone());
+        }
+    }
+    // Fallback: Amazon, Bandcamp, or any streaming link
+    for rel in &relations {
+        let resource = rel.url.as_ref().and_then(|u| u.resource.as_deref()).unwrap_or("");
+        if resource.contains("amazon.") || resource.contains("bandcamp.com") {
+            return Some(resource.to_string());
+        }
+    }
+    for rel in &relations {
+        let rtype = rel.relation_type.as_deref().unwrap_or("");
+        if rtype == "streaming" || rtype == "free streaming" {
+            return rel.url.as_ref().and_then(|u| u.resource.clone());
+        }
+    }
+    None
+}
+
 // ── Release lookup (for albums) ────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
@@ -141,6 +258,13 @@ pub struct TrackEnrichment {
     pub artist_type: Option<String>,
     pub artist_country: Option<String>,
     pub artist_begin_year: Option<i64>,
+    pub tags: Option<Vec<String>>,
+    /// Music video URL from MusicBrainz URL relations (confirmed to exist)
+    pub music_video_url: Option<String>,
+    /// Artist official homepage from MusicBrainz URL relations
+    pub artist_website_url: Option<String>,
+    /// Album purchase URL from MusicBrainz URL relations
+    pub album_purchase_url: Option<String>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -201,12 +325,18 @@ pub async fn enrich_track(title: &str, artist: Option<&str>) -> Result<TrackEnri
         ..Default::default()
     };
 
-    // Genre from tags
+    // Genre and tags from MusicBrainz tags
     if let Some(tags) = &hit.tags {
         let mut sorted: Vec<_> = tags.iter().filter(|t| t.name.is_some()).collect();
         sorted.sort_by(|a, b| b.count.unwrap_or(0).cmp(&a.count.unwrap_or(0)));
         if let Some(top) = sorted.first() {
             enrichment.genre = top.name.clone();
+        }
+        let tag_names: Vec<String> = sorted.iter()
+            .filter_map(|t| t.name.clone())
+            .collect();
+        if !tag_names.is_empty() {
+            enrichment.tags = Some(tag_names);
         }
     }
 
@@ -229,6 +359,19 @@ pub async fn enrich_track(title: &str, artist: Option<&str>) -> Result<TrackEnri
             .and_then(|ls| ls.begin.as_ref())
             .and_then(|d| d.get(..4))
             .and_then(|y| y.parse::<i64>().ok());
+    }
+
+    // Check for confirmed music video via MusicBrainz URL relations
+    enrichment.music_video_url = lookup_music_video_url(&hit.id).await;
+
+    // Look up artist website if we have an artist MBID
+    if let Some(ref artist_mbid) = enrichment.artist_musicbrainz_id {
+        enrichment.artist_website_url = lookup_artist_website(artist_mbid).await;
+    }
+
+    // Look up album purchase URL if we have a release MBID
+    if let Some(ref album_mbid) = enrichment.album_musicbrainz_id {
+        enrichment.album_purchase_url = lookup_album_purchase_url(album_mbid).await;
     }
 
     Ok(enrichment)
