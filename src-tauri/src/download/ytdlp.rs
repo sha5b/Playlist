@@ -248,28 +248,70 @@ pub async fn search_music_video(
     title: &str,
     cookies_from_browser: Option<&str>,
 ) -> Option<String> {
-    let query = format!("ytsearch5:{} {} official music video", artist, title);
+    // Clean the title: strip parenthetical suffixes like "(Official Music Video)" that are
+    // already part of the downloaded filename but would confuse the search
+    let clean_title = title
+        .split(&['(', '['][..])
+        .next()
+        .unwrap_or(title)
+        .trim();
+
+    let query = format!("ytsearch8:{} {} official music video", artist, clean_title);
     let results = search_info(binary, ffmpeg_dir, &query, cookies_from_browser)
         .await
         .ok()?;
 
     let lower_artist = artist.to_lowercase();
+    let lower_title = clean_title.to_lowercase();
 
-    // Only pick results that are real music videos (not static image uploads)
+    // Extract key words from the title (3+ chars) for fuzzy matching
+    let title_words: Vec<&str> = lower_title
+        .split_whitespace()
+        .filter(|w| w.len() >= 3)
+        .collect();
+
+    // Check if a result's title contains the song title (or enough key words)
+    let title_matches = |video_title: &str| -> bool {
+        let vt = video_title.to_lowercase();
+        // Exact substring match
+        if vt.contains(&lower_title) {
+            return true;
+        }
+        // Fuzzy: at least 60% of title words present
+        if !title_words.is_empty() {
+            let matched = title_words.iter().filter(|w| vt.contains(**w)).count();
+            return matched * 100 / title_words.len() >= 60;
+        }
+        false
+    };
+
+    let artist_matches = |v: &VideoInfo| -> bool {
+        let t = v.title.to_lowercase();
+        t.contains(&lower_artist)
+            || v.artist.as_ref().map_or(false, |a| a.to_lowercase().contains(&lower_artist))
+            || v.uploader.as_ref().map_or(false, |u| u.to_lowercase().contains(&lower_artist))
+    };
+
+    // Best: real music video + artist match + title match
     let best = results
         .iter()
         .filter(|v| is_real_music_video(v))
-        .find(|v| {
-            // Prefer one matching the artist name
-            let t = v.title.to_lowercase();
-            t.contains(&lower_artist)
-                || v.artist.as_ref().map_or(false, |a| a.to_lowercase().contains(&lower_artist))
-                || v.uploader.as_ref().map_or(false, |u| u.to_lowercase().contains(&lower_artist))
-        })
-        // Fall back to first real MV result
-        .or_else(|| results.iter().find(|v| is_real_music_video(v)));
+        .find(|v| artist_matches(v) && title_matches(&v.title));
 
-    best.and_then(|v| v.webpage_url.clone())
+    // Good: any video + artist match + title match (might not say "official" in title)
+    let good = || results
+        .iter()
+        .find(|v| artist_matches(v) && title_matches(&v.title));
+
+    // Acceptable: real music video + title match (artist name might differ e.g. feat.)
+    let acceptable = || results
+        .iter()
+        .filter(|v| is_real_music_video(v))
+        .find(|v| title_matches(&v.title));
+
+    best.or_else(good)
+        .or_else(acceptable)
+        .and_then(|v| v.webpage_url.clone())
 }
 
 /// Result of fetching playlist entries, including the playlist title
