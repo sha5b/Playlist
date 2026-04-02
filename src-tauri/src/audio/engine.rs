@@ -46,6 +46,7 @@ pub enum PlayerCommand {
     AddNext(QueueTrack),
     MoveInQueue { from: usize, to: usize },
     RemoveFromQueue(usize), // order index
+    SkipTo(usize),          // order index — jump to specific position in queue
     ClearQueue,
     /// Graceful shutdown -- audio thread stops and exits
     Shutdown,
@@ -550,6 +551,17 @@ impl AudioEngine {
                                 emit(PlayerEvent::QueueUpdated { tracks, position: pos });
                             }
                             preloaded = None;
+                        }
+                        PlayerCommand::SkipTo(order_idx) => {
+                            log::info!("[audio] SkipTo: index={}", order_idx);
+                            let found = {
+                                let mut s = shared.write().unwrap();
+                                s.queue.skip_to(order_idx).is_some()
+                            };
+                            if found {
+                                preloaded = None;
+                                Self::play_current(&mut sink, &stream_handle, &shared, &emit, &mut current_duration_ms, &mut play_start, &mut accumulated_ms, &mut is_playing, ffmpeg_path.as_deref());
+                            }
                         }
                         PlayerCommand::ClearQueue => {
                             log::info!("[audio] ClearQueue");

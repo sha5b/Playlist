@@ -10,7 +10,7 @@
 	import { toast } from 'svelte-sonner';
 	import type { PlaylistDetail, Track } from '$lib/types';
 
-	let detail: PlaylistDetail | null = $state(null);
+	let detail = $state<PlaylistDetail | null>(null);
 	let loading = $state(true);
 
 	const playlistId = $derived(Number(page.params.id));

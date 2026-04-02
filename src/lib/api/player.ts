@@ -57,6 +57,10 @@ export async function moveInQueue(fromIndex: number, toIndex: number): Promise<v
 	return invoke('player_move_in_queue', { fromIndex, toIndex });
 }
 
+export async function skipTo(index: number): Promise<void> {
+	return invoke('player_skip_to', { index });
+}
+
 export async function removeFromQueue(index: number): Promise<void> {
 	return invoke('player_remove_from_queue', { index });
 }

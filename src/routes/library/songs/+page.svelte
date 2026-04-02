@@ -8,7 +8,7 @@
 	import { Search, X } from 'lucide-svelte';
 	import type { TrackPage } from '$lib/types';
 
-	let page: TrackPage | null = $state(null);
+	let page = $state<TrackPage | null>(null);
 	let loading = $state(true);
 	let currentPage = $state(0);
 	let searchQuery = $state('');

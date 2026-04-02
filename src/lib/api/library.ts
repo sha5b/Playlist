@@ -236,3 +236,75 @@ export async function scanMissingMetadata(): Promise<ScanMissingResult> {
 export async function getMetadataStats(): Promise<MetadataStats> {
 	return invoke<MetadataStats>('get_metadata_stats');
 }
+
+export async function stopMetadataScan(): Promise<void> {
+	return invoke('metadata_stop_scan');
+}
+
+export async function deleteAllMetadata(): Promise<void> {
+	await invoke('metadata_delete_all');
+	invalidateCache();
+}
+
+export interface CleanupResult {
+	merged_groups: number;
+	deleted_duplicates: number;
+	orphaned_removed: number;
+}
+
+export async function cleanupDuplicateAlbums(): Promise<CleanupResult> {
+	const result = await invoke('metadata_cleanup_duplicates');
+	invalidateCache();
+	return result as CleanupResult;
+}
+
+// --- Album Download Status ---
+
+export interface AlbumDownloadStatus {
+	total_expected: number;
+	total_local: number;
+	status: 'complete' | 'partial' | 'none' | 'unknown';
+}
+
+export async function getAlbumDownloadStatus(albumId: number): Promise<AlbumDownloadStatus> {
+	return invoke('library_get_album_download_status', { albumId });
+}
+
+export async function getAlbumsDownloadStatus(albumIds: number[]): Promise<Record<string, AlbumDownloadStatus>> {
+	return invoke('library_get_albums_download_status', { albumIds });
+}
+
+// --- Artist Enrichment ---
+
+export interface ArtistDiscographyEntry {
+	mbid: string;
+	title: string;
+	album_type: string | null;
+	year: number | null;
+}
+
+export interface EnrichArtistResult {
+	artist_id: number;
+	mbid: string;
+	total_releases: number;
+	discography: ArtistDiscographyEntry[];
+}
+
+export interface ArtistMissingResult {
+	missing: ArtistDiscographyEntry[];
+	total_discography: number;
+}
+
+export async function enrichArtist(artistId: number): Promise<EnrichArtistResult> {
+	const result = await invoke<EnrichArtistResult>('enrich_artist', { artistId });
+	invalidateCache();
+	return result;
+}
+
+export async function getArtistMissingAlbums(artistId: number): Promise<ArtistMissingResult> {
+	return invoke('library_get_artist_missing_albums', { artistId });
+}
+
+export async function downloadArtistMissing(artistId: number, albumMbids: string[]): Promise<any[]> {
+	return invoke('download_artist_missing', { artistId, albumMbids });
+}

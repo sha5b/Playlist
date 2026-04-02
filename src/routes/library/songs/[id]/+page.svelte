@@ -8,7 +8,7 @@
 	import { toast } from 'svelte-sonner';
 	import type { Track } from '$lib/types';
 
-	let track: Track | null = $state(null);
+	let track = $state<Track | null>(null);
 	let loading = $state(true);
 	let enriching = $state(false);
 

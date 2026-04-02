@@ -4,8 +4,8 @@
 	import { Button } from '$lib/components/ui/button';
 	import { Input } from '$lib/components/ui/input';
 	import { Slider } from '$lib/components/ui/slider';
-	import { FolderOpen, Volume2, RotateCcw, Music, Trash2, Cookie, Sparkles, Loader2 } from 'lucide-svelte';
-	import { getSetting, setSetting, resetLibrary, getMetadataStats, scanMissingMetadata } from '$lib/api/library';
+	import { FolderOpen, Volume2, RotateCcw, Music, Trash2, Cookie, Sparkles, Loader2, CircleX } from 'lucide-svelte';
+	import { getSetting, setSetting, resetLibrary, getMetadataStats, scanMissingMetadata, stopMetadataScan, deleteAllMetadata, cleanupDuplicateAlbums } from '$lib/api/library';
 	import type { MetadataStats } from '$lib/types';
 	import { player } from '$lib/stores/player.svelte';
 	import { metadataScanStore } from '$lib/stores/metadataScan.svelte';
@@ -64,14 +64,14 @@
 		}
 	}
 
-	async function handleVolumeChange(values: number[]) {
-		defaultVolume = values[0];
-		const vol = values[0] / 100;
+	async function handleVolumeChange(value: number) {
+		defaultVolume = value;
+		const vol = value / 100;
 		await setSetting('default_volume', String(vol));
 		player.setVolume(vol);
 	}
 
-	let metadataStats: MetadataStats | null = $state(null);
+	let metadataStats = $state<MetadataStats | null>(null);
 	let scanning = $derived(metadataScanStore.scanning);
 	let scanProgress = $derived(metadataScanStore.progress);
 
@@ -97,6 +97,45 @@
 			toast.error('Metadata scan failed', { description: String(e) });
 		} finally {
 			metadataScanStore.markDone();
+		}
+	}
+
+	let deletingMetadata = $state(false);
+	let cleaningDuplicates = $state(false);
+
+	async function handleCleanupDuplicates() {
+		cleaningDuplicates = true;
+		try {
+			const result = await cleanupDuplicateAlbums();
+			toast.success('Duplicates cleaned up', { 
+				description: `Merged ${result.merged_groups} album groups, removed ${result.deleted_duplicates} duplicates and ${result.orphaned_removed} orphaned albums` 
+			});
+		} catch (e) {
+			toast.error('Failed to cleanup duplicates', { description: String(e) });
+		} finally {
+			cleaningDuplicates = false;
+		}
+	}
+
+	async function handleStopMetadata() {
+		try {
+			await stopMetadataScan();
+			toast.success('Metadata scan stopped');
+		} catch (e) {
+			toast.error('Failed to stop scan', { description: String(e) });
+		}
+	}
+
+	async function handleDeleteMetadata() {
+		deletingMetadata = true;
+		try {
+			await deleteAllMetadata();
+			toast.success('All metadata deleted', { description: 'Any running scan was stopped. Enriched data has been cleared from all tracks, albums, and artists' });
+			await loadMetadataStats();
+		} catch (e) {
+			toast.error('Failed to delete metadata', { description: String(e) });
+		} finally {
+			deletingMetadata = false;
 		}
 	}
 
@@ -141,7 +180,7 @@
 	<Card>
 		<CardHeader>
 			<CardTitle>Downloads</CardTitle>
-			<CardDescription>Download folder and audio format</CardDescription>
+			<CardDescription>Download folder and audio format. Playlists are downloaded via YouTube (no login required)</CardDescription>
 		</CardHeader>
 		<CardContent class="space-y-4">
 			<div class="space-y-2">
@@ -220,7 +259,8 @@
 					<span class="text-sm text-muted-foreground tabular-nums">{defaultVolume}%</span>
 				</div>
 				<Slider
-					value={[defaultVolume]}
+					type="single"
+					value={defaultVolume}
 					max={100}
 					step={1}
 					onValueChange={handleVolumeChange}
@@ -284,15 +324,21 @@
 					<p class="text-sm font-medium">Scan for Missing Metadata</p>
 					<p class="text-xs text-muted-foreground">Looks up all tracks with incomplete data on MusicBrainz and Last.fm</p>
 				</div>
-				<Button variant="outline" size="sm" onclick={handleScanMetadata} disabled={scanning}>
-					{#if scanning}
-						<Loader2 class="size-4 animate-spin" />
-						Scanning...
-					{:else}
-						<Sparkles class="size-4" />
-						Scan
-					{/if}
-				</Button>
+				<div class="flex gap-2">
+					<Button variant="outline" size="sm" onclick={handleScanMetadata} disabled={scanning}>
+						{#if scanning}
+							<Loader2 class="size-4 animate-spin" />
+							Scanning...
+						{:else}
+							<Sparkles class="size-4" />
+							Scan
+						{/if}
+					</Button>
+					<Button variant="outline" size="sm" onclick={handleStopMetadata} disabled={!scanning}>
+						<CircleX class="size-4" />
+						Stop
+					</Button>
+				</div>
 			</div>
 		</CardContent>
 	</Card>
@@ -303,6 +349,38 @@
 			<CardDescription>Irreversible actions</CardDescription>
 		</CardHeader>
 		<CardContent class="space-y-4">
+			<div class="flex items-center justify-between gap-4">
+				<div>
+					<p class="text-sm font-medium">Delete All Metadata</p>
+					<p class="text-xs text-muted-foreground">Automatically stops any running scan, then clears all enriched metadata from tracks, albums, and artists</p>
+				</div>
+				<Button variant="destructive" size="sm" onclick={handleDeleteMetadata} disabled={deletingMetadata}>
+					{#if deletingMetadata}
+						<Loader2 class="size-4 animate-spin" />
+						Deleting...
+					{:else}
+						<Trash2 class="size-4" />
+						Delete Metadata
+					{/if}
+				</Button>
+			</div>
+			<Separator />
+			<div class="flex items-center justify-between gap-4">
+				<div>
+					<p class="text-sm font-medium">Cleanup Duplicate Albums</p>
+					<p class="text-xs text-muted-foreground">Merge duplicate albums with the same title and artist, and remove orphaned albums</p>
+				</div>
+				<Button variant="outline" size="sm" onclick={handleCleanupDuplicates} disabled={cleaningDuplicates}>
+					{#if cleaningDuplicates}
+						<Loader2 class="size-4 animate-spin" />
+						Cleaning...
+					{:else}
+						<Sparkles class="size-4" />
+						Cleanup
+					{/if}
+				</Button>
+			</div>
+			<Separator />
 			<div class="flex items-center justify-between gap-4">
 				<div>
 					<p class="text-sm font-medium">Reset Library</p>

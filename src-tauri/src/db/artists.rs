@@ -23,12 +23,36 @@ fn row_to_artist(row: &Row) -> Result<Artist, rusqlite::Error> {
 }
 
 pub fn find_or_create(conn: &Connection, name: &str) -> Result<i64, rusqlite::Error> {
+    // Exact case-insensitive match
     if let Ok(id) = conn.query_row(
         "SELECT id FROM artists WHERE name = ?1 COLLATE NOCASE",
         params![name],
         |row| row.get::<_, i64>(0),
     ) {
         return Ok(id);
+    }
+
+    // Fuzzy match: strip leading "The " and compare
+    let stripped = name.strip_prefix("The ").or_else(|| name.strip_prefix("the ")).unwrap_or(name);
+    let with_the = format!("The {}", stripped);
+    if let Ok(id) = conn.query_row(
+        "SELECT id FROM artists WHERE name = ?1 COLLATE NOCASE OR name = ?2 COLLATE NOCASE",
+        params![stripped, with_the],
+        |row| row.get::<_, i64>(0),
+    ) {
+        return Ok(id);
+    }
+
+    // Fuzzy match: substring containment (only for names longer than 3 chars to avoid false positives)
+    if stripped.len() > 3 {
+        let pattern = format!("%{}%", stripped);
+        if let Ok(id) = conn.query_row(
+            "SELECT id FROM artists WHERE name LIKE ?1 COLLATE NOCASE LIMIT 1",
+            params![pattern],
+            |row| row.get::<_, i64>(0),
+        ) {
+            return Ok(id);
+        }
     }
 
     conn.execute(

@@ -11,13 +11,13 @@
 	import { getAlbumTracks, getArtistTracks } from '$lib/api/library';
 	import { formatDuration, assetUrl } from '$lib/utils/format';
 
-	function handleProgressChange(values: number[]) {
-		const seconds = (values[0] / 100) * (player.durationMs / 1000);
+	function handleProgressChange(value: number) {
+		const seconds = (value / 100) * (player.durationMs / 1000);
 		player.seek(seconds);
 	}
 
-	function handleVolumeChange(values: number[]) {
-		player.setVolume(values[0] / 100);
+	function handleVolumeChange(value: number) {
+		player.setVolume(value / 100);
 	}
 
 	const progressPercent = $derived(
@@ -202,7 +202,8 @@
 				{formatDuration(player.positionMs)}
 			</span>
 			<Slider
-				value={[progressPercent]}
+				type="single"
+				value={progressPercent}
 				max={100}
 				step={0.1}
 				class="flex-1"
@@ -226,7 +227,8 @@
 			<VolumeIcon class="size-4" />
 		</Button>
 		<Slider
-			value={[player.volume * 100]}
+			type="single"
+			value={player.volume * 100}
 			max={100}
 			step={1}
 			class="w-20 lg:w-24"

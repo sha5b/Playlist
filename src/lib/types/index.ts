@@ -46,6 +46,7 @@ export interface Artist {
 	country: string | null;
 	begin_year: number | null;
 	artist_type: string | null;
+	enriched_discography: string | null;
 	track_count: number;
 }
 
@@ -158,6 +159,8 @@ export interface Download {
 	created_at: string;
 	started_at: string | null;
 	completed_at: string | null;
+	target_album_id: number | null;
+	target_artist_id: number | null;
 }
 
 export interface UrlInfo {

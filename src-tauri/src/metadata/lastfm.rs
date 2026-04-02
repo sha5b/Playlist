@@ -24,8 +24,6 @@ struct AlbumInfoResponse {
 
 #[derive(Debug, Deserialize)]
 struct AlbumInfo {
-    name: Option<String>,
-    artist: Option<String>,
     tags: Option<TagsContainer>,
     image: Option<Vec<LastfmImage>>,
     wiki: Option<Wiki>,
@@ -38,8 +36,6 @@ struct ArtistInfoResponse {
 
 #[derive(Debug, Deserialize)]
 struct ArtistInfo {
-    name: Option<String>,
-    tags: Option<TagsContainer>,
     bio: Option<Bio>,
     image: Option<Vec<LastfmImage>>,
 }
@@ -47,7 +43,6 @@ struct ArtistInfo {
 #[derive(Debug, Deserialize)]
 struct Bio {
     summary: Option<String>,
-    content: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -70,7 +65,6 @@ struct LastfmImage {
 #[derive(Debug, Deserialize)]
 struct Wiki {
     summary: Option<String>,
-    content: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -82,12 +76,6 @@ struct TrackInfoResponse {
 struct TrackInfo {
     tags: Option<TagsContainer>,
     wiki: Option<Wiki>,
-    album: Option<TrackAlbumRef>,
-}
-
-#[derive(Debug, Deserialize)]
-struct TrackAlbumRef {
-    image: Option<Vec<LastfmImage>>,
 }
 
 // ── Public result types ───────────────────────────────────────────────────
@@ -101,7 +89,6 @@ pub struct LastfmAlbumData {
 
 #[derive(Debug, Default, Clone)]
 pub struct LastfmArtistData {
-    pub tags: Vec<String>,
     pub bio: Option<String>,
     pub image_url: Option<String>,
 }
@@ -110,7 +97,6 @@ pub struct LastfmArtistData {
 pub struct LastfmTrackData {
     pub tags: Vec<String>,
     pub description: Option<String>,
-    pub image_url: Option<String>,
 }
 
 // ── Public API ────────────────────────────────────────────────────────────
@@ -168,13 +154,6 @@ pub async fn get_artist_info(artist: &str) -> Result<LastfmArtistData, String> {
 
     let info = resp.artist.ok_or_else(|| "No Last.fm artist data".to_string())?;
 
-    let tags = info.tags
-        .and_then(|t| t.tag)
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(|t| t.name)
-        .collect();
-
     let bio = info.bio
         .and_then(|b| b.summary)
         .map(|s| strip_html_tags(&s))
@@ -182,7 +161,7 @@ pub async fn get_artist_info(artist: &str) -> Result<LastfmArtistData, String> {
 
     let image_url = get_best_image(&info.image);
 
-    Ok(LastfmArtistData { tags, bio, image_url })
+    Ok(LastfmArtistData { bio, image_url })
 }
 
 /// Fetch track info from Last.fm
@@ -215,10 +194,7 @@ pub async fn get_track_info(track: &str, artist: &str) -> Result<LastfmTrackData
         .map(|s| strip_html_tags(&s))
         .filter(|s| !s.is_empty());
 
-    let image_url = info.album
-        .and_then(|a| get_best_image(&a.image));
-
-    Ok(LastfmTrackData { tags, description, image_url })
+    Ok(LastfmTrackData { tags, description })
 }
 
 /// Download image bytes from a URL

@@ -203,22 +203,27 @@
 					<div class="shrink-0 cursor-grab active:cursor-grabbing text-muted-foreground hover:text-foreground">
 						<GripVertical class={compact ? 'size-3.5' : 'size-4'} />
 					</div>
-					<div class="{thumbSize} shrink-0 rounded bg-muted flex items-center justify-center overflow-hidden">
-						{#if t?.cover_art_path}
-							<img
-								src={assetUrl(t.cover_art_path)}
-								alt=""
-								class="size-full object-cover"
-								loading="lazy"
-							/>
-						{:else}
-							<Music class={`${compact ? 'size-3.5' : 'size-4'} text-muted-foreground`} />
-						{/if}
-					</div>
-					<div class="min-w-0 flex-1">
-						<p class="{titleSize} font-medium truncate">{t?.title ?? ''}</p>
-						<p class="{subSize} text-muted-foreground truncate">{t?.artist_name ?? 'Unknown'}</p>
-					</div>
+					<button
+						class="flex items-center {compact ? 'gap-2' : 'gap-3'} min-w-0 flex-1 cursor-pointer hover:opacity-80 transition-opacity"
+						onclick={() => player.skipTo(item.queueIndex)}
+					>
+						<div class="{thumbSize} shrink-0 rounded bg-muted flex items-center justify-center overflow-hidden">
+							{#if t?.cover_art_path}
+								<img
+									src={assetUrl(t.cover_art_path)}
+									alt=""
+									class="size-full object-cover"
+									loading="lazy"
+								/>
+							{:else}
+								<Music class={`${compact ? 'size-3.5' : 'size-4'} text-muted-foreground`} />
+							{/if}
+						</div>
+						<div class="min-w-0 flex-1 text-left">
+							<p class="{titleSize} font-medium truncate">{t?.title ?? ''}</p>
+							<p class="{subSize} text-muted-foreground truncate">{t?.artist_name ?? 'Unknown'}</p>
+						</div>
+					</button>
 					<span class="{durationSize} text-muted-foreground tabular-nums shrink-0">
 						{formatDuration(t?.duration_ms ?? null)}
 					</span>

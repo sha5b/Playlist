@@ -1,18 +1,23 @@
 <script lang="ts">
 	import { page } from '$app/state';
 	import { getAlbum, getAlbumTracks, enrichAlbum } from '$lib/api/library';
+	import { searchAndDownload, searchAndDownloadBatch } from '$lib/api/downloads';
+	import type { SearchDownloadRequest } from '$lib/api/downloads';
 	import TrackTable from '$lib/components/library/TrackTable.svelte';
 	import { Button } from '$lib/components/ui/button';
 	import { player } from '$lib/stores/player.svelte';
 	import { formatDurationLong, assetUrl } from '$lib/utils/format';
-	import { ArrowLeft, Disc, Play, Shuffle, Loader2, Sparkles } from 'lucide-svelte';
+	import { ArrowLeft, Disc, Play, Shuffle, Loader2, Sparkles, Download } from 'lucide-svelte';
 	import { toast } from 'svelte-sonner';
+	import { listen } from '@tauri-apps/api/event';
+	import { onMount } from 'svelte';
 	import type { Album, Track, AlbumTrackInfo } from '$lib/types';
 
-	let album: Album | null = $state(null);
+	let album = $state<Album | null>(null);
 	let tracks: Track[] = $state([]);
 	let loading = $state(true);
 	let enriching = $state(false);
+	let downloadingMissing = $state(false);
 
 	const albumId = $derived(Number(page.params.id));
 
@@ -80,6 +85,54 @@
 		toast.success('Album metadata refreshed');
 	}
 
+	async function downloadAllMissing() {
+		if (!album || missingTracks.length === 0 || downloadingMissing) return;
+		downloadingMissing = true;
+		try {
+			const artistName = album.artist_name ?? album.album_artist ?? 'Unknown Artist';
+			const queries: SearchDownloadRequest[] = missingTracks
+				.filter((t) => t.title)
+				.map((t) => ({
+					query: `${artistName} - ${t.title}`,
+					title: t.title,
+					artist: artistName,
+					album_id: album!.id,
+					artist_id: album!.artist_id ?? undefined,
+				}));
+			if (queries.length === 0) {
+				toast.error('No track titles available — enrich the album first');
+				return;
+			}
+			await searchAndDownloadBatch(queries);
+			toast.success(`Queued ${queries.length} download${queries.length !== 1 ? 's' : ''}`);
+		} catch (e) {
+			toast.error(`Failed to queue downloads: ${e}`);
+		} finally {
+			downloadingMissing = false;
+		}
+	}
+
+	function handleDownloadTrack(placeholder: { track_number: number; disc_number: number; title?: string }) {
+		if (!album || !placeholder.title) {
+			toast.error('No track title available — enrich the album first');
+			return;
+		}
+		const artistName = album.artist_name ?? album.album_artist ?? 'Unknown Artist';
+		const query = `${artistName} - ${placeholder.title}`;
+		searchAndDownload(query, placeholder.title, artistName, undefined, undefined, album.id, album.artist_id ?? undefined)
+			.then(() => toast.success(`Queued: ${placeholder.title}`))
+			.catch((e) => toast.error(`Failed: ${e}`));
+	}
+
+	// Auto-refresh tracks when downloads complete (so placeholders disappear)
+	onMount(() => {
+		let cleanup: (() => void) | undefined;
+		listen('library-updated', () => {
+			if (album) load(album.id);
+		}).then((unlisten) => { cleanup = unlisten; });
+		return () => cleanup?.();
+	});
+
 	const totalDuration = $derived(
 		tracks.reduce((sum, t) => sum + (t.duration_ms ?? 0), 0)
 	);
@@ -97,7 +150,7 @@
 		// Fallback: generate from total_tracks count
 		if (!album?.total_tracks || album.total_tracks <= tracks.length) return [];
 		const totalDiscs = album.total_discs ?? 1;
-		const missing: { track_number: number; disc_number: number }[] = [];
+		const missing: { track_number: number; disc_number: number; title?: string }[] = [];
 		for (let d = 1; d <= totalDiscs; d++) {
 			for (let n = 1; n <= album.total_tracks; n++) {
 				if (!existing.has(`${d}:${n}`)) {
@@ -168,11 +221,21 @@
 						{/if}
 						Enrich
 					</Button>
+					{#if missingTracks.length > 0}
+						<Button variant="outline" onclick={downloadAllMissing} disabled={downloadingMissing}>
+							{#if downloadingMissing}
+								<Loader2 class="size-4 animate-spin" />
+							{:else}
+								<Download class="size-4" />
+							{/if}
+							Download {missingTracks.length} Missing
+						</Button>
+					{/if}
 				</div>
 			</div>
 		</div>
 
-		<TrackTable {tracks} placeholders={missingTracks} />
+		<TrackTable {tracks} placeholders={missingTracks} ondownload={handleDownloadTrack} />
 	{:else}
 		<p class="text-muted-foreground">Album not found.</p>
 	{/if}

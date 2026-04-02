@@ -1,4 +1,8 @@
+pub mod deezer;
+pub mod metadata;
 pub mod setup;
+pub mod source;
+pub mod spotify;
 pub mod url_parser;
 pub mod ytdlp;
 
@@ -31,16 +35,40 @@ pub struct DownloadManager {
     app_handle: tauri::AppHandle,
     active_tasks: Arc<Mutex<HashMap<i64, tokio::task::JoinHandle<()>>>>,
     concurrency: Arc<Semaphore>,
+    /// Pluggable audio sources (Spotify, Deezer, etc.) for direct platform downloads
+    pub(crate) sources: Arc<tokio::sync::RwLock<source::SourceRegistry>>,
 }
 
 impl DownloadManager {
     pub fn new(db: Arc<DbPool>, app_handle: tauri::AppHandle) -> Self {
+        let sources = source::SourceRegistry::from_settings(&db);
         Self {
             db,
             app_handle,
             active_tasks: Arc::new(Mutex::new(HashMap::new())),
             concurrency: Arc::new(Semaphore::new(2)),
+            sources: Arc::new(tokio::sync::RwLock::new(sources)),
         }
+    }
+
+    /// Rebuild sources from current settings (call after credentials change)
+    pub async fn refresh_sources(&self) {
+        let new_sources = source::SourceRegistry::from_settings(&self.db);
+        let mut guard = self.sources.write().await;
+        *guard = new_sources;
+        log::info!("Download sources refreshed");
+    }
+
+    /// Get status of all configured sources
+    pub async fn get_sources_status(&self) -> Vec<source::SourceStatus> {
+        let guard = self.sources.read().await;
+        guard.get_statuses(&self.db)
+    }
+
+    /// Test a specific source's connection
+    pub async fn test_source(&self, platform: &str) -> Result<(), source::SourceError> {
+        let guard = self.sources.read().await;
+        guard.test_source(platform).await
     }
 
     fn get_download_dir(&self) -> PathBuf {
@@ -132,6 +160,7 @@ impl DownloadManager {
         let ffmpeg_dir = self.resolve_ffmpeg_dir();
         let cookies_from_browser = self.get_cookies_from_browser();
         let semaphore = self.concurrency.clone();
+        let sources = self.sources.clone();
 
         // Emit queued event immediately so the frontend can show all pending downloads
         emit_event(&self.app_handle, download_id, "queued", 0.0, None, None, None, None);
@@ -141,7 +170,7 @@ impl DownloadManager {
             let handle = tokio::spawn(async move {
                 // Wait for a concurrency slot (limits parallel yt-dlp processes)
                 let _permit = semaphore.acquire().await.expect("Semaphore closed");
-                run_download(db, app_handle, download_id, download_dir, ytdlp_binary, ffmpeg_dir, cookies_from_browser)
+                run_download(db, app_handle, download_id, download_dir, ytdlp_binary, ffmpeg_dir, cookies_from_browser, sources)
                     .await;
                 active_tasks.lock().await.remove(&download_id);
             });
@@ -209,8 +238,9 @@ async fn run_download(
     ytdlp_binary: String,
     ffmpeg_dir: Option<String>,
     cookies_from_browser: Option<String>,
+    sources: Arc<tokio::sync::RwLock<source::SourceRegistry>>,
 ) {
-    let download = {
+    let mut download = {
         let conn = match db.lock() {
             Ok(c) => c,
             Err(_) => return,
@@ -220,6 +250,31 @@ async fn run_download(
             _ => return,
         }
     };
+
+    // Convert Spotify URLs to YouTube search on-the-fly for legacy downloads
+    if download.url.starts_with("https://open.spotify.com/") || download.url.starts_with("spotify:") {
+        log::info!("Converting legacy Spotify URL to YouTube search for download {}", download_id);
+        match spotify::fetch_track_metadata(&download.url).await {
+            Some((title, artist)) => {
+                let search_query = match artist {
+                    Some(ref a) => format!("{} - {}", a, title),
+                    None => title.clone(),
+                };
+                download.url = format!("ytsearch1:{}", search_query);
+                // Update the download URL in database
+                if let Ok(conn) = db.lock() {
+                    let _ = conn.execute(
+                        "UPDATE downloads SET url = ?1, title = ?2, artist = ?3 WHERE id = ?4",
+                        rusqlite::params![&download.url, &title, artist.as_deref(), download_id],
+                    );
+                }
+            }
+            None => {
+                fail_download(&db, &app_handle, download_id, "Failed to fetch Spotify metadata for conversion");
+                return;
+            }
+        }
+    }
 
     if let Err(e) = std::fs::create_dir_all(&download_dir) {
         fail_download(
@@ -340,114 +395,346 @@ async fn run_download(
 
     match result {
         Ok(file_path) => {
-            if let Ok(conn) = db.lock() {
-                let _ = crate::db::downloads::update_download_status(
-                    &conn,
-                    download_id,
-                    "processing",
-                    None,
-                );
-            }
-            emit_event(
-                &app_handle,
-                download_id,
-                "processing",
-                100.0,
-                None,
-                None,
-                None,
-                None,
-            );
-
-            // Build fallback metadata from the download record + yt-dlp info
-            let dl_meta = {
-                let title_artist = if let Ok(conn) = db.lock() {
+            handle_download_success(&db, &app_handle, download_id, &file_path, &ytdlp_info).await;
+        }
+        Err(e) => {
+            // For all failed downloads, try fallback chain: native source → cross-platform search → YouTube search
+            let platform = {
+                if let Ok(conn) = db.lock() {
                     conn.query_row(
-                        "SELECT title, artist, url FROM downloads WHERE id = ?1",
+                        "SELECT platform FROM downloads WHERE id = ?1",
                         rusqlite::params![download_id],
-                        |row| Ok((
-                            row.get::<_, Option<String>>(0)?,
-                            row.get::<_, Option<String>>(1)?,
-                            row.get::<_, String>(2)?,
-                        )),
-                    ).ok()
+                        |row| row.get::<_, String>(0),
+                    ).unwrap_or_default()
+                } else {
+                    String::new()
+                }
+            };
+            let drm_platforms = ["spotify", "apple_music", "tidal", "deezer", "amazon_music"];
+            
+            // Always try fallback for failed downloads
+            let is_drm_platform = drm_platforms.contains(&platform.as_str());
+            {
+                let mut errors = vec![format!("yt-dlp: {}", e)];
+
+                // Step 1: Try native platform source (only for DRM platforms)
+                let native_result = if is_drm_platform {
+                    let sources_guard = sources.read().await;
+                    if let Some(src) = sources_guard.get_for_platform(&platform) {
+                        log::info!("Trying native {} source for download {}", platform, download_id);
+                        let app_handle_native = app_handle.clone();
+                        let dl_id_native = download_id;
+                        Some(src.download(
+                            &download.url,
+                            &download_dir,
+                            &file_stem,
+                            &download.format,
+                            Box::new(move |pct| {
+                                emit_event(&app_handle_native, dl_id_native, "downloading", pct, None, None, None, None);
+                            }),
+                        ).await)
+                    } else {
+                        None
+                    }
                 } else {
                     None
                 };
-                let (title, artist, source_url) = match title_artist {
-                    Some((t, a, u)) => (t, a, Some(u)),
-                    None => (None, None, None),
-                };
-                DownloadMeta {
-                    title,
-                    artist,
-                    source_url,
-                    description: ytdlp_info.as_ref().and_then(|i| i.description.clone()),
-                    genre: ytdlp_info.as_ref().and_then(|i| i.genre.clone()),
-                    release_year: ytdlp_info.as_ref().and_then(|i| i.release_year.clone()),
-                    language: ytdlp_info.as_ref().and_then(|i| i.language.clone()),
-                    composer: ytdlp_info.as_ref().and_then(|i| i.composer.clone()),
-                }
-            };
-            let track_id = import_downloaded_file(&db, &app_handle, &file_path, &dl_meta).await;
 
-            // Batch all post-completion DB updates in a single lock scope
-            let entry_id = if let Ok(conn) = db.lock() {
-                let _ = conn.execute_batch("BEGIN");
-                let _ = crate::db::downloads::update_download_file(
-                    &conn,
-                    download_id,
-                    &file_path,
-                    track_id,
-                );
-                let _ = crate::db::downloads::update_download_status(
-                    &conn,
-                    download_id,
-                    "completed",
-                    None,
-                );
-                let eid: Option<i64> = conn.query_row(
-                    "SELECT id FROM monitored_playlist_entries WHERE download_id = ?1",
-                    rusqlite::params![download_id],
-                    |row| row.get(0),
-                ).ok();
-                if let Some(eid) = eid {
-                    let _ = crate::db::monitored::update_entry_status(
-                        &conn, eid, "downloaded", Some(download_id), track_id,
-                    );
+                if let Some(Ok(file_path)) = native_result {
+                    handle_download_success(&db, &app_handle, download_id, &file_path, &ytdlp_info).await;
+                    return;
                 }
-                let _ = conn.execute_batch("COMMIT");
-                eid
-            } else {
-                None
-            };
-            let _ = app_handle.emit(
-                "download-event",
-                DownloadEvent {
-                    id: download_id,
-                    status: "completed".into(),
-                    progress: 100.0,
-                    speed: None,
-                    eta: None,
-                    error: None,
-                    title: None,
-                    track_id,
-                },
+                if let Some(Err(native_err)) = native_result {
+                    errors.push(format!("native {}: {}", platform, native_err));
+                }
+
+                // Step 2: Try cross-platform search via best available source (e.g. Deezer search)
+                let search_query = if let Some(ref info) = ytdlp_info {
+                    let title = info.track.as_deref().unwrap_or(&info.title);
+                    let artist = info.artist.as_deref().or(info.uploader.as_deref());
+                    match artist {
+                        Some(a) => Some(format!("{} - {}", a, title)),
+                        None => Some(title.to_string()),
+                    }
+                } else {
+                    // Use download title/artist from DB
+                    if let Ok(conn) = db.lock() {
+                        conn.query_row(
+                            "SELECT title, artist FROM downloads WHERE id = ?1",
+                            rusqlite::params![download_id],
+                            |row| {
+                                let t: Option<String> = row.get(0)?;
+                                let a: Option<String> = row.get(1)?;
+                                Ok(match (t, a) {
+                                    (Some(t), Some(a)) => Some(format!("{} - {}", a, t)),
+                                    (Some(t), None) => Some(t),
+                                    _ => None,
+                                })
+                            },
+                        ).ok().flatten()
+                    } else {
+                        None
+                    }
+                };
+
+                // If no search query yet (yt-dlp metadata failed), try platform-specific metadata APIs
+                let search_query = if search_query.is_none() && is_drm_platform {
+                    log::info!("yt-dlp metadata failed for {} URL, trying platform API for download {}", platform, download_id);
+                    if let Some(meta) = metadata::fetch_track_metadata(&download.url, &platform).await {
+                        // Update DB with the metadata we found
+                        if let Ok(conn) = db.lock() {
+                            let _ = crate::db::downloads::update_download_title(
+                                &conn,
+                                download_id,
+                                &meta.title,
+                                meta.artist.as_deref(),
+                            );
+                        }
+                        emit_event(&app_handle, download_id, "downloading", 0.0, None, None, None, Some(meta.title.clone()));
+                        Some(metadata::build_search_query(&meta))
+                    } else {
+                        log::warn!("Platform metadata API also failed for {} download {}", platform, download_id);
+                        None
+                    }
+                } else {
+                    search_query
+                };
+
+                if let Some(ref query) = search_query {
+                    let cross_result = if is_drm_platform {
+                        let sources_guard = sources.read().await;
+                        if let Some(src) = sources_guard.get_best_search_source() {
+                            // Don't search on the same platform that just failed natively
+                            if src.platform() != platform {
+                                log::info!("Trying cross-platform search on {} for: {}", src.platform(), query);
+                                let app_handle_cross = app_handle.clone();
+                                let dl_id_cross = download_id;
+                                Some(src.search_download(
+                                    query,
+                                    &download_dir,
+                                    &file_stem,
+                                    &download.format,
+                                    Box::new(move |pct| {
+                                        emit_event(&app_handle_cross, dl_id_cross, "downloading", pct, None, None, None, None);
+                                    }),
+                                ).await)
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+
+                    if let Some(Ok(file_path)) = cross_result {
+                        handle_download_success(&db, &app_handle, download_id, &file_path, &ytdlp_info).await;
+                        return;
+                    }
+                    if let Some(Err(cross_err)) = cross_result {
+                        errors.push(format!("cross-search: {}", cross_err));
+                    }
+                }
+
+                // Step 3: YouTube search fallback with multiple query variations
+                if let Some(ref query) = search_query {
+                    // Build comprehensive search query variations for better matching
+                    let query_variations = build_search_variations(query);
+
+                    for (attempt, yt_query) in query_variations.iter().enumerate() {
+                        log::info!("YouTube search attempt {}: '{}'", attempt + 1, yt_query);
+
+                        let app_handle_yt = app_handle.clone();
+                        let dl_id_yt = download_id;
+                        let yt_result = ytdlp::download_audio(
+                            &ytdlp_binary,
+                            ffmpeg_dir.as_deref(),
+                            yt_query,
+                            &download_dir,
+                            &download.format,
+                            &download.quality,
+                            &file_stem,
+                            cookies_from_browser.as_deref(),
+                            move |progress| {
+                                emit_event(&app_handle_yt, dl_id_yt, "downloading", progress.percent, progress.speed.clone(), progress.eta.clone(), None, None);
+                            },
+                        )
+                        .await;
+
+                        match yt_result {
+                            Ok(file_path) => {
+                                log::info!("YouTube search succeeded on attempt {}", attempt + 1);
+                                handle_download_success(&db, &app_handle, download_id, &file_path, &ytdlp_info).await;
+                                return;
+                            }
+                            Err(e) => {
+                                errors.push(format!("YouTube search attempt {}: {}", attempt + 1, e));
+                                // If bot detection (exit code 1 or 120), wait before next attempt
+                                if e.contains("exit code: 1") || e.contains("exit code: 120") {
+                                    log::info!("Bot detection likely, waiting 3 seconds before retry...");
+                                    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Step 4: SoundCloud search as final fallback
+                if let Some(ref query) = search_query {
+                    let sc_query = format!("scsearch1:{}", query);
+                    log::info!("Final fallback: searching SoundCloud for '{}'", sc_query);
+
+                    let app_handle_sc = app_handle.clone();
+                    let dl_id_sc = download_id;
+                    let sc_result = ytdlp::download_audio(
+                        &ytdlp_binary,
+                        ffmpeg_dir.as_deref(),
+                        &sc_query,
+                        &download_dir,
+                        &download.format,
+                        &download.quality,
+                        &file_stem,
+                        cookies_from_browser.as_deref(),
+                        move |progress| {
+                            emit_event(&app_handle_sc, dl_id_sc, "downloading", progress.percent, progress.speed.clone(), progress.eta.clone(), None, None);
+                        },
+                    )
+                    .await;
+
+                    match sc_result {
+                        Ok(file_path) => {
+                            log::info!("SoundCloud search succeeded");
+                            handle_download_success(&db, &app_handle, download_id, &file_path, &ytdlp_info).await;
+                            return;
+                        }
+                        Err(e) => {
+                            errors.push(format!("SoundCloud search: {}", e));
+                        }
+                    }
+                }
+
+                // If all fallbacks failed, mark as failed
+                fail_download(&db, &app_handle, download_id, &errors.join("; "));
+            }
+        }
+    }
+}
+
+async fn handle_download_success(
+    db: &Arc<DbPool>,
+    app_handle: &tauri::AppHandle,
+    download_id: i64,
+    file_path: &str,
+    ytdlp_info: &Option<ytdlp::VideoInfo>,
+) {
+    if let Ok(conn) = db.lock() {
+        let _ = crate::db::downloads::update_download_status(
+            &conn,
+            download_id,
+            "processing",
+            None,
+        );
+    }
+    emit_event(
+        app_handle,
+        download_id,
+        "processing",
+        100.0,
+        None,
+        None,
+        None,
+        None,
+    );
+
+    // Build fallback metadata from the download record + yt-dlp info
+    let dl_meta = {
+        let dl_row = if let Ok(conn) = db.lock() {
+            conn.query_row(
+                "SELECT title, artist, url, target_album_id, target_artist_id FROM downloads WHERE id = ?1",
+                rusqlite::params![download_id],
+                |row| Ok((
+                    row.get::<_, Option<String>>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<i64>>(3)?,
+                    row.get::<_, Option<i64>>(4)?,
+                )),
+            ).ok()
+        } else {
+            None
+        };
+        let (title, artist, source_url, target_album_id, target_artist_id) = match dl_row {
+            Some((t, a, u, alb, art)) => (t, a, Some(u), alb, art),
+            None => (None, None, None, None, None),
+        };
+        DownloadMeta {
+            title,
+            artist,
+            source_url,
+            description: ytdlp_info.as_ref().and_then(|i| i.description.clone()),
+            genre: ytdlp_info.as_ref().and_then(|i| i.genre.clone()),
+            release_year: ytdlp_info.as_ref().and_then(|i| i.release_year.clone()),
+            language: ytdlp_info.as_ref().and_then(|i| i.language.clone()),
+            composer: ytdlp_info.as_ref().and_then(|i| i.composer.clone()),
+            target_album_id,
+            target_artist_id,
+        }
+    };
+    let track_id = import_downloaded_file(db, app_handle, file_path, &dl_meta).await;
+
+    // Batch all post-completion DB updates in a single lock scope
+    let entry_id = if let Ok(conn) = db.lock() {
+        let _ = conn.execute_batch("BEGIN");
+        let _ = crate::db::downloads::update_download_file(
+            &conn,
+            download_id,
+            file_path,
+            track_id,
+        );
+        let _ = crate::db::downloads::update_download_status(
+            &conn,
+            download_id,
+            "completed",
+            None,
+        );
+        let eid: Option<i64> = conn.query_row(
+            "SELECT id FROM monitored_playlist_entries WHERE download_id = ?1",
+            rusqlite::params![download_id],
+            |row| row.get(0),
+        ).ok();
+        if let Some(eid) = eid {
+            let _ = crate::db::monitored::update_entry_status(
+                &conn, eid, "downloaded", Some(download_id), track_id,
             );
-            // Notify frontend that the library has new content
-            if track_id.is_some() {
-                let _ = app_handle.emit("library-updated", ());
-            }
-            if let Some(eid) = entry_id {
-                let _ = app_handle.emit(
-                    "manager-entry-updated",
-                    serde_json::json!({ "entry_id": eid, "status": "downloaded" }),
-                );
-            }
         }
-        Err(e) => {
-            fail_download(&db, &app_handle, download_id, &e);
-        }
+        let _ = conn.execute_batch("COMMIT");
+        eid
+    } else {
+        None
+    };
+    let _ = app_handle.emit(
+        "download-event",
+        DownloadEvent {
+            id: download_id,
+            status: "completed".into(),
+            progress: 100.0,
+            speed: None,
+            eta: None,
+            error: None,
+            title: None,
+            track_id,
+        },
+    );
+    // Notify frontend that the library has new content
+    if track_id.is_some() {
+        let _ = app_handle.emit("library-updated", ());
+    }
+    if let Some(eid) = entry_id {
+        let _ = app_handle.emit(
+            "manager-entry-updated",
+            serde_json::json!({ "entry_id": eid, "status": "downloaded" }),
+        );
     }
 }
 
@@ -461,6 +748,8 @@ struct DownloadMeta {
     release_year: Option<String>,
     language: Option<String>,
     composer: Option<String>,
+    target_album_id: Option<i64>,
+    target_artist_id: Option<i64>,
 }
 
 async fn import_downloaded_file(
@@ -499,20 +788,30 @@ async fn import_downloaded_file(
 
     let conn = db.lock().ok()?;
 
-    let artist_id = artist_name
-        .as_ref()
-        .and_then(|name| crate::db::artists::find_or_create(&conn, name).ok());
+    // Use target IDs from download context if available (e.g., downloading missing album tracks),
+    // otherwise fall back to find_or_create from file tags
+    let artist_id = if let Some(target_aid) = dl_meta.target_artist_id {
+        Some(target_aid)
+    } else {
+        artist_name
+            .as_ref()
+            .and_then(|name| crate::db::artists::find_or_create(&conn, name).ok())
+    };
 
-    let album_id = tag_data.album.as_ref().and_then(|alb| {
-        crate::db::albums::find_or_create(
-            &conn,
-            alb,
-            artist_id,
-            tag_data.album_artist.as_deref(),
-            tag_data.year.map(|y| y as i64),
-        )
-        .ok()
-    });
+    let album_id = if let Some(target_alb) = dl_meta.target_album_id {
+        Some(target_alb)
+    } else {
+        tag_data.album.as_ref().and_then(|alb| {
+            crate::db::albums::find_or_create(
+                &conn,
+                alb,
+                artist_id,
+                tag_data.album_artist.as_deref(),
+                tag_data.year.map(|y| y as i64),
+            )
+            .ok()
+        })
+    };
 
     let file_size = std::fs::metadata(path).map(|m| m.len() as i64).ok();
 
@@ -662,4 +961,110 @@ fn emit_event(
             track_id: None,
         },
     );
+}
+
+/// Build comprehensive search query variations for YouTube/SoundCloud fallback.
+/// Returns a list of yt-dlp search queries to try in order.
+fn build_search_variations(query: &str) -> Vec<String> {
+    let mut variations = Vec::new();
+    
+    // Clean the query: remove feat./ft., parentheses with remix/version info, etc.
+    let clean_query = clean_search_query(query);
+    
+    // 1. Original query as-is
+    variations.push(format!("ytsearch1:{}", query));
+    
+    // 2. Query with " - " replaced by space (Artist Title instead of Artist - Title)
+    if query.contains(" - ") {
+        variations.push(format!("ytsearch1:{}", query.replace(" - ", " ")));
+    }
+    
+    // 3. If we have "Artist - Title" format, try variations
+    if query.contains(" - ") {
+        let parts: Vec<&str> = query.splitn(2, " - ").collect();
+        if parts.len() == 2 {
+            let artist = parts[0].trim();
+            let title = parts[1].trim();
+            
+            // Title Artist (reversed)
+            variations.push(format!("ytsearch1:{} {}", title, artist));
+            
+            // Title only (for covers/remixes that might not have original artist)
+            variations.push(format!("ytsearch1:{}", title));
+            
+            // Artist only + cleaned title (removes feat. etc)
+            let clean_title = clean_search_query(title);
+            if clean_title != title {
+                variations.push(format!("ytsearch1:{} {}", artist, clean_title));
+            }
+            
+            // Add "audio" suffix for official audio uploads
+            variations.push(format!("ytsearch1:{} {} audio", artist, title));
+            
+            // Add "lyrics" suffix (lyric videos are common)
+            variations.push(format!("ytsearch1:{} {} lyrics", artist, title));
+        }
+    }
+    
+    // 4. Cleaned query if different from original
+    if clean_query != query {
+        variations.push(format!("ytsearch1:{}", clean_query));
+    }
+    
+    // 5. YouTube Music search (often has better music results)
+    variations.push(format!("ytmsearch1:{}", query));
+    
+    // Remove duplicates while preserving order
+    let mut seen = std::collections::HashSet::new();
+    variations.retain(|v| seen.insert(v.clone()));
+    
+    // Limit to reasonable number of attempts
+    variations.truncate(8);
+    
+    variations
+}
+
+/// Clean a search query by removing common noise like feat., ft., parenthetical info, etc.
+fn clean_search_query(query: &str) -> String {
+    let mut result = query.to_string();
+    
+    // Remove feat./ft./featuring patterns
+    let feat_patterns = [
+        " (feat. ", " (ft. ", " (featuring ", 
+        " [feat. ", " [ft. ", " [featuring ",
+        " feat. ", " ft. ", " featuring ",
+    ];
+    for pattern in &feat_patterns {
+        if let Some(pos) = result.to_lowercase().find(&pattern.to_lowercase()) {
+            // Find the closing bracket if there is one
+            let after = &result[pos..];
+            if after.starts_with(" (") || after.starts_with(" [") {
+                if let Some(close) = after.find(|c| c == ')' || c == ']') {
+                    result = format!("{}{}", &result[..pos], &result[pos + close + 1..]);
+                } else {
+                    result = result[..pos].to_string();
+                }
+            } else {
+                result = result[..pos].to_string();
+            }
+        }
+    }
+    
+    // Remove common parenthetical suffixes that might not match
+    let remove_patterns = [
+        "(Official Video)", "(Official Music Video)", "(Official Audio)",
+        "(Lyric Video)", "(Lyrics)", "(Audio)", "(Music Video)",
+        "(Remastered)", "(Remaster)", "(Radio Edit)", "(Single Version)",
+        "[Official Video]", "[Official Music Video]", "[Official Audio]",
+        "[Lyric Video]", "[Lyrics]", "[Audio]", "[Music Video]",
+    ];
+    for pattern in &remove_patterns {
+        result = result.replace(pattern, "");
+        // Also try lowercase
+        result = result.replace(&pattern.to_lowercase(), "");
+    }
+    
+    // Clean up extra whitespace
+    result = result.split_whitespace().collect::<Vec<_>>().join(" ");
+    result.trim().to_string()
 }

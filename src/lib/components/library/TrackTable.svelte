@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
-	import { Music, Clock, Hash, Play, ListPlus, ListStart, Trash2, MoreHorizontal } from 'lucide-svelte';
+	import { Music, Clock, Hash, Play, ListPlus, ListStart, Trash2, MoreHorizontal, Download } from 'lucide-svelte';
 	import { formatDuration, assetUrl } from '$lib/utils/format';
 	import { player } from '$lib/stores/player.svelte';
 	import * as DropdownMenu from '$lib/components/ui/dropdown-menu';
@@ -25,12 +25,14 @@
 		placeholders = [],
 		onplay,
 		ondelete,
+		ondownload,
 		navigable = true,
 	}: {
 		tracks: Track[];
 		placeholders?: { track_number: number; disc_number: number; title?: string }[];
 		onplay?: (track: Track) => void;
 		ondelete?: (track: Track) => void;
+		ondownload?: (placeholder: { track_number: number; disc_number: number; title?: string }) => void;
 		navigable?: boolean;
 	} = $props();
 
@@ -132,7 +134,7 @@
 						{#if row._placeholder}
 							<!-- Placeholder row for missing track -->
 							<div
-								class="border-b border-border/50 flex items-center opacity-40 cursor-default"
+								class="group border-b border-border/50 flex items-center opacity-50 hover:opacity-80 cursor-default transition-opacity"
 								style="height: {ROW_HEIGHT}px;"
 							>
 								<div class="w-12 px-4 text-center text-sm tabular-nums text-muted-foreground">
@@ -151,7 +153,17 @@
 								<div class="w-40 px-4 text-sm text-muted-foreground truncate">--</div>
 								<div class="w-40 px-4 text-sm text-muted-foreground truncate hidden lg:block">--</div>
 								<div class="w-20 px-4 text-sm text-muted-foreground text-right tabular-nums">--:--</div>
-								<div class="w-10"></div>
+								<div class="w-10 flex items-center justify-center">
+									{#if ondownload}
+										<button
+											class="opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded hover:bg-muted text-muted-foreground hover:text-foreground"
+											title="Download this track"
+											onclick={() => ondownload?.(row)}
+										>
+											<Download class="size-4" />
+										</button>
+									{/if}
+								</div>
 							</div>
 						{:else}
 							{@const track = row}

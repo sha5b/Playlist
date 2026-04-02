@@ -214,6 +214,15 @@ pub fn player_move_in_queue(
 }
 
 #[tauri::command]
+pub fn player_skip_to(
+    engine: State<'_, Arc<AudioEngine>>,
+    index: usize,
+) -> Result<(), String> {
+    engine.send(PlayerCommand::SkipTo(index));
+    Ok(())
+}
+
+#[tauri::command]
 pub fn player_remove_from_queue(
     engine: State<'_, Arc<AudioEngine>>,
     index: usize,

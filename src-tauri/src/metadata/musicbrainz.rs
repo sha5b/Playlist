@@ -24,7 +24,6 @@ struct RecordingSearchResult {
 #[derive(Debug, Deserialize)]
 struct RecordingHit {
     id: String,
-    title: Option<String>,
     #[serde(rename = "artist-credit")]
     artist_credit: Option<Vec<ArtistCredit>>,
     releases: Option<Vec<ReleaseRef>>,
@@ -43,7 +42,6 @@ struct ArtistCredit {
 #[derive(Debug, Deserialize)]
 struct ArtistRef {
     id: String,
-    name: Option<String>,
     #[serde(rename = "sort-name")]
     sort_name: Option<String>,
     #[serde(rename = "type")]
@@ -51,7 +49,6 @@ struct ArtistRef {
     country: Option<String>,
     #[serde(rename = "life-span")]
     life_span: Option<LifeSpan>,
-    disambiguation: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -62,7 +59,6 @@ struct LifeSpan {
 #[derive(Debug, Deserialize)]
 struct ReleaseRef {
     id: String,
-    title: Option<String>,
     date: Option<String>,
     #[serde(rename = "release-group")]
     release_group: Option<ReleaseGroupRef>,
@@ -90,9 +86,7 @@ struct ReleaseSearchResult {
 #[derive(Debug, Deserialize)]
 struct ReleaseHit {
     id: String,
-    title: Option<String>,
     date: Option<String>,
-    country: Option<String>,
     #[serde(rename = "label-info")]
     label_info: Option<Vec<LabelInfo>>,
     #[serde(rename = "artist-credit")]
@@ -101,8 +95,6 @@ struct ReleaseHit {
     release_group: Option<ReleaseGroupRef>,
     #[serde(rename = "track-count")]
     track_count: Option<i64>,
-    #[serde(rename = "text-representation")]
-    text_representation: Option<TextRepresentation>,
     tags: Option<Vec<MbTag>>,
     media: Option<Vec<MbMedia>>,
 }
@@ -118,15 +110,8 @@ struct LabelRef {
 }
 
 #[derive(Debug, Deserialize)]
-struct TextRepresentation {
-    language: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
 struct MbMedia {
     position: Option<i64>,
-    #[serde(rename = "track-count")]
-    track_count: Option<i64>,
     tracks: Option<Vec<MbTrack>>,
 }
 
@@ -135,12 +120,6 @@ struct MbTrack {
     number: Option<String>,
     title: Option<String>,
     length: Option<i64>,
-    recording: Option<MbTrackRecording>,
-}
-
-#[derive(Debug, Deserialize)]
-struct MbTrackRecording {
-    id: Option<String>,
 }
 
 // ── Public result types ────────────────────────────────────────────────────
@@ -156,9 +135,7 @@ pub struct TrackEnrichment {
     pub language: Option<String>,
     pub album_musicbrainz_id: Option<String>,
     pub album_type: Option<String>,
-    pub album_total_tracks: Option<i64>,
     pub album_release_date: Option<String>,
-    pub album_label: Option<String>,
     pub artist_musicbrainz_id: Option<String>,
     pub artist_sort_name: Option<String>,
     pub artist_type: Option<String>,
@@ -175,7 +152,6 @@ pub struct AlbumEnrichment {
     pub genre: Option<String>,
     pub total_tracks: Option<i64>,
     pub total_discs: Option<i64>,
-    pub language: Option<String>,
     pub tracklist: Vec<AlbumTrackInfo>,
     pub artist_musicbrainz_id: Option<String>,
     pub artist_sort_name: Option<String>,
@@ -289,7 +265,6 @@ pub async fn enrich_album(title: &str, artist: Option<&str>) -> Result<AlbumEnri
         release_date: hit.date.clone(),
         album_type: hit.release_group.as_ref().and_then(|rg| rg.primary_type.clone()),
         total_tracks: hit.track_count,
-        language: hit.text_representation.as_ref().and_then(|tr| tr.language.clone()),
         ..Default::default()
     };
 
@@ -360,20 +335,91 @@ pub async fn enrich_album(title: &str, artist: Option<&str>) -> Result<AlbumEnri
     Ok(enrichment)
 }
 
-// ── Cover Art Archive ─────────────────────────────────────────────────────
+// ── Artist discography ────────────────────────────────────────────────
 
-/// Fetch cover art URL from Cover Art Archive for a given MusicBrainz release ID.
-/// Returns the URL of the front cover image (500px) if available.
-pub async fn get_cover_art_url(release_mbid: &str) -> Option<String> {
-    // Cover Art Archive redirects to the actual image URL
-    let url = format!("https://coverartarchive.org/release/{}/front-500", release_mbid);
-    match client().head(&url).send().await {
-        Ok(resp) if resp.status().is_success() || resp.status().is_redirection() => {
-            Some(url)
-        }
-        _ => None,
-    }
+#[derive(Debug, Deserialize)]
+struct ReleaseGroupSearchResult {
+    #[serde(rename = "release-groups")]
+    release_groups: Option<Vec<ReleaseGroupHit>>,
 }
+
+#[derive(Debug, Deserialize)]
+struct ReleaseGroupHit {
+    id: String,
+    title: Option<String>,
+    #[serde(rename = "primary-type")]
+    primary_type: Option<String>,
+    #[serde(rename = "first-release-date")]
+    first_release_date: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, Deserialize)]
+pub struct ArtistDiscographyEntry {
+    pub mbid: String,
+    pub title: String,
+    pub album_type: Option<String>,
+    pub year: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ArtistSearchResult {
+    artists: Option<Vec<ArtistSearchHit>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ArtistSearchHit {
+    id: String,
+}
+
+/// Search MusicBrainz for an artist by name and return their MBID.
+pub async fn search_artist(name: &str) -> Result<String, String> {
+    let url = format!("{}/artist/?query={}&fmt=json&limit=5", MB_BASE, urlencoding(name));
+    let resp: ArtistSearchResult = client()
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("MusicBrainz request failed: {}", e))?
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse response: {}", e))?;
+
+    let artists = resp.artists.unwrap_or_default();
+    let hit = artists.first().ok_or_else(|| "No MusicBrainz artist results".to_string())?;
+    Ok(hit.id.clone())
+}
+
+/// Fetch an artist's full discography (albums, EPs, singles) from MusicBrainz.
+pub async fn get_artist_discography(mbid: &str) -> Result<Vec<ArtistDiscographyEntry>, String> {
+    let url = format!(
+        "{}/release-group?artist={}&type=album|ep|single&fmt=json&limit=100",
+        MB_BASE, mbid
+    );
+    let resp: ReleaseGroupSearchResult = client()
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("MusicBrainz request failed: {}", e))?
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse response: {}", e))?;
+
+    let groups = resp.release_groups.unwrap_or_default();
+    let entries: Vec<ArtistDiscographyEntry> = groups.into_iter().map(|rg| {
+        let year = rg.first_release_date.as_ref()
+            .and_then(|d| d.get(..4))
+            .and_then(|y| y.parse::<i64>().ok());
+        ArtistDiscographyEntry {
+            mbid: rg.id,
+            title: rg.title.unwrap_or_default(),
+            album_type: rg.primary_type,
+            year,
+        }
+    }).collect();
+
+    Ok(entries)
+}
+
+// ── Cover Art Archive ─────────────────────────────────────────────────────
 
 /// Download cover art bytes from Cover Art Archive.
 pub async fn download_cover_art(release_mbid: &str) -> Option<Vec<u8>> {

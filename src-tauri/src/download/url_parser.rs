@@ -77,6 +77,86 @@ pub fn parse_url(url: &str) -> ParsedUrl {
         };
     }
 
+    // Apple Music
+    if url.contains("music.apple.com") {
+        let url_type = if url.contains("/playlist/") {
+            "playlist"
+        } else if url.contains("/album/") {
+            "album"
+        } else if url.contains("/song/") {
+            "track"
+        } else if url.contains("/artist/") {
+            "channel"
+        } else {
+            "unknown"
+        };
+        return ParsedUrl {
+            platform: "apple_music".into(),
+            url_type: url_type.into(),
+            clean_url: url.into(),
+        };
+    }
+
+    // Tidal
+    if url.contains("tidal.com") {
+        let url_type = if url.contains("/playlist/") {
+            "playlist"
+        } else if url.contains("/album/") {
+            "album"
+        } else if url.contains("/track/") {
+            "track"
+        } else if url.contains("/artist/") {
+            "channel"
+        } else {
+            "unknown"
+        };
+        return ParsedUrl {
+            platform: "tidal".into(),
+            url_type: url_type.into(),
+            clean_url: url.into(),
+        };
+    }
+
+    // Deezer
+    if url.contains("deezer.com") || url.contains("deezer.page.link") {
+        let url_type = if url.contains("/playlist/") {
+            "playlist"
+        } else if url.contains("/album/") {
+            "album"
+        } else if url.contains("/track/") {
+            "track"
+        } else if url.contains("/artist/") {
+            "channel"
+        } else {
+            "unknown"
+        };
+        return ParsedUrl {
+            platform: "deezer".into(),
+            url_type: url_type.into(),
+            clean_url: url.into(),
+        };
+    }
+
+    // Amazon Music
+    if url.contains("music.amazon.") || (url.contains("amazon.") && url.contains("/music/")) {
+        let url_type = if url.contains("/playlist") {
+            "playlist"
+        } else if url.contains("/album") {
+            "album"
+        } else if url.contains("/track") {
+            "track"
+        } else if url.contains("/artist") {
+            "channel"
+        } else {
+            "unknown"
+        };
+        return ParsedUrl {
+            platform: "amazon_music".into(),
+            url_type: url_type.into(),
+            clean_url: url.into(),
+        };
+    }
+
     // Direct audio file
     let lower = url.to_lowercase();
     if lower.ends_with(".mp3")

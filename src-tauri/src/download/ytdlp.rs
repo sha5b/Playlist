@@ -75,7 +75,15 @@ pub async fn get_info(
 ) -> Result<VideoInfo, String> {
     let mut cmd = Command::new(binary);
     low_priority(&mut cmd);
-    cmd.args(["--dump-json", "--no-download", "--no-warnings", "--flat-playlist"]);
+    cmd.args([
+        "--dump-json", 
+        "--no-download", 
+        "--no-warnings", 
+        "--flat-playlist",
+        // Anti-bot detection flags
+        "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "--extractor-retries", "3",
+    ]);
     if let Some(dir) = ffmpeg_dir {
         cmd.args(["--ffmpeg-location", dir]);
     }
@@ -148,7 +156,15 @@ pub async fn get_playlist_entries(
 ) -> Result<PlaylistFetchResult, String> {
     let mut cmd = Command::new(binary);
     low_priority(&mut cmd);
-    cmd.args(["--dump-json", "--no-download", "--no-warnings", "--flat-playlist"]);
+    cmd.args([
+        "--dump-json", 
+        "--no-download", 
+        "--no-warnings", 
+        "--flat-playlist",
+        // Anti-bot detection flags
+        "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "--extractor-retries", "3",
+    ]);
     if let Some(dir) = ffmpeg_dir {
         cmd.args(["--ffmpeg-location", dir]);
     }
@@ -238,6 +254,12 @@ where
         "--newline",
         "--no-warnings",
         "--no-playlist",
+        // Anti-bot detection flags
+        "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "--extractor-retries", "3",
+        "--sleep-requests", "1",
+        "--force-ipv4",
+        "--extractor-args", "youtube:player_client=mweb,web",
     ]);
     if let Some(dir) = ffmpeg_dir {
         cmd.args(["--ffmpeg-location", dir]);

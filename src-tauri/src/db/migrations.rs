@@ -177,7 +177,13 @@ const MIGRATION_005: &str = "
 ALTER TABLE albums ADD COLUMN enriched_tracklist TEXT;
 ";
 
-const MIGRATIONS: &[&str] = &[MIGRATION_001, MIGRATION_002, MIGRATION_003, MIGRATION_004, MIGRATION_005];
+const MIGRATION_006: &str = "
+ALTER TABLE downloads ADD COLUMN target_album_id INTEGER;
+ALTER TABLE downloads ADD COLUMN target_artist_id INTEGER;
+ALTER TABLE artists ADD COLUMN enriched_discography TEXT;
+";
+
+const MIGRATIONS: &[&str] = &[MIGRATION_001, MIGRATION_002, MIGRATION_003, MIGRATION_004, MIGRATION_005, MIGRATION_006];
 
 pub fn run(conn: &Connection) -> Result<(), Box<dyn std::error::Error>> {
     conn.execute(

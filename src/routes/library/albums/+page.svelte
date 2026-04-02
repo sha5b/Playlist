@@ -1,10 +1,13 @@
 <script lang="ts">
-	import { getAlbums } from '$lib/api/library';
+	import { getAlbums, getAlbumsDownloadStatus, cleanupDuplicateAlbums } from '$lib/api/library';
+	import type { AlbumDownloadStatus } from '$lib/api/library';
 	import CardGridSkeleton from '$lib/components/shared/CardGridSkeleton.svelte';
 	import { Input } from '$lib/components/ui/input';
-	import { Disc, Search, X } from 'lucide-svelte';
+	import { Button } from '$lib/components/ui/button';
+	import { Disc, Search, X, Check, Sparkles, Loader2 } from 'lucide-svelte';
 	import { assetUrl } from '$lib/utils/format';
 	import { libraryStore } from '$lib/stores/library.svelte';
+	import { toast } from 'svelte-sonner';
 	import type { Album } from '$lib/types';
 
 	let albums: Album[] = $state([]);
@@ -12,6 +15,8 @@
 	let loading = $state(true);
 	let searchQuery = $state('');
 	let debounceTimer: ReturnType<typeof setTimeout>;
+	let downloadStatuses: Record<string, AlbumDownloadStatus> = $state({});
+	let cleaningDuplicates = $state(false);
 
 	async function load() {
 		loading = true;
@@ -19,6 +24,11 @@
 			const [data, count] = await getAlbums(0, 200, searchQuery || undefined);
 			albums = data;
 			total = count;
+			// Load download statuses for all albums
+			if (data.length > 0) {
+				const ids = data.map((a) => a.id);
+				downloadStatuses = await getAlbumsDownloadStatus(ids);
+			}
 		} catch (e) {
 			console.error('Failed to load albums:', e);
 		} finally {
@@ -37,6 +47,21 @@
 		load();
 	}
 
+	async function handleCleanupDuplicates() {
+		cleaningDuplicates = true;
+		try {
+			const result = await cleanupDuplicateAlbums();
+			toast.success('Duplicates cleaned up', { 
+				description: `Merged ${result.merged_groups} album groups, removed ${result.deleted_duplicates} duplicates and ${result.orphaned_removed} orphaned albums` 
+			});
+			load(); // Reload albums after cleanup
+		} catch (e) {
+			toast.error('Failed to cleanup duplicates', { description: String(e) });
+		} finally {
+			cleaningDuplicates = false;
+		}
+	}
+
 	$effect(() => {
 		libraryStore.version;
 		load();
@@ -51,19 +76,30 @@
 				{loading ? 'Loading...' : `${total} album${total !== 1 ? 's' : ''}${searchQuery ? ` matching "${searchQuery}"` : ''}`}
 			</p>
 		</div>
-		<div class="relative w-64">
-			<Search class="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" />
-			<Input
-				placeholder="Search albums..."
-				class="pl-9 pr-8"
-				value={searchQuery}
-				oninput={handleSearch}
-			/>
-			{#if searchQuery}
-				<button class="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground" onclick={clearSearch}>
-					<X class="size-4" />
-				</button>
-			{/if}
+		<div class="flex items-center gap-2">
+			<Button variant="outline" size="sm" onclick={handleCleanupDuplicates} disabled={cleaningDuplicates}>
+				{#if cleaningDuplicates}
+					<Loader2 class="size-4 animate-spin" />
+					Cleaning...
+				{:else}
+					<Sparkles class="size-4" />
+					Cleanup Duplicates
+				{/if}
+			</Button>
+			<div class="relative w-64">
+				<Search class="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" />
+				<Input
+					placeholder="Search albums..."
+					class="pl-9 pr-8"
+					value={searchQuery}
+					oninput={handleSearch}
+				/>
+				{#if searchQuery}
+					<button class="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground" onclick={clearSearch}>
+						<X class="size-4" />
+					</button>
+				{/if}
+			</div>
 		</div>
 	</div>
 
@@ -89,7 +125,7 @@
 						e.dataTransfer.effectAllowed = 'copyMove';
 					}}
 				>
-					<div class="aspect-square rounded-lg bg-muted flex items-center justify-center overflow-hidden mb-2">
+					<div class="relative aspect-square rounded-lg bg-muted flex items-center justify-center overflow-hidden mb-2">
 						{#if album.cover_art_path}
 							<img
 								src={assetUrl(album.cover_art_path)}
@@ -99,6 +135,15 @@
 							/>
 						{:else}
 							<Disc class="size-12 text-muted-foreground" />
+						{/if}
+						{#if downloadStatuses[String(album.id)]?.status === 'complete'}
+							<div class="absolute top-1.5 right-1.5 flex items-center justify-center size-5 rounded-full bg-green-500 text-white">
+								<Check class="size-3" />
+							</div>
+						{:else if downloadStatuses[String(album.id)]?.status === 'partial'}
+							<div class="absolute top-1.5 right-1.5 rounded-full bg-yellow-500/90 text-white text-[10px] font-bold px-1.5 py-0.5 leading-none">
+								{downloadStatuses[String(album.id)].total_local}/{downloadStatuses[String(album.id)].total_expected}
+							</div>
 						{/if}
 					</div>
 					<p class="text-sm font-medium truncate">{album.title}</p>

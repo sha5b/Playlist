@@ -221,11 +221,18 @@ pub fn run() {
             commands::download_ensure_deps,
             commands::download_start,
             commands::download_start_batch,
+            commands::download_search_and_start,
+            commands::download_search_and_start_batch,
             commands::download_cancel,
             commands::download_retry,
             commands::download_get_active,
             commands::download_get_history,
             commands::download_clear_history,
+            // Download sources
+            commands::download_get_sources_status,
+            commands::download_set_source_credentials,
+            commands::download_test_source,
+            commands::download_refresh_sources,
             // Manager (monitored playlists)
             commands::manager_get_playlists,
             commands::manager_get_entries,
@@ -253,6 +260,7 @@ pub fn run() {
             commands::player::player_add_to_queue,
             commands::player::player_add_next,
             commands::player::player_move_in_queue,
+            commands::player::player_skip_to,
             commands::player::player_remove_from_queue,
             commands::player::player_clear_queue,
             commands::player::player_get_state,
@@ -263,6 +271,16 @@ pub fn run() {
             commands::enrich_album,
             commands::scan_missing_metadata,
             commands::get_metadata_stats,
+            commands::metadata_stop_scan,
+            commands::metadata_delete_all,
+            commands::metadata_cleanup_duplicates,
+            // Album download status
+            commands::library_get_album_download_status,
+            commands::library_get_albums_download_status,
+            // Artist enrichment
+            commands::enrich_artist,
+            commands::library_get_artist_missing_albums,
+            commands::download_artist_missing,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

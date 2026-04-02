@@ -9,8 +9,8 @@
 	import { formatDuration, assetUrl } from '$lib/utils/format';
 	import DndQueueList from '$lib/components/player/DndQueueList.svelte';
 
-	function handleProgressChange(values: number[]) {
-		const seconds = (values[0] / 100) * (player.durationMs / 1000);
+	function handleProgressChange(value: number) {
+		const seconds = (value / 100) * (player.durationMs / 1000);
 		player.seek(seconds);
 	}
 
@@ -82,7 +82,8 @@
 								{formatDuration(player.positionMs)}
 							</span>
 							<Slider
-								value={[progressPercent]}
+								type="single"
+								value={progressPercent}
 								max={100}
 								step={0.1}
 								class="flex-1"

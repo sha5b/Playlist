@@ -46,9 +46,25 @@ crossbeam-channel = "0.5"
 walkdir = "2"
 
 # HTTP / Downloads
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json", "cookies"] }
 futures-util = "0.3"
 zip = "2"
+
+# Async traits
+async-trait = "0.1"
+
+# Crypto (Deezer Blowfish decryption)
+blowfish = "0.9"
+cbc = "0.1"
+md-5 = "0.10"
+aes = "0.8"
+hex = "0.4"
+
+# Spotify (librespot) — DISABLED: Spotify deprecated password auth (forced OAuth2 mid-2025).
+# Uncomment these if OAuth support is added in the future.
+# librespot-core = { git = "https://github.com/librespot-org/librespot", branch = "dev" }
+# librespot-audio = { git = "https://github.com/librespot-org/librespot", branch = "dev" }
+# librespot-metadata = { git = "https://github.com/librespot-org/librespot", branch = "dev" }
 
 # Platform: thread priority for audio
 [target.'cfg(windows)'.dependencies]

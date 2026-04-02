@@ -1,6 +1,7 @@
 pub mod player;
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use rusqlite::params;
 use tauri::{Emitter, Manager, State};
 use walkdir::WalkDir;
@@ -10,6 +11,9 @@ use crate::db::models::*;
 use crate::db::monitored::{MonitoredPlaylist, MonitoredEntry};
 use crate::download::DownloadManager;
 use crate::metadata::tags;
+
+/// Global cancellation flag for metadata scans
+static METADATA_SCAN_CANCELLED: AtomicBool = AtomicBool::new(false);
 
 // --- Library Stats ---
 
@@ -643,16 +647,38 @@ pub async fn download_start(
     let fmt = format.unwrap_or(default_format);
     let qual = quality.unwrap_or_else(|| "best".to_string());
 
+    // For Spotify URLs, fetch metadata and convert to YouTube search
+    let (final_url, title, artist) = if parsed.platform == "spotify" {
+        log::info!("Converting Spotify URL to YouTube search: {}", url);
+        match crate::download::spotify::fetch_track_metadata(&url).await {
+            Some((track_title, track_artist)) => {
+                let search_query = match track_artist {
+                    Some(ref a) => format!("{} - {}", a, track_title),
+                    None => track_title.clone(),
+                };
+                let yt_url = format!("ytsearch1:{}", search_query);
+                (yt_url, Some(track_title), track_artist)
+            }
+            None => {
+                return Err("Failed to fetch Spotify track metadata".to_string());
+            }
+        }
+    } else {
+        (parsed.clean_url.clone(), None, None)
+    };
+
     let download = {
         let conn = db.lock().map_err(|e| e.to_string())?;
         crate::db::downloads::create_download(
             &conn,
-            &parsed.clean_url,
-            None,
-            None,
+            &final_url,
+            title.as_deref(),
+            artist.as_deref(),
             &parsed.platform,
             &fmt,
             &qual,
+            None,
+            None,
         )
         .map_err(|e| e.to_string())?
     };
@@ -681,16 +707,133 @@ pub async fn download_start_batch(
 
     for url in &urls {
         let parsed = crate::download::url_parser::parse_url(url);
+        
+        // For Spotify URLs, fetch metadata and convert to YouTube search
+        let (final_url, title, artist) = if parsed.platform == "spotify" {
+            log::info!("Converting Spotify URL to YouTube search: {}", url);
+            match crate::download::spotify::fetch_track_metadata(url).await {
+                Some((track_title, track_artist)) => {
+                    let search_query = match track_artist {
+                        Some(ref a) => format!("{} - {}", a, track_title),
+                        None => track_title.clone(),
+                    };
+                    let yt_url = format!("ytsearch1:{}", search_query);
+                    (yt_url, Some(track_title), track_artist)
+                }
+                None => {
+                    log::warn!("Failed to fetch Spotify track metadata for {}, skipping", url);
+                    continue;
+                }
+            }
+        } else {
+            (parsed.clean_url.clone(), None, None)
+        };
+        
         let download = {
             let conn = db.lock().map_err(|e| e.to_string())?;
             crate::db::downloads::create_download(
                 &conn,
-                &parsed.clean_url,
-                None,
-                None,
+                &final_url,
+                title.as_deref(),
+                artist.as_deref(),
                 &parsed.platform,
                 &fmt,
                 &qual,
+                None,
+                None,
+            )
+            .map_err(|e| e.to_string())?
+        };
+        manager.start_download(download.id);
+        downloads.push(download);
+    }
+
+    Ok(downloads)
+}
+
+#[derive(serde::Deserialize)]
+pub struct SearchDownloadRequest {
+    pub query: String,
+    pub title: Option<String>,
+    pub artist: Option<String>,
+    pub album_id: Option<i64>,
+    pub artist_id: Option<i64>,
+}
+
+#[tauri::command]
+pub async fn download_search_and_start(
+    db: State<'_, Arc<DbPool>>,
+    manager: State<'_, Arc<DownloadManager>>,
+    query: String,
+    title: Option<String>,
+    artist: Option<String>,
+    album_id: Option<i64>,
+    artist_id: Option<i64>,
+    format: Option<String>,
+    quality: Option<String>,
+) -> Result<Download, String> {
+    let search_url = format!("ytsearch1:{}", query);
+    let default_format = {
+        let conn = db.lock().map_err(|e| e.to_string())?;
+        crate::db::settings::get_setting(&conn, "download_format")
+            .ok().flatten()
+            .unwrap_or_else(|| "mp3".to_string())
+    };
+    let fmt = format.unwrap_or(default_format);
+    let qual = quality.unwrap_or_else(|| "best".to_string());
+
+    let download = {
+        let conn = db.lock().map_err(|e| e.to_string())?;
+        crate::db::downloads::create_download(
+            &conn,
+            &search_url,
+            title.as_deref(),
+            artist.as_deref(),
+            "youtube_search",
+            &fmt,
+            &qual,
+            album_id,
+            artist_id,
+        )
+        .map_err(|e| e.to_string())?
+    };
+
+    manager.start_download(download.id);
+    Ok(download)
+}
+
+#[tauri::command]
+pub async fn download_search_and_start_batch(
+    db: State<'_, Arc<DbPool>>,
+    manager: State<'_, Arc<DownloadManager>>,
+    queries: Vec<SearchDownloadRequest>,
+    format: Option<String>,
+    quality: Option<String>,
+) -> Result<Vec<Download>, String> {
+    let default_format = {
+        let conn = db.lock().map_err(|e| e.to_string())?;
+        crate::db::settings::get_setting(&conn, "download_format")
+            .ok().flatten()
+            .unwrap_or_else(|| "mp3".to_string())
+    };
+    let fmt = format.unwrap_or(default_format);
+    let qual = quality.unwrap_or_else(|| "best".to_string());
+    let mut downloads = Vec::new();
+
+    for req in &queries {
+        let search_url = format!("ytsearch1:{}", req.query);
+        let download = {
+            let conn = db.lock().map_err(|e| e.to_string())?;
+            crate::db::downloads::create_download(
+                &conn,
+                &search_url,
+                req.title.as_deref(),
+                req.artist.as_deref(),
+                "youtube_search",
+                &fmt,
+                &qual,
+                req.album_id,
+                req.artist_id,
             )
             .map_err(|e| e.to_string())?
         };
@@ -748,6 +891,54 @@ pub fn download_clear_history(db: State<'_, Arc<DbPool>>) -> Result<i64, String>
     crate::db::downloads::clear_completed(&conn).map_err(|e| e.to_string())
 }
 
+// --- Download Sources ---
+
+#[tauri::command]
+pub async fn download_get_sources_status(
+    manager: State<'_, Arc<DownloadManager>>,
+) -> Result<Vec<crate::download::source::SourceStatus>, String> {
+    Ok(manager.get_sources_status().await)
+}
+
+#[tauri::command]
+pub async fn download_set_source_credentials(
+    db: State<'_, Arc<DbPool>>,
+    manager: State<'_, Arc<DownloadManager>>,
+    platform: String,
+    credentials: std::collections::HashMap<String, String>,
+) -> Result<(), String> {
+    {
+        let conn = db.lock().map_err(|e| e.to_string())?;
+        for (key, value) in &credentials {
+            let setting_key = format!("{}_{}", platform, key);
+            crate::db::settings::set_setting(&conn, &setting_key, value)
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    // Rebuild sources with new credentials
+    manager.refresh_sources().await;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn download_test_source(
+    manager: State<'_, Arc<DownloadManager>>,
+    platform: String,
+) -> Result<(), String> {
+    manager
+        .test_source(&platform)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn download_refresh_sources(
+    manager: State<'_, Arc<DownloadManager>>,
+) -> Result<(), String> {
+    manager.refresh_sources().await;
+    Ok(())
+}
+
 // --- Manager (Monitored Playlists) ---
 
 #[tauri::command]
@@ -778,6 +969,7 @@ pub fn manager_get_new_entries(
 #[tauri::command]
 pub async fn manager_add_playlist(
     db: State<'_, Arc<DbPool>>,
+    manager: State<'_, Arc<DownloadManager>>,
     app_handle: tauri::AppHandle,
     url: String,
 ) -> Result<MonitoredPlaylist, String> {
@@ -796,14 +988,24 @@ pub async fn manager_add_playlist(
             .filter(|s| !s.is_empty())
     };
 
-    // Fetch playlist info
-    let fetch_result = crate::download::ytdlp::get_playlist_entries(
-        &ytdlp_binary,
-        ffmpeg_dir.as_deref(),
-        &url,
-        cookies_from_browser.as_deref(),
-    )
-    .await?;
+    // For Spotify, skip yt-dlp entirely and use native API to avoid bot detection
+    let drm_platforms = ["spotify", "apple_music", "tidal", "deezer", "amazon_music"];
+    let fetch_result = if drm_platforms.contains(&parsed.platform.as_str()) {
+        log::info!("Using native API for {} playlist (skipping yt-dlp)", parsed.platform);
+        let sources = manager.sources.read().await;
+        sources.fetch_playlist_entries(&parsed.platform, &url)
+            .await
+            .map_err(|e| format!("Native API error: {}", e))?
+    } else {
+        // For non-DRM platforms (YouTube, SoundCloud, etc.), use yt-dlp
+        crate::download::ytdlp::get_playlist_entries(
+            &ytdlp_binary,
+            ffmpeg_dir.as_deref(),
+            &url,
+            cookies_from_browser.as_deref(),
+        )
+        .await?
+    };
 
     let entries = fetch_result.entries;
 
@@ -831,20 +1033,30 @@ pub async fn manager_add_playlist(
     };
 
     // Store entries — prefer music-specific fields (track > title, artist > uploader)
+    // For DRM platforms (Spotify, Apple Music, etc.) entries may lack a direct URL;
+    // fall back to a YouTube search query so they can still be downloaded.
     let entry_data: Vec<_> = entries
         .iter()
         .map(|e| {
             let best_title = e.track.clone().unwrap_or_else(|| e.title.clone());
             let best_artist = e.artist.clone().or_else(|| e.uploader.clone());
+            let url = e.webpage_url.clone()
+                .filter(|u| !u.is_empty())
+                .unwrap_or_else(|| {
+                    let query = match &best_artist {
+                        Some(a) => format!("{} - {}", a, best_title),
+                        None => best_title.clone(),
+                    };
+                    format!("ytsearch1:{}", query)
+                });
             (
-                e.webpage_url.clone().unwrap_or_default(),
+                url,
                 Some(best_title),
                 best_artist,
                 e.duration,
                 e.thumbnail.clone(),
             )
         })
-        .filter(|(url, _, _, _, _)| !url.is_empty())
         .collect();
 
     {
@@ -867,18 +1079,22 @@ pub async fn manager_add_playlist(
 #[tauri::command]
 pub async fn manager_sync_playlist(
     db: State<'_, Arc<DbPool>>,
+    manager: State<'_, Arc<DownloadManager>>,
     app_handle: tauri::AppHandle,
     playlist_id: i64,
 ) -> Result<SyncResult, String> {
-    // Get the playlist source URL
-    let source_url = {
+    // Get the playlist source URL and platform
+    let (source_url, platform) = {
         let conn = db.lock().map_err(|e| e.to_string())?;
-        let playlist = crate::db::playlists::get_playlist(&conn, playlist_id)
+        let playlist = crate::db::monitored::get_monitored_playlists(&conn)
             .map_err(|e| e.to_string())?
+            .into_iter()
+            .find(|p| p.id == playlist_id)
             .ok_or_else(|| "Playlist not found".to_string())?;
-        playlist
-            .source_url
-            .ok_or_else(|| "Playlist has no source URL".to_string())?
+        let url = playlist.source_url.clone()
+            .ok_or_else(|| "Playlist has no source URL".to_string())?;
+        let platform = playlist.source_platform.clone().unwrap_or_default();
+        (url, platform)
     };
 
     // Resolve yt-dlp binary
@@ -894,29 +1110,47 @@ pub async fn manager_sync_playlist(
             .filter(|s| !s.is_empty())
     };
 
-    // Fetch current entries
-    let fetch_result = crate::download::ytdlp::get_playlist_entries(
-        &ytdlp_binary,
-        ffmpeg_dir.as_deref(),
-        &source_url,
-        cookies_from_browser.as_deref(),
-    )
-    .await?;
+    // For Spotify, skip yt-dlp entirely and use native API to avoid bot detection
+    let drm_platforms = ["spotify", "apple_music", "tidal", "deezer", "amazon_music"];
+    let fetch_result = if drm_platforms.contains(&platform.as_str()) {
+        log::info!("Using native API for {} playlist sync (skipping yt-dlp)", platform);
+        let sources = manager.sources.read().await;
+        sources.fetch_playlist_entries(&platform, &source_url)
+            .await
+            .map_err(|e| format!("Native API error: {}", e))?
+    } else {
+        // For non-DRM platforms (YouTube, SoundCloud, etc.), use yt-dlp
+        crate::download::ytdlp::get_playlist_entries(
+            &ytdlp_binary,
+            ffmpeg_dir.as_deref(),
+            &source_url,
+            cookies_from_browser.as_deref(),
+        )
+        .await?
+    };
 
     let entry_data: Vec<_> = fetch_result.entries
         .iter()
         .map(|e| {
             let best_title = e.track.clone().unwrap_or_else(|| e.title.clone());
             let best_artist = e.artist.clone().or_else(|| e.uploader.clone());
+            let url = e.webpage_url.clone()
+                .filter(|u| !u.is_empty())
+                .unwrap_or_else(|| {
+                    let query = match &best_artist {
+                        Some(a) => format!("{} - {}", a, best_title),
+                        None => best_title.clone(),
+                    };
+                    format!("ytsearch1:{}", query)
+                });
             (
-                e.webpage_url.clone().unwrap_or_default(),
+                url,
                 Some(best_title),
                 best_artist,
                 e.duration,
                 e.thumbnail.clone(),
             )
         })
-        .filter(|(url, _, _, _, _)| !url.is_empty())
         .collect();
 
     let (new_count, total_count) = {
@@ -954,14 +1188,30 @@ pub async fn manager_download_entry(
     let fmt = format.unwrap_or(default_format);
     let qual = quality.unwrap_or_else(|| "best".to_string());
 
+    // For Spotify URLs, convert to YouTube search (entry already has metadata)
+    let final_url = if parsed.platform == "spotify" && entry.source_url.starts_with("http") {
+        log::info!("Converting Spotify entry to YouTube search: {}", entry.source_url);
+        // Entry already has title/artist from playlist fetch, use them for search
+        let search_query = match (&entry.artist, &entry.title) {
+            (Some(a), Some(t)) => format!("{} - {}", a, t),
+            (None, Some(t)) => t.clone(),
+            _ => return Err("Entry missing title for YouTube search".to_string()),
+        };
+        format!("ytsearch1:{}", search_query)
+    } else {
+        parsed.clean_url.clone()
+    };
+
     let download = crate::db::downloads::create_download(
         &conn,
-        &parsed.clean_url,
+        &final_url,
         entry.title.as_deref(),
         entry.artist.as_deref(),
         &parsed.platform,
         &fmt,
         &qual,
+        None,
+        None,
     )
     .map_err(|e| e.to_string())?;
 
@@ -1010,6 +1260,8 @@ pub async fn manager_download_new(
                 &parsed.platform,
                 &fmt,
                 &qual,
+                None,
+                None,
             )
             .map_err(|e| e.to_string())?;
 
@@ -1505,23 +1757,10 @@ pub async fn scan_missing_metadata(
     db: State<'_, Arc<DbPool>>,
     app_handle: tauri::AppHandle,
 ) -> Result<ScanMissingResult, String> {
-    // First, recompute completeness for all tracks that still have 0
-    {
-        let conn = db.lock().map_err(|e| e.to_string())?;
-        let mut stmt = conn.prepare(
-            "SELECT id FROM tracks WHERE metadata_completeness = 0"
-        ).map_err(|e| e.to_string())?;
-        let ids: Vec<i64> = stmt.query_map([], |row| row.get(0))
-            .map_err(|e| e.to_string())?
-            .filter_map(|r| r.ok())
-            .collect();
-        drop(stmt);
-        for id in &ids {
-            let _ = crate::db::tracks::update_completeness(&conn, *id);
-        }
-    }
-
-    // Get tracks that need enrichment (completeness < 70)
+    // Get tracks that need enrichment (completeness < 70 OR completeness = 0)
+    // Note: We don't recompute completeness for tracks at 0% before enriching them,
+    // because that would prevent re-enrichment after metadata deletion.
+    // Tracks at 0% are explicitly marked for enrichment (e.g., after deletion).
     let tracks_to_enrich: Vec<(i64, String, Option<String>)> = {
         let conn = db.lock().map_err(|e| e.to_string())?;
         let mut stmt = conn.prepare(
@@ -1546,7 +1785,16 @@ pub async fn scan_missing_metadata(
     let mut enriched = 0i64;
     let mut failed = 0i64;
 
+    // Reset cancellation flag at start of scan
+    METADATA_SCAN_CANCELLED.store(false, Ordering::Relaxed);
+
     for (i, (track_id, title, artist_name)) in tracks_to_enrich.iter().enumerate() {
+        // Check cancellation
+        if METADATA_SCAN_CANCELLED.load(Ordering::Relaxed) {
+            log::info!("Metadata scan cancelled by user at {}/{}", i, total);
+            break;
+        }
+
         // Rate limit: 1 request per second for MusicBrainz
         if i > 0 {
             tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
@@ -1752,6 +2000,12 @@ pub async fn auto_enrich_library(
     }));
 
     for (i, (album_id, title, artist_name, existing_cover)) in albums_to_enrich.iter().enumerate() {
+        // Check cancellation
+        if METADATA_SCAN_CANCELLED.load(Ordering::Relaxed) {
+            log::info!("Auto-enrichment cancelled by user");
+            return;
+        }
+
         // Rate limit for MusicBrainz
         if i > 0 {
             tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
@@ -2038,4 +2292,479 @@ pub fn get_metadata_stats(
         "complete_tracks": complete,
         "incomplete_tracks": incomplete,
     }))
+}
+
+#[tauri::command]
+pub fn metadata_stop_scan() -> Result<(), String> {
+    METADATA_SCAN_CANCELLED.store(true, Ordering::Relaxed);
+    log::info!("Metadata scan stop requested");
+    Ok(())
+}
+
+#[tauri::command]
+pub fn metadata_delete_all(
+    db: State<'_, Arc<DbPool>>,
+) -> Result<(), String> {
+    // Stop any running scan first
+    METADATA_SCAN_CANCELLED.store(true, Ordering::Relaxed);
+
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    conn.execute_batch("
+        UPDATE tracks SET musicbrainz_id=NULL, genre=NULL, isrc=NULL, description=NULL,
+            label=NULL, language=NULL, release_date=NULL, composer=NULL, metadata_completeness=0;
+        UPDATE albums SET musicbrainz_id=NULL, label=NULL, release_date=NULL,
+            description=NULL, album_type=NULL, enriched_tracklist=NULL, 
+            cover_art_path=NULL, genre=NULL, total_tracks=NULL, total_discs=NULL;
+        UPDATE artists SET musicbrainz_id=NULL, bio=NULL, country=NULL,
+            begin_year=NULL, artist_type=NULL, enriched_discography=NULL;
+        DELETE FROM enrichments;
+    ").map_err(|e| e.to_string())?;
+
+    log::info!("All metadata deleted");
+    Ok(())
+}
+
+#[tauri::command]
+pub fn metadata_cleanup_duplicates(
+    db: State<'_, Arc<DbPool>>,
+) -> Result<serde_json::Value, String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    
+    // Find duplicate albums (same title + artist)
+    let duplicates: Vec<(String, Option<i64>)> = conn.prepare(
+        "SELECT title, artist_id FROM albums 
+         GROUP BY LOWER(title), artist_id 
+         HAVING COUNT(*) > 1"
+    )
+    .map_err(|e| e.to_string())?
+    .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<i64>>(1)?)))
+    .map_err(|e| e.to_string())?
+    .filter_map(|r| r.ok())
+    .collect();
+
+    let mut merged_count = 0;
+    let mut deleted_albums = 0;
+
+    for (title, artist_id) in duplicates {
+        // Get all album IDs with this title + artist
+        let album_ids: Vec<i64> = if let Some(aid) = artist_id {
+            conn.prepare("SELECT id FROM albums WHERE LOWER(title) = LOWER(?1) AND artist_id = ?2 ORDER BY id ASC")
+                .map_err(|e| e.to_string())?
+                .query_map(params![&title, aid], |row| row.get(0))
+                .map_err(|e| e.to_string())?
+                .filter_map(|r| r.ok())
+                .collect()
+        } else {
+            conn.prepare("SELECT id FROM albums WHERE LOWER(title) = LOWER(?1) AND artist_id IS NULL ORDER BY id ASC")
+                .map_err(|e| e.to_string())?
+                .query_map(params![&title], |row| row.get(0))
+                .map_err(|e| e.to_string())?
+                .filter_map(|r| r.ok())
+                .collect()
+        };
+
+        if album_ids.len() > 1 {
+            let keep_id = album_ids[0];
+            let delete_ids = &album_ids[1..];
+
+            // Move all tracks from duplicate albums to the kept album
+            for &dup_id in delete_ids {
+                conn.execute(
+                    "UPDATE tracks SET album_id = ?1 WHERE album_id = ?2",
+                    params![keep_id, dup_id],
+                ).map_err(|e| e.to_string())?;
+            }
+
+            // Delete duplicate albums
+            for &dup_id in delete_ids {
+                conn.execute("DELETE FROM albums WHERE id = ?1", params![dup_id])
+                    .map_err(|e| e.to_string())?;
+                deleted_albums += 1;
+            }
+
+            merged_count += 1;
+        }
+    }
+
+    // Clean up orphaned albums (no tracks)
+    let orphaned = conn.execute(
+        "DELETE FROM albums WHERE id NOT IN (SELECT DISTINCT album_id FROM tracks WHERE album_id IS NOT NULL)",
+        [],
+    ).map_err(|e| e.to_string())?;
+
+    log::info!("Cleaned up {} duplicate album groups, deleted {} duplicate albums, removed {} orphaned albums", 
+               merged_count, deleted_albums, orphaned);
+
+    Ok(serde_json::json!({
+        "merged_groups": merged_count,
+        "deleted_duplicates": deleted_albums,
+        "orphaned_removed": orphaned
+    }))
+}
+
+// --- Album Download Status ---
+
+#[tauri::command]
+pub fn library_get_album_download_status(
+    db: State<'_, Arc<DbPool>>,
+    album_id: i64,
+) -> Result<serde_json::Value, String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+
+    let tracklist_json: Option<String> = conn.query_row(
+        "SELECT enriched_tracklist FROM albums WHERE id = ?1",
+        params![album_id],
+        |row| row.get(0),
+    ).map_err(|e| e.to_string())?;
+
+    let Some(json_str) = tracklist_json else {
+        return Ok(serde_json::json!({ "total_expected": 0, "total_local": 0, "status": "unknown" }));
+    };
+
+    let tracklist: Vec<serde_json::Value> = serde_json::from_str(&json_str).unwrap_or_default();
+    if tracklist.is_empty() {
+        return Ok(serde_json::json!({ "total_expected": 0, "total_local": 0, "status": "unknown" }));
+    }
+
+    let total_expected = tracklist.len() as i64;
+    let total_local: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM tracks WHERE album_id = ?1",
+        params![album_id],
+        |row| row.get(0),
+    ).unwrap_or(0);
+
+    let status = if total_local >= total_expected {
+        "complete"
+    } else if total_local > 0 {
+        "partial"
+    } else {
+        "none"
+    };
+
+    Ok(serde_json::json!({
+        "total_expected": total_expected,
+        "total_local": total_local,
+        "status": status,
+    }))
+}
+
+#[tauri::command]
+pub fn library_get_albums_download_status(
+    db: State<'_, Arc<DbPool>>,
+    album_ids: Vec<i64>,
+) -> Result<serde_json::Value, String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    let mut results = serde_json::Map::new();
+
+    for album_id in &album_ids {
+        let tracklist_json: Option<String> = conn.query_row(
+            "SELECT enriched_tracklist FROM albums WHERE id = ?1",
+            params![album_id],
+            |row| row.get(0),
+        ).unwrap_or(None);
+
+        let (total_expected, status) = if let Some(ref json_str) = tracklist_json {
+            let tracklist: Vec<serde_json::Value> = serde_json::from_str(json_str).unwrap_or_default();
+            if tracklist.is_empty() {
+                (0i64, "unknown")
+            } else {
+                let expected = tracklist.len() as i64;
+                let local: i64 = conn.query_row(
+                    "SELECT COUNT(*) FROM tracks WHERE album_id = ?1",
+                    params![album_id],
+                    |row| row.get(0),
+                ).unwrap_or(0);
+                let s = if local >= expected { "complete" } else if local > 0 { "partial" } else { "none" };
+                (expected, s)
+            }
+        } else {
+            (0, "unknown")
+        };
+
+        let total_local: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM tracks WHERE album_id = ?1",
+            params![album_id],
+            |row| row.get(0),
+        ).unwrap_or(0);
+
+        results.insert(album_id.to_string(), serde_json::json!({
+            "total_expected": total_expected,
+            "total_local": total_local,
+            "status": status,
+        }));
+    }
+
+    Ok(serde_json::Value::Object(results))
+}
+
+// --- Artist Enrichment ---
+
+#[tauri::command]
+pub async fn enrich_artist(
+    db: State<'_, Arc<DbPool>>,
+    artist_id: i64,
+) -> Result<serde_json::Value, String> {
+    let (name, existing_mbid): (String, Option<String>) = {
+        let conn = db.lock().map_err(|e| e.to_string())?;
+        conn.query_row(
+            "SELECT name, musicbrainz_id FROM artists WHERE id = ?1",
+            params![artist_id],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+        ).map_err(|e| e.to_string())?
+    };
+
+    // Get or search for MusicBrainz artist ID
+    let mbid = if let Some(ref id) = existing_mbid {
+        id.clone()
+    } else {
+        let id = crate::metadata::musicbrainz::search_artist(&name).await?;
+        // Save the MBID
+        if let Ok(conn) = db.lock() {
+            let _ = conn.execute(
+                "UPDATE artists SET musicbrainz_id = ?1 WHERE id = ?2 AND musicbrainz_id IS NULL",
+                params![id, artist_id],
+            );
+        }
+        // Rate limit
+        tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+        id
+    };
+
+    // Fetch discography
+    let discography = crate::metadata::musicbrainz::get_artist_discography(&mbid).await?;
+
+    // Store as JSON on artist
+    let json = serde_json::to_string(&discography).map_err(|e| e.to_string())?;
+    {
+        let conn = db.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE artists SET enriched_discography = ?1 WHERE id = ?2",
+            params![json, artist_id],
+        ).map_err(|e| e.to_string())?;
+    }
+
+    Ok(serde_json::json!({
+        "artist_id": artist_id,
+        "mbid": mbid,
+        "total_releases": discography.len(),
+        "discography": discography,
+    }))
+}
+
+#[tauri::command]
+pub fn library_get_artist_missing_albums(
+    db: State<'_, Arc<DbPool>>,
+    artist_id: i64,
+) -> Result<serde_json::Value, String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+
+    // Get enriched discography
+    let disco_json: Option<String> = conn.query_row(
+        "SELECT enriched_discography FROM artists WHERE id = ?1",
+        params![artist_id],
+        |row| row.get(0),
+    ).map_err(|e| e.to_string())?;
+
+    let Some(json_str) = disco_json else {
+        return Ok(serde_json::json!({ "missing": [], "total_discography": 0 }));
+    };
+
+    let discography: Vec<crate::metadata::musicbrainz::ArtistDiscographyEntry> =
+        serde_json::from_str(&json_str).unwrap_or_default();
+
+    // Get local albums for this artist (titles, lowercased for comparison)
+    let mut stmt = conn.prepare(
+        "SELECT LOWER(title), musicbrainz_id FROM albums WHERE artist_id = ?1"
+    ).map_err(|e| e.to_string())?;
+    let local_albums: std::collections::HashSet<String> = stmt.query_map(params![artist_id], |row| {
+        Ok(row.get::<_, String>(0)?)
+    }).map_err(|e| e.to_string())?
+    .filter_map(|r| r.ok())
+    .collect();
+
+    let local_mbids: std::collections::HashSet<String> = {
+        let mut stmt2 = conn.prepare(
+            "SELECT musicbrainz_id FROM albums WHERE artist_id = ?1 AND musicbrainz_id IS NOT NULL"
+        ).map_err(|e| e.to_string())?;
+        let results: std::collections::HashSet<String> = stmt2.query_map(params![artist_id], |row| row.get::<_, String>(0))
+            .map_err(|e| e.to_string())?
+            .filter_map(|r| r.ok())
+            .collect();
+        results
+    };
+
+    let missing: Vec<&crate::metadata::musicbrainz::ArtistDiscographyEntry> = discography.iter()
+        .filter(|entry| {
+            !local_mbids.contains(&entry.mbid)
+                && !local_albums.contains(&entry.title.to_lowercase())
+        })
+        .collect();
+
+    let total = discography.len();
+    Ok(serde_json::json!({
+        "missing": missing,
+        "total_discography": total,
+    }))
+}
+
+#[tauri::command]
+pub async fn download_artist_missing(
+    db: State<'_, Arc<DbPool>>,
+    manager: State<'_, Arc<DownloadManager>>,
+    artist_id: i64,
+    album_mbids: Vec<String>,
+) -> Result<Vec<Download>, String> {
+    let artist_name: String = {
+        let conn = db.lock().map_err(|e| e.to_string())?;
+        conn.query_row(
+            "SELECT name FROM artists WHERE id = ?1",
+            params![artist_id],
+            |row| row.get(0),
+        ).map_err(|e| e.to_string())?
+    };
+
+    let default_format = {
+        let conn = db.lock().map_err(|e| e.to_string())?;
+        crate::db::settings::get_setting(&conn, "download_format")
+            .ok().flatten()
+            .unwrap_or_else(|| "mp3".to_string())
+    };
+
+    let mut all_downloads = Vec::new();
+
+    for mbid in &album_mbids {
+        // Rate limit for MusicBrainz
+        if !all_downloads.is_empty() {
+            tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+        }
+
+        // Fetch the release group's primary release to get tracklist
+        let detail_url = format!(
+            "https://musicbrainz.org/ws/2/release-group/{}?inc=releases&fmt=json",
+            mbid
+        );
+        let client = reqwest::Client::builder()
+            .user_agent("Playlist/0.1.0 (https://github.com/sha5b/Playlist)")
+            .build()
+            .unwrap_or_default();
+
+        let release_id = match client.get(&detail_url).send().await {
+            Ok(resp) => {
+                let json: serde_json::Value = resp.json().await.unwrap_or_default();
+                json["releases"].as_array()
+                    .and_then(|arr| arr.first())
+                    .and_then(|r| r["id"].as_str())
+                    .map(|s| s.to_string())
+            }
+            Err(_) => None,
+        };
+
+        let Some(release_id) = release_id else { continue };
+
+        // Rate limit
+        tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+
+        // Fetch tracklist from the release
+        let release_url = format!(
+            "https://musicbrainz.org/ws/2/release/{}?inc=recordings&fmt=json",
+            release_id
+        );
+        let tracks: Vec<(String, i64, i64)> = match client.get(&release_url).send().await {
+            Ok(resp) => {
+                let json: serde_json::Value = resp.json().await.unwrap_or_default();
+                let mut tracks = Vec::new();
+                if let Some(media) = json["media"].as_array() {
+                    for medium in media {
+                        let disc = medium["position"].as_i64().unwrap_or(1);
+                        if let Some(medium_tracks) = medium["tracks"].as_array() {
+                            for track in medium_tracks {
+                                let title = track["title"].as_str().unwrap_or("").to_string();
+                                let num = track["number"].as_str()
+                                    .and_then(|n| n.parse::<i64>().ok())
+                                    .unwrap_or(0);
+                                if !title.is_empty() {
+                                    tracks.push((title, disc, num));
+                                }
+                            }
+                        }
+                    }
+                }
+                tracks
+            }
+            Err(_) => continue,
+        };
+
+        // Create an album in the DB for this release and queue downloads
+        let album_id = {
+            let conn = db.lock().map_err(|e| e.to_string())?;
+            let album_title_from_rg: Option<String> = {
+                // Get the album title from the enriched discography
+                let disco_json: Option<String> = conn.query_row(
+                    "SELECT enriched_discography FROM artists WHERE id = ?1",
+                    params![artist_id],
+                    |row| row.get(0),
+                ).unwrap_or(None);
+                disco_json.and_then(|j| {
+                    let disco: Vec<serde_json::Value> = serde_json::from_str(&j).unwrap_or_default();
+                    disco.iter()
+                        .find(|e| e["mbid"].as_str() == Some(mbid))
+                        .and_then(|e| e["title"].as_str())
+                        .map(|s| s.to_string())
+                })
+            };
+            let album_title = album_title_from_rg.unwrap_or_else(|| "Unknown Album".to_string());
+            let aid = crate::db::albums::find_or_create(
+                &conn,
+                &album_title,
+                Some(artist_id),
+                Some(&artist_name),
+                None,
+            ).map_err(|e| e.to_string())?;
+            // Set the MusicBrainz ID on the album
+            let _ = conn.execute(
+                "UPDATE albums SET musicbrainz_id = ?1 WHERE id = ?2 AND musicbrainz_id IS NULL",
+                params![release_id, aid],
+            );
+            // Store enriched tracklist
+            let tracklist_json: Vec<serde_json::Value> = tracks.iter().map(|(title, disc, num)| {
+                serde_json::json!({
+                    "disc_number": disc,
+                    "track_number": num,
+                    "title": title,
+                    "duration_ms": null,
+                })
+            }).collect();
+            let tl_str = serde_json::to_string(&tracklist_json).unwrap_or_default();
+            let _ = conn.execute(
+                "UPDATE albums SET enriched_tracklist = ?1, total_tracks = ?2 WHERE id = ?3",
+                params![tl_str, tracks.len() as i64, aid],
+            );
+            aid
+        };
+
+        // Queue downloads for each track
+        for (title, _disc, _num) in &tracks {
+            let query = format!("{} - {}", artist_name, title);
+            let search_url = format!("ytsearch1:{}", query);
+            let download = {
+                let conn = db.lock().map_err(|e| e.to_string())?;
+                crate::db::downloads::create_download(
+                    &conn,
+                    &search_url,
+                    Some(title),
+                    Some(&artist_name),
+                    "youtube_search",
+                    &default_format,
+                    "best",
+                    Some(album_id),
+                    Some(artist_id),
+                )
+                .map_err(|e| e.to_string())?
+            };
+            manager.start_download(download.id);
+            all_downloads.push(download);
+        }
+    }
+
+    Ok(all_downloads)
 }

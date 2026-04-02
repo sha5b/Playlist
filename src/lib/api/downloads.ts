@@ -29,6 +29,37 @@ export async function startBatchDownload(
 	return invoke('download_start_batch', { urls, format, quality });
 }
 
+export interface SearchDownloadRequest {
+	query: string;
+	title?: string;
+	artist?: string;
+	album_id?: number;
+	artist_id?: number;
+}
+
+export async function searchAndDownload(
+	query: string,
+	title?: string,
+	artist?: string,
+	format?: string,
+	quality?: string,
+	albumId?: number,
+	artistId?: number
+): Promise<Download> {
+	return invoke('download_search_and_start', {
+		query, title, artist, format, quality,
+		album_id: albumId, artist_id: artistId,
+	});
+}
+
+export async function searchAndDownloadBatch(
+	queries: SearchDownloadRequest[],
+	format?: string,
+	quality?: string
+): Promise<Download[]> {
+	return invoke('download_search_and_start_batch', { queries, format, quality });
+}
+
 export async function cancelDownload(id: number): Promise<void> {
 	return invoke('download_cancel', { id });
 }
@@ -50,4 +81,35 @@ export async function getDownloadHistory(
 
 export async function clearHistory(): Promise<number> {
 	return invoke('download_clear_history');
+}
+
+// --- Download Sources ---
+
+export interface SourceStatus {
+	platform: string;
+	configured: boolean;
+	available: boolean;
+	max_quality: string;
+	error?: string;
+}
+
+export async function getSourcesStatus(): Promise<SourceStatus[]> {
+	return invoke('download_get_sources_status');
+}
+
+export async function setSourceCredentials(
+	platform: string,
+	credentials: Record<string, string>
+): Promise<void> {
+	return invoke('download_set_source_credentials', { platform, credentials });
+}
+
+export async function testSource(
+	platform: string
+): Promise<void> {
+	return invoke('download_test_source', { platform });
+}
+
+export async function refreshSources(): Promise<void> {
+	return invoke('download_refresh_sources');
 }

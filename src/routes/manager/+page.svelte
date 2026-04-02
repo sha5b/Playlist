@@ -8,6 +8,7 @@
 	import * as Card from '$lib/components/ui/card';
 	import {
 		Download,
+		Disc,
 		Link,
 		Loader2,
 		CheckCircle2,
@@ -76,6 +77,8 @@
 	let history: DownloadType[] = $state([]);
 	let historyTotal = $state(0);
 	let historyLoaded = $state(false);
+	let historyPage = $state(0);
+	const historyPageSize = 50;
 
 	// --- Playlists tab state ---
 	let playlists: MonitoredPlaylist[] = $state([]);
@@ -87,6 +90,8 @@
 	let selectedEntries: MonitoredEntry[] = $state([]);
 	let loadingEntries = $state(false);
 	let downloadingEntryIds = $state<Set<number>>(new Set());
+	let entriesPage = $state(0);
+	const entriesPageSize = 50;
 
 	// --- Active tab ---
 	let activeTab = $state('playlists');
@@ -162,12 +167,28 @@
 	// --- History actions ---
 	async function loadHistory() {
 		try {
-			const [data, total] = await getDownloadHistory(0, 100);
+			const offset = historyPage * historyPageSize;
+			const [data, total] = await getDownloadHistory(offset, historyPageSize);
 			history = data;
 			historyTotal = total;
 			historyLoaded = true;
-		} catch {
-			toast.error('Failed to load history');
+		} catch (e) {
+			console.error('Failed to load history:', e);
+		}
+	}
+
+	function nextHistoryPage() {
+		const maxPage = Math.ceil(historyTotal / historyPageSize) - 1;
+		if (historyPage < maxPage) {
+			historyPage++;
+			loadHistory();
+		}
+	}
+
+	function prevHistoryPage() {
+		if (historyPage > 0) {
+			historyPage--;
+			loadHistory();
 		}
 	}
 
@@ -292,6 +313,20 @@
 	function closePlaylistDetail() {
 		selectedPlaylist = null;
 		selectedEntries = [];
+		entriesPage = 0;
+	}
+
+	function nextEntriesPage() {
+		const maxPage = Math.ceil(sortedEntries.length / entriesPageSize) - 1;
+		if (entriesPage < maxPage) {
+			entriesPage++;
+		}
+	}
+
+	function prevEntriesPage() {
+		if (entriesPage > 0) {
+			entriesPage--;
+		}
 	}
 
 	async function handleDownloadEntry(entryId: number) {
@@ -351,6 +386,24 @@
 			toast.success(`Cancelled ${count} downloads`);
 		} catch (e) {
 			toast.error('Failed to cancel downloads', { description: String(e) });
+		}
+	}
+
+	let retryingAll = $state(false);
+
+	async function handleRetryAllFailed() {
+		const failed = selectedEntries.filter((e) => e.status === 'failed');
+		if (failed.length === 0) return;
+		retryingAll = true;
+		try {
+			for (const entry of failed) {
+				await handleDownloadEntry(entry.id);
+			}
+			toast.success(`Retrying ${failed.length} failed downloads`);
+		} catch (e) {
+			toast.error('Failed to retry some downloads', { description: String(e) });
+		} finally {
+			retryingAll = false;
 		}
 	}
 
@@ -421,11 +474,102 @@
 		)
 	);
 
+	// Group active downloads: album-grouped first, then ungrouped
+	interface DownloadGroup {
+		albumId: number | null;
+		albumTitle: string | null;
+		downloads: typeof activeDownloads;
+	}
+
+	const groupedActiveDownloads = $derived.by(() => {
+		const groups: DownloadGroup[] = [];
+		const albumMap = new Map<number, typeof activeDownloads>();
+		const ungrouped: typeof activeDownloads = [];
+
+		for (const dl of activeDownloads) {
+			if (dl.target_album_id) {
+				let list = albumMap.get(dl.target_album_id);
+				if (!list) {
+					list = [];
+					albumMap.set(dl.target_album_id, list);
+				}
+				list.push(dl);
+			} else {
+				ungrouped.push(dl);
+			}
+		}
+
+		for (const [albumId, dls] of albumMap) {
+			// Derive album title from first download's artist + common pattern
+			const firstWithTitle = dls.find((d) => d.title);
+			groups.push({
+				albumId,
+				albumTitle: albumNames[albumId] ?? (firstWithTitle?.artist ? `Album #${albumId}` : `Album #${albumId}`),
+				downloads: dls,
+			});
+		}
+
+		if (ungrouped.length > 0) {
+			groups.push({ albumId: null, albumTitle: null, downloads: ungrouped });
+		}
+
+		return groups;
+	});
+
+	// Cache album names for grouped downloads
+	let albumNames: Record<number, string> = $state({});
+
+	$effect(() => {
+		const albumIds = new Set<number>();
+		for (const dl of activeDownloads) {
+			if (dl.target_album_id && !albumNames[dl.target_album_id]) {
+				albumIds.add(dl.target_album_id);
+			}
+		}
+		if (albumIds.size > 0) {
+			// Fetch album names lazily
+			import('$lib/api/library').then(({ getAlbum }) => {
+				for (const id of albumIds) {
+					getAlbum(id).then((album) => {
+						if (album) {
+							albumNames = { ...albumNames, [id]: album.title };
+						}
+					});
+				}
+			});
+		}
+	});
+
+	// Sort entries: new/queued/downloading first, then failed, then downloaded/skipped
+	const statusOrder: Record<string, number> = {
+		new: 0,
+		queued: 1,
+		downloading: 2,
+		failed: 3,
+		downloaded: 4,
+		skipped: 5,
+	};
+	const sortedEntries = $derived(
+		[...selectedEntries].sort((a, b) => (statusOrder[a.status] ?? 9) - (statusOrder[b.status] ?? 9))
+	);
+
+	const paginatedEntries = $derived(
+		sortedEntries.slice(entriesPage * entriesPageSize, (entriesPage + 1) * entriesPageSize)
+	);
+
 	const newEntries = $derived(selectedEntries.filter((e) => e.status === 'new'));
+	const failedEntries = $derived(selectedEntries.filter((e) => e.status === 'failed'));
 	const downloadedEntries = $derived(selectedEntries.filter((e) => e.status === 'downloaded'));
 	const queuedEntries = $derived(selectedEntries.filter((e) => e.status === 'queued'));
 	const downloadingEntries = $derived(selectedEntries.filter((e) => e.status === 'downloading'));
 	const totalNewAcrossPlaylists = $derived(playlists.reduce((sum, p) => sum + p.new_count, 0));
+
+	// Auto-load history when the history tab is selected
+	$effect(() => {
+		if (activeTab === 'history' && !historyLoaded) {
+			loadHistory();
+		}
+	});
 </script>
 
 <div class="flex-1 min-h-0 overflow-y-auto space-y-6">
@@ -480,27 +624,69 @@
 			</Button>
 		</div>
 	{:else}
+		<!-- Dashboard Summary -->
+		<div class="grid grid-cols-3 gap-4">
+			<Card.Root>
+				<Card.Content class="flex items-center gap-3 p-4">
+					<div class="flex items-center justify-center size-10 rounded-lg bg-primary/10 shrink-0">
+						<ListMusic class="size-5 text-primary" />
+					</div>
+					<div>
+						<p class="text-2xl font-bold tabular-nums">{playlists.length}</p>
+						<p class="text-xs text-muted-foreground">Playlists</p>
+					</div>
+				</Card.Content>
+			</Card.Root>
+			<Card.Root>
+				<Card.Content class="flex items-center gap-3 p-4">
+					<div class="flex items-center justify-center size-10 rounded-lg bg-blue-500/10 shrink-0">
+						<Download class="size-5 text-blue-500" />
+					</div>
+					<div>
+						<p class="text-2xl font-bold tabular-nums">{activeDownloads.length}</p>
+						<p class="text-xs text-muted-foreground">Active Downloads</p>
+					</div>
+				</Card.Content>
+			</Card.Root>
+			<Card.Root>
+				<Card.Content class="flex items-center gap-3 p-4">
+					<div class="flex items-center justify-center size-10 rounded-lg bg-green-500/10 shrink-0">
+						<Plus class="size-5 text-green-500" />
+					</div>
+					<div>
+						<p class="text-2xl font-bold tabular-nums">{totalNewAcrossPlaylists}</p>
+						<p class="text-xs text-muted-foreground">New Tracks</p>
+					</div>
+				</Card.Content>
+			</Card.Root>
+		</div>
+
 		<!-- Main content - tabbed interface -->
 		<Tabs.Root bind:value={activeTab}>
 			<div class="flex items-center justify-between">
 				<Tabs.List>
-					<Tabs.Trigger value="playlists">
+					<Tabs.Trigger value="playlists" class="gap-1.5">
+						<ListMusic class="size-4" />
 						Playlists
 						{#if totalNewAcrossPlaylists > 0}
-							<Badge variant="default" class="ml-1.5 h-5 min-w-5 px-1 text-xs">{totalNewAcrossPlaylists}</Badge>
+							<Badge variant="default" class="ml-1 h-5 min-w-5 px-1 text-xs">{totalNewAcrossPlaylists}</Badge>
 						{/if}
 					</Tabs.Trigger>
-					<Tabs.Trigger value="download">
-						Download
+					<Tabs.Trigger value="download" class="gap-1.5">
+						<Download class="size-4" />
+						Downloads
 						{#if activeDownloads.length > 0}
-							<Badge variant="secondary" class="ml-1.5 h-5 min-w-5 px-1 text-xs">{activeDownloads.length}</Badge>
+							<Badge variant="secondary" class="ml-1 h-5 min-w-5 px-1 text-xs">{activeDownloads.length}</Badge>
 						{/if}
 					</Tabs.Trigger>
-					<Tabs.Trigger value="history">History</Tabs.Trigger>
+					<Tabs.Trigger value="history" class="gap-1.5">
+						<Clock class="size-4" />
+						History
+					</Tabs.Trigger>
 				</Tabs.List>
 
 				{#if depsStatus?.ytdlp_version}
-					<span class="text-xs text-muted-foreground">yt-dlp {depsStatus.ytdlp_version}</span>
+					<span class="text-xs text-muted-foreground font-mono">yt-dlp {depsStatus.ytdlp_version}</span>
 				{/if}
 			</div>
 
@@ -532,6 +718,9 @@
 									{#if newEntries.length > 0}
 										&middot; {newEntries.length} new
 									{/if}
+									{#if failedEntries.length > 0}
+										&middot; <span class="text-destructive">{failedEntries.length} failed</span>
+									{/if}
 									&middot; {downloadedEntries.length} downloaded
 									&middot; Synced {timeAgo(selectedPlaylist.last_synced_at)}
 								</p>
@@ -545,6 +734,21 @@
 									>
 										<Square class="size-3.5" />
 										Stop all
+									</Button>
+								{/if}
+								{#if failedEntries.length > 0}
+									<Button
+										variant="outline"
+										size="sm"
+										onclick={handleRetryAllFailed}
+										disabled={retryingAll}
+									>
+										{#if retryingAll}
+											<Loader2 class="size-3.5 animate-spin" />
+										{:else}
+											<RotateCcw class="size-3.5" />
+										{/if}
+										Retry {failedEntries.length} failed
 									</Button>
 								{/if}
 								{#if newEntries.length > 0}
@@ -575,10 +779,11 @@
 								<p class="text-muted-foreground text-sm">No tracks found</p>
 							</div>
 						{:else}
-							<div class="space-y-1">
-								{#each selectedEntries as entry, i (entry.id)}
-									<div class="flex items-center gap-3 rounded-lg border border-border p-3 hover:bg-accent/50 transition-colors">
-										<span class="text-xs text-muted-foreground w-6 text-right shrink-0">{i + 1}</span>
+							<div class="space-y-3">
+								<div class="space-y-1">
+									{#each paginatedEntries as entry, i (entry.id)}
+										<div class="flex items-center gap-3 rounded-lg border border-border p-3 hover:bg-accent/50 transition-colors">
+											<span class="text-xs text-muted-foreground w-6 text-right shrink-0">{entriesPage * entriesPageSize + i + 1}</span>
 										<div class="shrink-0">
 											{#if entry.status === 'downloaded'}
 												<CheckCircle2 class="size-4 text-green-500" />
@@ -647,8 +852,25 @@
 												{entry.status}
 											</Badge>
 										</div>
+										</div>
+									{/each}
+								</div>
+								
+								{#if sortedEntries.length > entriesPageSize}
+									<div class="flex items-center justify-between pt-2 border-t">
+										<p class="text-xs text-muted-foreground">
+											Showing {entriesPage * entriesPageSize + 1}-{Math.min((entriesPage + 1) * entriesPageSize, sortedEntries.length)} of {sortedEntries.length}
+										</p>
+										<div class="flex gap-1">
+											<Button variant="outline" size="sm" onclick={prevEntriesPage} disabled={entriesPage === 0}>
+												<ChevronLeft class="size-4" />
+											</Button>
+											<Button variant="outline" size="sm" onclick={nextEntriesPage} disabled={(entriesPage + 1) * entriesPageSize >= sortedEntries.length}>
+												<ChevronRight class="size-4" />
+											</Button>
+										</div>
 									</div>
-								{/each}
+								{/if}
 							</div>
 						{/if}
 					</div>
@@ -813,45 +1035,94 @@
 					</Button>
 				</div>
 
-				<!-- Active Downloads -->
+				<!-- Active Downloads (grouped by album when applicable) -->
 				{#if activeDownloads.length > 0}
 					<div class="space-y-3">
 						<h2 class="text-lg font-semibold">Active ({activeDownloads.length})</h2>
-						{#each activeDownloads.slice(0, 20) as dl (dl.id)}
-							<div class="flex items-center gap-4 rounded-lg border border-border p-4">
-								<div class="flex-1 min-w-0 space-y-2">
-									<div class="flex items-center gap-2">
-										<p class="text-sm font-medium truncate">{dl.title || dl.url}</p>
-										<Badge variant={platformColor(dl.platform)} class="text-xs shrink-0">
-											{platformLabel(dl.platform)}
+						{#each groupedActiveDownloads as group}
+							{#if group.albumId}
+								<!-- Album group -->
+								<div class="rounded-lg border border-border overflow-hidden">
+									<div class="flex items-center gap-3 px-4 py-2.5 bg-muted/40 border-b border-border">
+										<Disc class="size-4 text-muted-foreground shrink-0" />
+										<span class="text-sm font-medium truncate">{group.albumTitle}</span>
+										<Badge variant="secondary" class="text-xs shrink-0 ml-auto">
+											{group.downloads.length} track{group.downloads.length !== 1 ? 's' : ''}
 										</Badge>
 									</div>
-									{#if dl.status === 'downloading'}
-										<div class="flex items-center gap-3">
-											<Progress value={dl.progress} class="flex-1" />
-											<span class="text-xs text-muted-foreground w-12 text-right">
-												{Math.round(dl.progress)}%
-											</span>
-										</div>
-									{:else if dl.status === 'processing'}
-										<div class="flex items-center gap-2">
-											<Loader2 class="size-3 animate-spin text-muted-foreground" />
-											<span class="text-xs text-muted-foreground">Importing to library...</span>
-										</div>
-									{:else}
-										<span class="text-xs text-muted-foreground">Queued</span>
-									{/if}
+									<div class="divide-y divide-border">
+										{#each group.downloads.slice(0, 20) as dl (dl.id)}
+											<div class="flex items-center gap-4 px-4 py-3">
+												<div class="flex-1 min-w-0 space-y-1.5">
+													<div class="flex items-center gap-2">
+														<p class="text-sm truncate">{dl.title || dl.url}</p>
+														<Badge variant={platformColor(dl.platform)} class="text-xs shrink-0">
+															{platformLabel(dl.platform)}
+														</Badge>
+													</div>
+													{#if dl.status === 'downloading'}
+														<div class="flex items-center gap-3">
+															<Progress value={dl.progress} class="flex-1" />
+															<span class="text-xs text-muted-foreground w-12 text-right">{Math.round(dl.progress)}%</span>
+														</div>
+													{:else if dl.status === 'processing'}
+														<div class="flex items-center gap-2">
+															<Loader2 class="size-3 animate-spin text-muted-foreground" />
+															<span class="text-xs text-muted-foreground">Importing...</span>
+														</div>
+													{:else}
+														<span class="text-xs text-muted-foreground">Queued</span>
+													{/if}
+												</div>
+												<Button variant="ghost" size="sm" onclick={() => handleCancel(dl.id)}>
+													<X class="size-4" />
+												</Button>
+											</div>
+										{/each}
+										{#if group.downloads.length > 20}
+											<p class="text-xs text-muted-foreground text-center py-2">
+												and {group.downloads.length - 20} more queued...
+											</p>
+										{/if}
+									</div>
 								</div>
-								<Button variant="ghost" size="sm" onclick={() => handleCancel(dl.id)}>
-									<X class="size-4" />
-								</Button>
-							</div>
+							{:else}
+								<!-- Ungrouped downloads -->
+								{#each group.downloads.slice(0, 20) as dl (dl.id)}
+									<div class="flex items-center gap-4 rounded-lg border border-border p-4">
+										<div class="flex-1 min-w-0 space-y-2">
+											<div class="flex items-center gap-2">
+												<p class="text-sm font-medium truncate">{dl.title || dl.url}</p>
+												<Badge variant={platformColor(dl.platform)} class="text-xs shrink-0">
+													{platformLabel(dl.platform)}
+												</Badge>
+											</div>
+											{#if dl.status === 'downloading'}
+												<div class="flex items-center gap-3">
+													<Progress value={dl.progress} class="flex-1" />
+													<span class="text-xs text-muted-foreground w-12 text-right">{Math.round(dl.progress)}%</span>
+												</div>
+											{:else if dl.status === 'processing'}
+												<div class="flex items-center gap-2">
+													<Loader2 class="size-3 animate-spin text-muted-foreground" />
+													<span class="text-xs text-muted-foreground">Importing to library...</span>
+												</div>
+											{:else}
+												<span class="text-xs text-muted-foreground">Queued</span>
+											{/if}
+										</div>
+										<Button variant="ghost" size="sm" onclick={() => handleCancel(dl.id)}>
+											<X class="size-4" />
+										</Button>
+									</div>
+								{/each}
+								{#if group.downloads.length > 20}
+									<p class="text-xs text-muted-foreground text-center py-2">
+										and {group.downloads.length - 20} more queued...
+									</p>
+								{/if}
+							{/if}
 						{/each}
-						{#if activeDownloads.length > 20}
-							<p class="text-xs text-muted-foreground text-center py-2">
-								and {activeDownloads.length - 20} more queued...
-							</p>
-						{/if}
 					</div>
 				{/if}
 
@@ -905,11 +1176,8 @@
 			<!-- ==================== HISTORY TAB ==================== -->
 			<Tabs.Content value="history" class="space-y-4 mt-4">
 				{#if !historyLoaded}
-					<div class="flex flex-col items-center justify-center h-32 gap-3">
-						<Button variant="outline" onclick={loadHistory}>
-							<Clock class="size-4" />
-							Load download history
-						</Button>
+					<div class="flex justify-center p-8">
+						<Loader2 class="size-6 animate-spin text-muted-foreground" />
 					</div>
 				{:else}
 					<div class="flex items-center justify-between">
@@ -928,31 +1196,49 @@
 							<p class="text-muted-foreground text-sm">No download history</p>
 						</div>
 					{:else}
-						<div class="space-y-1">
-							{#each history as dl (dl.id)}
-								<div class="flex items-center gap-3 rounded-lg border border-border p-3">
-									<div class="shrink-0">
-										{#if dl.status === 'completed'}
-											<CheckCircle2 class="size-4 text-green-500" />
-										{:else if dl.status === 'failed'}
-											<XCircle class="size-4 text-destructive" />
-										{:else if dl.status === 'cancelled'}
-											<XCircle class="size-4 text-muted-foreground" />
-										{:else}
-											<Loader2 class="size-4 text-muted-foreground" />
-										{/if}
+						<div class="space-y-3">
+							<div class="space-y-1">
+								{#each history as dl (dl.id)}
+									<div class="flex items-center gap-3 rounded-lg border border-border p-3">
+										<div class="shrink-0">
+											{#if dl.status === 'completed'}
+												<CheckCircle2 class="size-4 text-green-500" />
+											{:else if dl.status === 'failed'}
+												<XCircle class="size-4 text-destructive" />
+											{:else if dl.status === 'cancelled'}
+												<XCircle class="size-4 text-muted-foreground" />
+											{:else}
+												<Loader2 class="size-4 text-muted-foreground" />
+											{/if}
+										</div>
+										<div class="flex-1 min-w-0">
+											<p class="text-sm truncate">{dl.title || dl.url}</p>
+											<span class="text-xs text-muted-foreground">
+												{platformLabel(dl.platform)} &middot; {formatDate(dl.created_at)}
+											</span>
+										</div>
+										<Badge variant="outline" class="text-xs shrink-0">
+											{dl.status}
+										</Badge>
 									</div>
-									<div class="flex-1 min-w-0">
-										<p class="text-sm truncate">{dl.title || dl.url}</p>
-										<span class="text-xs text-muted-foreground">
-											{platformLabel(dl.platform)} &middot; {formatDate(dl.created_at)}
-										</span>
+								{/each}
+							</div>
+							
+							{#if historyTotal > historyPageSize}
+								<div class="flex items-center justify-between pt-2 border-t">
+									<p class="text-xs text-muted-foreground">
+										Showing {historyPage * historyPageSize + 1}-{Math.min((historyPage + 1) * historyPageSize, historyTotal)} of {historyTotal}
+									</p>
+									<div class="flex gap-1">
+										<Button variant="outline" size="sm" onclick={prevHistoryPage} disabled={historyPage === 0}>
+											<ChevronLeft class="size-4" />
+										</Button>
+										<Button variant="outline" size="sm" onclick={nextHistoryPage} disabled={(historyPage + 1) * historyPageSize >= historyTotal}>
+											<ChevronRight class="size-4" />
+										</Button>
 									</div>
-									<Badge variant="outline" class="text-xs shrink-0">
-										{dl.status}
-									</Badge>
 								</div>
-							{/each}
+							{/if}
 						</div>
 					{/if}
 				{/if}

@@ -261,6 +261,10 @@ export const player = {
 		await playerApi.addNext(trackId);
 	},
 
+	async skipTo(index: number) {
+		await playerApi.skipTo(index);
+	},
+
 	async moveInQueue(fromIndex: number, toIndex: number) {
 		// Optimistic update for smooth DnD
 		const newTracks = [...queueTracks];

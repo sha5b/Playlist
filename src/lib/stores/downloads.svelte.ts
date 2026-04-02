@@ -64,6 +64,8 @@ async function init() {
 					created_at: new Date().toISOString(),
 					started_at: null,
 					completed_at: null,
+					target_album_id: null,
+					target_artist_id: null,
 				},
 				...downloads,
 			];

@@ -95,6 +95,16 @@ impl PlayQueue {
         self.current()
     }
 
+    /// Skip to a specific position in the play order
+    pub fn skip_to(&mut self, order_index: usize) -> Option<&QueueTrack> {
+        if order_index < self.order.len() {
+            self.position = Some(order_index);
+            self.current()
+        } else {
+            None
+        }
+    }
+
     /// Restart the queue from the beginning (used for RepeatAll when end is reached)
     pub fn restart(&mut self) -> Option<&QueueTrack> {
         if self.tracks.is_empty() {

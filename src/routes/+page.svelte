@@ -9,7 +9,7 @@
 	import { libraryStore } from '$lib/stores/library.svelte';
 	import type { LibraryStats } from '$lib/types';
 
-	let stats: LibraryStats | null = $state(null);
+	let stats = $state<LibraryStats | null>(null);
 	let importing = $state(false);
 
 	async function loadStats() {

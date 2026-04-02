@@ -1,0 +1,509 @@
+use std::io::Write;
+use std::path::Path;
+
+use async_trait::async_trait;
+use blowfish::cipher::{BlockDecryptMut, KeyIvInit};
+use md5::{Digest, Md5};
+use reqwest::Client;
+
+use super::source::{AudioSource, SourceError};
+
+/// Deezer API base URL
+const DEEZER_API: &str = "https://api.deezer.com";
+/// Deezer internal (private) API
+const DEEZER_PRIVATE_API: &str = "https://www.deezer.com/ajax/gw-light.php";
+/// The secret used to derive per-track Blowfish keys (from deemix/d-fi)
+const BLOWFISH_SECRET: &[u8] = b"g4el58wc0zvf9na1";
+
+type BlowfishCbcDec = cbc::Decryptor<blowfish::Blowfish>;
+
+pub struct DeezerSource {
+    arl: String,
+    client: Client,
+}
+
+impl DeezerSource {
+    pub fn new(arl: String) -> Self {
+        let client = Client::builder()
+            .cookie_store(true)
+            .build()
+            .unwrap_or_else(|_| Client::new());
+        Self { arl, client }
+    }
+
+    /// Initialize a session with the ARL cookie and get the API token
+    async fn get_api_token(&self) -> Result<(String, String), SourceError> {
+        // Set the ARL cookie by calling the empty API endpoint
+        let resp = self
+            .client
+            .post(DEEZER_PRIVATE_API)
+            .query(&[
+                ("method", "deezer.getUserData"),
+                ("input", "3"),
+                ("api_version", "1.0"),
+                ("api_token", ""),
+            ])
+            .header("Cookie", format!("arl={}", self.arl))
+            .send()
+            .await
+            .map_err(|e| SourceError::NetworkError(format!("Deezer API error: {}", e)))?;
+
+        let body: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| SourceError::NetworkError(format!("Failed to parse response: {}", e)))?;
+
+        let api_token = body["results"]["checkForm"]
+            .as_str()
+            .ok_or_else(|| SourceError::AuthFailed("Invalid ARL — could not get API token".into()))?
+            .to_string();
+
+        let user_id = body["results"]["USER"]["USER_ID"]
+            .as_str()
+            .or_else(|| body["results"]["USER"]["USER_ID"].as_i64().map(|_| ""))
+            .unwrap_or("0");
+
+        if user_id == "0" || user_id.is_empty() {
+            // Check if it's a number
+            let uid = body["results"]["USER"]["USER_ID"].as_i64().unwrap_or(0);
+            if uid == 0 {
+                return Err(SourceError::AuthFailed(
+                    "ARL expired or invalid — please update your Deezer ARL cookie".into(),
+                ));
+            }
+        }
+
+        Ok((api_token, self.arl.clone()))
+    }
+
+    /// Get track info from Deezer's private API
+    async fn get_track_info(
+        &self,
+        api_token: &str,
+        track_id: &str,
+    ) -> Result<DeezerTrackInfo, SourceError> {
+        let body = serde_json::json!({
+            "sng_id": track_id,
+        });
+
+        let resp = self
+            .client
+            .post(DEEZER_PRIVATE_API)
+            .query(&[
+                ("method", "song.getData"),
+                ("input", "3"),
+                ("api_version", "1.0"),
+                ("api_token", api_token),
+            ])
+            .header("Cookie", format!("arl={}", self.arl))
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| SourceError::NetworkError(format!("Track info error: {}", e)))?;
+
+        let data: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| SourceError::NetworkError(format!("Parse error: {}", e)))?;
+
+        let results = &data["results"];
+        if results.is_null() {
+            return Err(SourceError::NotFound);
+        }
+
+        Ok(DeezerTrackInfo {
+            id: results["SNG_ID"]
+                .as_str()
+                .unwrap_or(track_id)
+                .to_string(),
+            md5_origin: results["MD5_ORIGIN"]
+                .as_str()
+                .unwrap_or("")
+                .to_string(),
+            media_version: results["MEDIA_VERSION"]
+                .as_str()
+                .unwrap_or("1")
+                .to_string(),
+        })
+    }
+
+    /// Search for a track on Deezer's public API
+    async fn search_track(&self, query: &str) -> Result<String, SourceError> {
+        let resp = self
+            .client
+            .get(format!("{}/search/track", DEEZER_API))
+            .query(&[("q", query), ("limit", "1")])
+            .send()
+            .await
+            .map_err(|e| SourceError::NetworkError(format!("Search error: {}", e)))?;
+
+        let data: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| SourceError::NetworkError(format!("Parse error: {}", e)))?;
+
+        let track_id = data["data"][0]["id"]
+            .as_i64()
+            .ok_or(SourceError::NotFound)?;
+
+        Ok(track_id.to_string())
+    }
+
+    /// Build the CDN URL for a track
+    fn build_cdn_url(track_info: &DeezerTrackInfo, quality: u8) -> String {
+        // quality: 1 = MP3 128, 3 = MP3 320, 9 = FLAC
+        let step1 = format!(
+            "{}¤{}¤{}¤{}",
+            track_info.md5_origin, quality, track_info.id, track_info.media_version
+        );
+        let md5_hash = format!("{:x}", Md5::digest(step1.as_bytes()));
+        let step2 = format!("{}¤{}¤{}", md5_hash, step1, " ".repeat(16 - ((md5_hash.len() + step1.len() + 1) % 16) % 16));
+
+        // AES ECB encrypt with the hash to get the path
+        // Actually, Deezer uses a simpler approach for the URL path
+        let hash_bytes = step2.as_bytes();
+        let mut aes_input = hash_bytes.to_vec();
+        // Pad to 16 byte boundary
+        while aes_input.len() % 16 != 0 {
+            aes_input.push(b' ');
+        }
+
+        use aes::cipher::{BlockEncrypt, KeyInit};
+        let key: [u8; 16] = {
+            let k = b"jo6aey6haid2Teih";
+            let mut arr = [0u8; 16];
+            arr.copy_from_slice(k);
+            arr
+        };
+        let cipher = aes::Aes128::new(&key.into());
+        let mut encrypted = Vec::new();
+        for chunk in aes_input.chunks(16) {
+            let mut block = aes::cipher::generic_array::GenericArray::clone_from_slice(chunk);
+            cipher.encrypt_block(&mut block);
+            encrypted.extend_from_slice(&block);
+        }
+        let path = hex::encode(&encrypted);
+
+        format!(
+            "https://e-cdns-proxy-{}.dzcdn.net/mobile/1/{}",
+            &track_info.md5_origin[..1],
+            path
+        )
+    }
+
+    /// Derive the per-track Blowfish key from the track ID
+    fn get_blowfish_key(track_id: &str) -> Vec<u8> {
+        let id_md5 = format!("{:x}", Md5::digest(track_id.as_bytes()));
+        let id_md5_bytes = id_md5.as_bytes();
+        let mut key = Vec::with_capacity(16);
+        for i in 0..16 {
+            key.push(id_md5_bytes[i] ^ id_md5_bytes[i + 16] ^ BLOWFISH_SECRET[i]);
+        }
+        key
+    }
+
+    /// Decrypt a Deezer audio chunk (2048 bytes, Blowfish CBC)
+    fn decrypt_chunk(data: &mut [u8], bf_key: &[u8]) {
+        let iv: [u8; 8] = [0, 1, 2, 3, 4, 5, 6, 7];
+        if let Ok(cipher) = BlowfishCbcDec::new_from_slices(bf_key, &iv) {
+            // Blowfish CBC works on 8-byte blocks
+            let _ = cipher.decrypt_padded_mut::<blowfish::cipher::block_padding::NoPadding>(data);
+        }
+    }
+
+    /// Download and decrypt a track from Deezer CDN
+    async fn download_and_decrypt(
+        &self,
+        track_info: &DeezerTrackInfo,
+        output_dir: &Path,
+        file_stem: &str,
+        format: &str,
+        progress: &(dyn Fn(f64) + Send + Sync),
+    ) -> Result<String, SourceError> {
+        // Try FLAC first, then MP3 320
+        let (quality, ext) = match format {
+            "flac" => (9u8, "flac"),
+            "mp3" => (3u8, "mp3"),
+            _ => (9u8, "flac"), // Default to FLAC for best quality
+        };
+
+        let cdn_url = Self::build_cdn_url(track_info, quality);
+        progress(20.0);
+
+        let resp = self
+            .client
+            .get(&cdn_url)
+            .header("Cookie", format!("arl={}", self.arl))
+            .send()
+            .await
+            .map_err(|e| SourceError::NetworkError(format!("CDN download error: {}", e)))?;
+
+        if !resp.status().is_success() {
+            // If FLAC fails, try MP3 320
+            if quality == 9 {
+                let cdn_url_mp3 = Self::build_cdn_url(track_info, 3);
+                let resp = self
+                    .client
+                    .get(&cdn_url_mp3)
+                    .header("Cookie", format!("arl={}", self.arl))
+                    .send()
+                    .await
+                    .map_err(|e| SourceError::NetworkError(format!("CDN fallback error: {}", e)))?;
+
+                if !resp.status().is_success() {
+                    return Err(SourceError::DrmBlocked(format!(
+                        "CDN returned {}",
+                        resp.status()
+                    )));
+                }
+                return self
+                    .decrypt_response(resp, track_info, output_dir, file_stem, "mp3", progress)
+                    .await;
+            }
+            return Err(SourceError::DrmBlocked(format!(
+                "CDN returned {}",
+                resp.status()
+            )));
+        }
+
+        self.decrypt_response(resp, track_info, output_dir, file_stem, ext, progress)
+            .await
+    }
+
+    async fn decrypt_response(
+        &self,
+        resp: reqwest::Response,
+        track_info: &DeezerTrackInfo,
+        output_dir: &Path,
+        file_stem: &str,
+        ext: &str,
+        progress: &(dyn Fn(f64) + Send + Sync),
+    ) -> Result<String, SourceError> {
+        let encrypted_data = resp
+            .bytes()
+            .await
+            .map_err(|e| SourceError::NetworkError(format!("Download error: {}", e)))?;
+
+        progress(60.0);
+
+        let bf_key = Self::get_blowfish_key(&track_info.id);
+        let output_path = output_dir.join(format!("{}.{}", file_stem, ext));
+        let output_str = output_path.to_string_lossy().to_string();
+
+        // Decrypt in chunks: every 3rd 2048-byte chunk is encrypted
+        let mut output_file = std::fs::File::create(&output_path)
+            .map_err(|e| SourceError::Other(format!("Failed to create file: {}", e)))?;
+
+        let chunk_size = 2048;
+        let total_chunks = (encrypted_data.len() + chunk_size - 1) / chunk_size;
+
+        for (i, chunk) in encrypted_data.chunks(chunk_size).enumerate() {
+            let mut chunk_data = chunk.to_vec();
+
+            // Every 3rd chunk (0, 3, 6, ...) is Blowfish encrypted, but only if full size
+            if i % 3 == 0 && chunk_data.len() == chunk_size {
+                Self::decrypt_chunk(&mut chunk_data, &bf_key);
+            }
+
+            output_file
+                .write_all(&chunk_data)
+                .map_err(|e| SourceError::Other(format!("Write error: {}", e)))?;
+
+            if total_chunks > 0 {
+                progress(60.0 + (i as f64 / total_chunks as f64) * 35.0);
+            }
+        }
+
+        progress(95.0);
+        log::info!("Deezer download complete: {}", output_str);
+        Ok(output_str)
+    }
+
+    /// Extract track ID from a Deezer URL
+    fn parse_track_id(url: &str) -> Result<String, SourceError> {
+        // https://www.deezer.com/track/12345 or /en/track/12345
+        if url.contains("/track/") {
+            let after = url.split("/track/").nth(1).unwrap_or("");
+            let id = after.split('?').next().unwrap_or("").split('/').next().unwrap_or("");
+            if !id.is_empty() && id.chars().all(|c| c.is_ascii_digit()) {
+                return Ok(id.to_string());
+            }
+        }
+        Err(SourceError::Other(format!(
+            "Cannot parse Deezer track ID from: {}",
+            url
+        )))
+    }
+}
+
+struct DeezerTrackInfo {
+    id: String,
+    md5_origin: String,
+    media_version: String,
+}
+
+/// Fetch playlist/album entries from Deezer's public API (no auth needed).
+pub async fn fetch_playlist_entries(url: &str) -> Result<super::ytdlp::PlaylistFetchResult, super::source::SourceError> {
+    use super::source::SourceError;
+
+    let url = url.trim();
+    let client = reqwest::Client::new();
+
+    // Extract type and ID from URL
+    let (item_type, item_id) = if url.contains("/playlist/") {
+        let id = url.split("/playlist/").nth(1).unwrap_or("")
+            .split('?').next().unwrap_or("").split('/').next().unwrap_or("");
+        ("playlist", id)
+    } else if url.contains("/album/") {
+        let id = url.split("/album/").nth(1).unwrap_or("")
+            .split('?').next().unwrap_or("").split('/').next().unwrap_or("");
+        ("album", id)
+    } else {
+        return Err(SourceError::Other("URL is not a Deezer playlist or album".into()));
+    };
+
+    if item_id.is_empty() {
+        return Err(SourceError::Other("Could not extract ID from Deezer URL".into()));
+    }
+
+    // Fetch from Deezer's public API
+    let api_url = format!("{}/{}/{}", DEEZER_API, item_type, item_id);
+    let resp = client.get(&api_url)
+        .send()
+        .await
+        .map_err(|e| SourceError::NetworkError(format!("Deezer API error: {}", e)))?;
+
+    let data: serde_json::Value = resp.json().await
+        .map_err(|e| SourceError::NetworkError(format!("Parse error: {}", e)))?;
+
+    if data["error"].is_object() {
+        let msg = data["error"]["message"].as_str().unwrap_or("Unknown error");
+        return Err(SourceError::Other(format!("Deezer API: {}", msg)));
+    }
+
+    let playlist_title = data["title"].as_str().map(|s| s.to_string());
+
+    // Get tracks — paginated, fetch all pages
+    let mut entries = Vec::new();
+    let mut tracks_url = if item_type == "playlist" {
+        format!("{}/{}/{}/tracks?limit=100", DEEZER_API, item_type, item_id)
+    } else {
+        // Albums have tracks directly
+        format!("{}/{}/{}/tracks?limit=100", DEEZER_API, item_type, item_id)
+    };
+
+    loop {
+        let resp = client.get(&tracks_url)
+            .send()
+            .await
+            .map_err(|e| SourceError::NetworkError(format!("Deezer tracks error: {}", e)))?;
+
+        let page: serde_json::Value = resp.json().await
+            .map_err(|e| SourceError::NetworkError(format!("Parse error: {}", e)))?;
+
+        if let Some(tracks) = page["data"].as_array() {
+            for track in tracks {
+                let title = track["title"].as_str().unwrap_or("Unknown").to_string();
+                let artist_name = track["artist"]["name"].as_str().map(|s| s.to_string());
+                let duration = track["duration"].as_f64();
+                let track_id = track["id"].as_i64().unwrap_or(0);
+                let album_title = track["album"]["title"].as_str()
+                    .map(|s| s.to_string())
+                    .or_else(|| playlist_title.clone());
+
+                // Build Deezer track URL for native downloading
+                let track_url = if track_id > 0 {
+                    format!("https://www.deezer.com/track/{}", track_id)
+                } else {
+                    String::new()
+                };
+
+                entries.push(super::ytdlp::VideoInfo {
+                    title: title.clone(),
+                    track: Some(title),
+                    artist: artist_name.clone(),
+                    uploader: artist_name,
+                    duration,
+                    thumbnail: track["album"]["cover_medium"].as_str().map(|s| s.to_string()),
+                    webpage_url: if track_url.is_empty() { None } else { Some(track_url) },
+                    album: album_title,
+                    genre: None,
+                    release_year: None,
+                    description: None,
+                    track_number: track["track_position"].as_i64(),
+                    disc_number: track["disk_number"].as_i64(),
+                    composer: None,
+                    language: None,
+                });
+            }
+        }
+
+        // Check for next page
+        if let Some(next) = page["next"].as_str() {
+            tracks_url = next.to_string();
+        } else {
+            break;
+        }
+    }
+
+    if entries.is_empty() {
+        return Err(SourceError::Other("No tracks found in Deezer playlist".into()));
+    }
+
+    Ok(super::ytdlp::PlaylistFetchResult {
+        playlist_title,
+        entries,
+    })
+}
+
+#[async_trait]
+impl AudioSource for DeezerSource {
+    fn is_available(&self) -> bool {
+        !self.arl.is_empty()
+    }
+
+    fn platform(&self) -> &str {
+        "deezer"
+    }
+
+    async fn download(
+        &self,
+        url: &str,
+        output_dir: &Path,
+        file_stem: &str,
+        format: &str,
+        progress: Box<dyn Fn(f64) + Send + Sync>,
+    ) -> Result<String, SourceError> {
+        let track_id = Self::parse_track_id(url)?;
+        let (api_token, _) = self.get_api_token().await?;
+
+        progress(10.0);
+        let track_info = self.get_track_info(&api_token, &track_id).await?;
+
+        self.download_and_decrypt(&track_info, output_dir, file_stem, format, &*progress)
+            .await
+    }
+
+    async fn search_download(
+        &self,
+        query: &str,
+        output_dir: &Path,
+        file_stem: &str,
+        format: &str,
+        progress: Box<dyn Fn(f64) + Send + Sync>,
+    ) -> Result<String, SourceError> {
+        let track_id = self.search_track(query).await?;
+        let (api_token, _) = self.get_api_token().await?;
+
+        progress(10.0);
+        let track_info = self.get_track_info(&api_token, &track_id).await?;
+
+        self.download_and_decrypt(&track_info, output_dir, file_stem, format, &*progress)
+            .await
+    }
+
+    async fn test_connection(&self) -> Result<(), SourceError> {
+        let _ = self.get_api_token().await?;
+        Ok(())
+    }
+}
