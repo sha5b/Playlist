@@ -511,14 +511,18 @@ where
 }
 
 /// Download a video (with audio) from a URL, returning the path to the .mp4 file.
-pub async fn download_video(
+pub async fn download_video<F>(
     binary: &str,
     ffmpeg_dir: Option<&str>,
     url: &str,
     output_dir: &Path,
     file_stem: &str,
     cookies_from_browser: Option<&str>,
-) -> Result<String, String> {
+    progress_callback: F,
+) -> Result<String, String>
+where
+    F: Fn(DownloadProgress) + Send + 'static,
+{
     let output_template = output_dir
         .join(format!("{}.%(ext)s", file_stem))
         .to_string_lossy()
@@ -531,7 +535,6 @@ pub async fn download_video(
         "--embed-metadata",
         "--output", &output_template,
         "--newline",
-        "--no-warnings",
         "--no-playlist",
         "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
         "--extractor-retries", "3",
@@ -555,16 +558,34 @@ pub async fn download_video(
         .spawn()
         .map_err(|e| format!("Failed to spawn yt-dlp: {}", e))?;
 
-    // Drain both pipes to avoid deadlock, capture stderr for error reporting
+    // Drain both pipes to avoid deadlock, parse progress from stderr
     let stderr = child.stderr.take().unwrap();
     let stdout = child.stdout.take().unwrap();
     let stderr_handle = tokio::spawn(async move {
+        let mut last_emit = std::time::Instant::now()
+            .checked_sub(std::time::Duration::from_secs(2))
+            .unwrap_or_else(std::time::Instant::now);
+        let mut latest: Option<DownloadProgress> = None;
+        let mut error_lines: Vec<String> = Vec::new();
         let mut lines = BufReader::new(stderr).lines();
-        let mut collected = Vec::new();
         while let Ok(Some(line)) = lines.next_line().await {
-            collected.push(line);
+            if let Some(progress) = parse_progress_line(&line) {
+                latest = Some(progress);
+                if last_emit.elapsed() >= std::time::Duration::from_millis(800) {
+                    if let Some(p) = latest.take() {
+                        progress_callback(p);
+                        last_emit = std::time::Instant::now();
+                    }
+                }
+            } else if line.starts_with("ERROR:") || line.contains("ERROR:") {
+                error_lines.push(line);
+            }
         }
-        collected
+        // Always emit the final progress
+        if let Some(p) = latest {
+            progress_callback(p);
+        }
+        error_lines
     });
     let stdout_handle = tokio::spawn(async move {
         let mut lines = BufReader::new(stdout).lines();
@@ -576,12 +597,16 @@ pub async fn download_video(
         .await
         .map_err(|e| format!("Failed to wait for yt-dlp: {}", e))?;
 
-    let stderr_lines = stderr_handle.await.unwrap_or_default();
+    let error_lines = stderr_handle.await.unwrap_or_default();
     let _ = stdout_handle.await;
 
     if !status.success() {
-        let err_msg = stderr_lines.last().cloned().unwrap_or_default();
-        return Err(format!("yt-dlp video download failed: {}", err_msg));
+        let detail = if error_lines.is_empty() {
+            format!("yt-dlp video download exited with status {}", status)
+        } else {
+            format!("yt-dlp video download failed: {}", error_lines.join(" | "))
+        };
+        return Err(detail);
     }
 
     let expected_path = output_dir.join(format!("{}.mp4", file_stem));

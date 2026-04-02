@@ -13,20 +13,14 @@ async function init() {
 	if (initialized) return;
 	initialized = true;
 
-	// Load active downloads
-	try {
-		downloads = await getActiveDownloads();
-	} catch {
-		// Ignore on first load
-	}
-
 	// Clean up any previous listener before registering
 	if (unlisten) {
 		unlisten();
 		unlisten = null;
 	}
 
-	// Listen for download events from Rust
+	// Register event listener FIRST to avoid missing completion events
+	// that fire between the getActiveDownloads() call and listener setup
 	unlisten = await listen<DownloadEvent>('download-event', (event) => {
 		const data = event.payload;
 		const idx = downloads.findIndex((d) => d.id === data.id);
@@ -83,6 +77,13 @@ async function init() {
 			downloads = [...active, ...rest];
 		}
 	});
+
+	// Now load current state from DB (listener is already catching any new events)
+	try {
+		downloads = await getActiveDownloads();
+	} catch {
+		// Ignore on first load
+	}
 }
 
 function destroy() {

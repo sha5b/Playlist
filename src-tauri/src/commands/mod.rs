@@ -1688,6 +1688,7 @@ pub async fn enrich_track(
                         mv_dir,
                         &file_stem,
                         cookies.as_deref(),
+                        |_| {}, // Background auto-download, no progress needed
                     ).await {
                         if let Ok(conn) = db.lock() {
                             let _ = conn.execute(
@@ -1986,8 +1987,20 @@ pub async fn scan_missing_metadata(
             }),
         );
 
+        // Check cancellation again after rate-limit sleep
+        if METADATA_SCAN_CANCELLED.load(Ordering::Relaxed) {
+            log::info!("Metadata scan cancelled by user at {}/{}", i, total);
+            break;
+        }
+
         let artist_for_lastfm = artist_name.as_deref().unwrap_or("unknown");
         let mb_result = crate::metadata::musicbrainz::enrich_track(title, artist_name.as_deref()).await;
+
+        // Check cancellation after API call
+        if METADATA_SCAN_CANCELLED.load(Ordering::Relaxed) {
+            log::info!("Metadata scan cancelled by user at {}/{}", i, total);
+            break;
+        }
 
         match mb_result {
             Ok(enrichment) => {
@@ -2050,25 +2063,27 @@ pub async fn scan_missing_metadata(
                 } // conn dropped here before await
 
                 // Also try Last.fm for supplementary genre/description if MusicBrainz didn't provide them
-                if let Ok(lastfm_data) = crate::metadata::lastfm::get_track_info(title, artist_for_lastfm).await {
-                    if !lastfm_data.tags.is_empty() || lastfm_data.description.is_some() {
-                        if let Ok(conn) = db.lock() {
-                            macro_rules! update_if_missing {
-                                ($col:expr, $val:expr) => {
-                                    if let Some(ref v) = $val {
-                                        let _ = conn.execute(
-                                            &format!("UPDATE tracks SET {} = ?1 WHERE id = ?2 AND ({} IS NULL OR {} = '')", $col, $col, $col),
-                                            rusqlite::params![v, track_id],
-                                        );
-                                    }
-                                };
-                            }
-                            if !lastfm_data.tags.is_empty() {
-                                let genre_val: Option<String> = Some(lastfm_data.tags.iter().take(3).cloned().collect::<Vec<_>>().join(", "));
-                                update_if_missing!("genre", genre_val);
-                            }
-                            if lastfm_data.description.is_some() {
-                                update_if_missing!("description", lastfm_data.description);
+                if !METADATA_SCAN_CANCELLED.load(Ordering::Relaxed) {
+                    if let Ok(lastfm_data) = crate::metadata::lastfm::get_track_info(title, artist_for_lastfm).await {
+                        if !lastfm_data.tags.is_empty() || lastfm_data.description.is_some() {
+                            if let Ok(conn) = db.lock() {
+                                macro_rules! update_if_missing {
+                                    ($col:expr, $val:expr) => {
+                                        if let Some(ref v) = $val {
+                                            let _ = conn.execute(
+                                                &format!("UPDATE tracks SET {} = ?1 WHERE id = ?2 AND ({} IS NULL OR {} = '')", $col, $col, $col),
+                                                rusqlite::params![v, track_id],
+                                            );
+                                        }
+                                    };
+                                }
+                                if !lastfm_data.tags.is_empty() {
+                                    let genre_val: Option<String> = Some(lastfm_data.tags.iter().take(3).cloned().collect::<Vec<_>>().join(", "));
+                                    update_if_missing!("genre", genre_val);
+                                }
+                                if lastfm_data.description.is_some() {
+                                    update_if_missing!("description", lastfm_data.description);
+                                }
                             }
                         }
                     }
@@ -2107,6 +2122,12 @@ pub async fn scan_missing_metadata(
             }
             Err(e) => {
                 log::warn!("MusicBrainz failed for track {} ({}): {}", track_id, title, e);
+
+                // Check cancellation before Last.fm fallback
+                if METADATA_SCAN_CANCELLED.load(Ordering::Relaxed) {
+                    log::info!("Metadata scan cancelled by user at {}/{}", i, total);
+                    break;
+                }
 
                 // Fallback: try Last.fm
                 match crate::metadata::lastfm::get_track_info(title, artist_for_lastfm).await {
@@ -2498,6 +2519,12 @@ pub async fn auto_enrich_library(
     log::info!("Auto-enriching {} tracks", total_tracks);
 
     for (i, (track_id, title, artist_name)) in tracks_to_enrich.iter().enumerate() {
+        // Check cancellation
+        if METADATA_SCAN_CANCELLED.load(Ordering::Relaxed) {
+            log::info!("Auto-enrichment cancelled by user during tracks phase");
+            return;
+        }
+
         if i > 0 {
             tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
         }
@@ -3386,6 +3413,8 @@ pub async fn download_music_video(
     let file_stem = format!("mv_{}", track_id);
     let output_dir = std::path::Path::new(&download_dir);
 
+    let app_handle_progress = app_handle.clone();
+    let tid = track_id;
     let path = crate::download::ytdlp::download_video(
         &binary,
         ffmpeg_dir.as_deref(),
@@ -3393,6 +3422,14 @@ pub async fn download_music_video(
         output_dir,
         &file_stem,
         cookies.as_deref(),
+        move |progress| {
+            let _ = app_handle_progress.emit("music-video-download-progress", serde_json::json!({
+                "track_id": tid,
+                "percent": progress.percent,
+                "speed": progress.speed,
+                "eta": progress.eta,
+            }));
+        },
     ).await?;
 
     // Save path to DB

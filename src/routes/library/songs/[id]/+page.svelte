@@ -6,6 +6,8 @@
 	import { formatDuration, formatFileSize, formatDate, assetUrl, platformLabel } from '$lib/utils/format';
 	import { ArrowLeft, Music, Play, ListStart, ListPlus, Loader2, Sparkles, ExternalLink, User, Disc3, Download } from 'lucide-svelte';
 	import { toast } from 'svelte-sonner';
+	import { listen } from '@tauri-apps/api/event';
+	import { onDestroy } from 'svelte';
 	import type { Track, Album, Artist } from '$lib/types';
 
 	let track = $state<Track | null>(null);
@@ -14,7 +16,17 @@
 	let loading = $state(true);
 	let enriching = $state(false);
 	let downloadingMV = $state(false);
+	let mvProgress = $state(0);
 	let lyricsOpen = $state(false);
+
+	// Listen for music video download progress
+	let unlistenMvProgress: (() => void) | null = null;
+	listen<{ track_id: number; percent: number }>('music-video-download-progress', (event) => {
+		if (track && event.payload.track_id === track.id) {
+			mvProgress = Math.round(event.payload.percent);
+		}
+	}).then((fn) => { unlistenMvProgress = fn; });
+	onDestroy(() => { unlistenMvProgress?.(); });
 
 	const trackId = $derived(Number(page.params.id));
 
@@ -99,6 +111,7 @@
 	async function handleDownloadMV() {
 		if (!track || downloadingMV) return;
 		downloadingMV = true;
+		mvProgress = 0;
 		try {
 			await downloadMusicVideo(track.id);
 			toast.success('Music video downloaded');
@@ -244,7 +257,7 @@
 								<div class="absolute inset-0 flex flex-col items-center justify-center gap-2">
 									{#if downloadingMV}
 										<Loader2 class="size-8 text-white animate-spin" />
-										<span class="text-xs text-white/80 font-medium">Downloading...</span>
+										<span class="text-xs text-white/80 font-medium">Downloading{mvProgress > 0 ? ` ${mvProgress}%` : '...'}</span>
 									{:else}
 										<div class="size-12 rounded-full bg-white/10 backdrop-blur-sm flex items-center justify-center group-hover:bg-white/20 transition-colors">
 											<Download class="size-6 text-white" />

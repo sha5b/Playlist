@@ -810,6 +810,7 @@ async fn handle_download_success(
         DownloadMeta {
             title,
             artist,
+            album: ytdlp_info.as_ref().and_then(|i| i.album.clone()),
             source_url,
             description: ytdlp_info.as_ref().and_then(|i| i.description.clone()),
             genre: ytdlp_info.as_ref().and_then(|i| i.genre.clone()),
@@ -896,6 +897,7 @@ async fn handle_download_success(
 struct DownloadMeta {
     title: Option<String>,
     artist: Option<String>,
+    album: Option<String>,
     source_url: Option<String>,
     description: Option<String>,
     genre: Option<String>,
@@ -960,7 +962,9 @@ async fn import_downloaded_file(
     let album_id = if let Some(target_alb) = dl_meta.target_album_id {
         Some(target_alb)
     } else {
-        tag_data.album.as_ref().and_then(|alb| {
+        // Try file tags first, then fall back to yt-dlp album metadata
+        let album_name = tag_data.album.as_ref().or(dl_meta.album.as_ref());
+        album_name.and_then(|alb| {
             crate::db::albums::find_or_create(
                 &conn,
                 alb,
