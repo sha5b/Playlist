@@ -20,7 +20,8 @@
 	const hasVideo = $derived(!!fullTrack?.music_video_path);
 	const hasLyrics = $derived(!!fullTrack?.lyrics);
 
-	// Effective mode: use preferred if available, otherwise fall back to artwork
+	// The preferred mode persists across tracks. When a track has the content
+	// (lyrics/video), it shows that mode; otherwise falls back to artwork.
 	const displayMode = $derived.by(() => {
 		if (preferredMode === 'video' && hasVideo) return 'video';
 		if (preferredMode === 'lyrics' && hasLyrics) return 'lyrics';
@@ -71,19 +72,9 @@
 		<div class="p-6 space-y-8">
 			<!-- Hero: Current Track -->
 			<div class="flex gap-8 items-start">
-				<!-- Display area: artwork / video / lyrics -->
+				<!-- Artwork always visible -->
 				<div class="size-64 lg:size-72 shrink-0 rounded-xl bg-muted overflow-hidden shadow-2xl shadow-black/40">
-					{#if displayMode === 'video' && fullTrack?.music_video_path}
-						<!-- svelte-ignore a11y_media_has_caption -->
-						<video
-							src={assetUrl(fullTrack.music_video_path)}
-							controls
-							autoplay
-							class="size-full object-cover"
-						></video>
-					{:else if displayMode === 'lyrics' && fullTrack?.lyrics}
-						<SyncedLyrics lyrics={fullTrack.lyrics} positionMs={player.positionMs} />
-					{:else if player.currentTrack?.cover_art_path}
+					{#if player.currentTrack?.cover_art_path}
 						<img
 							src={assetUrl(player.currentTrack.cover_art_path)}
 							alt=""
@@ -98,10 +89,10 @@
 
 				<!-- Track info + controls -->
 				<div class="relative flex flex-col flex-1 min-w-0 pt-2">
-					<!-- Mode toggle overlay (top-right of info area) -->
+					<!-- Mode toggle (top-right) -->
 					<div class="absolute top-2 right-0 flex gap-1">
 						<Button
-							variant={displayMode === 'artwork' ? 'default' : 'ghost'}
+							variant={preferredMode === 'artwork' ? 'default' : 'ghost'}
 							size="icon"
 							class="size-7"
 							onclick={() => preferredMode = 'artwork'}
@@ -109,19 +100,17 @@
 							<Image class="size-3.5" />
 						</Button>
 						<Button
-							variant={displayMode === 'video' ? 'default' : 'ghost'}
+							variant={preferredMode === 'video' ? 'default' : 'ghost'}
 							size="icon"
 							class="size-7"
-							disabled={!hasVideo}
 							onclick={() => preferredMode = 'video'}
 						>
 							<Film class="size-3.5" />
 						</Button>
 						<Button
-							variant={displayMode === 'lyrics' ? 'default' : 'ghost'}
+							variant={preferredMode === 'lyrics' ? 'default' : 'ghost'}
 							size="icon"
 							class="size-7"
-							disabled={!hasLyrics}
 							onclick={() => preferredMode = 'lyrics'}
 						>
 							<Type class="size-3.5" />
@@ -219,6 +208,25 @@
 					</div>
 				</div>
 			</div>
+
+			<!-- Lyrics / Video panel (below hero) -->
+			{#if displayMode === 'video' && fullTrack?.music_video_path}
+				<div class="rounded-xl border border-border bg-black overflow-hidden">
+					<!-- svelte-ignore a11y_media_has_caption -->
+					<video
+						src={assetUrl(fullTrack.music_video_path)}
+						controls
+						autoplay
+						class="w-full max-h-[28rem] object-contain"
+					></video>
+				</div>
+			{:else if displayMode === 'lyrics' && fullTrack?.lyrics}
+				<div class="rounded-xl border border-border/60 bg-card/60 backdrop-blur-sm overflow-hidden">
+					<div class="h-[24rem] overflow-hidden">
+						<SyncedLyrics lyrics={fullTrack.lyrics} positionMs={player.positionMs} />
+					</div>
+				</div>
+			{/if}
 
 			<!-- Previously Played -->
 			{#if player.previousTrack}

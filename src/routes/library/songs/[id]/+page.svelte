@@ -1,13 +1,12 @@
 <script lang="ts">
 	import { page } from '$app/state';
-	import { getTrack, enrichTrack, getAlbum, getArtist, downloadMusicVideo } from '$lib/api/library';
+	import { getTrack, enrichTrack, getAlbum, getArtist } from '$lib/api/library';
 	import { Button } from '$lib/components/ui/button';
 	import { player } from '$lib/stores/player.svelte';
+	import { mvDownloadStore } from '$lib/stores/mvDownloads.svelte';
 	import { formatDuration, formatFileSize, formatDate, assetUrl, platformLabel } from '$lib/utils/format';
 	import { ArrowLeft, Music, Play, ListStart, ListPlus, Loader2, Sparkles, ExternalLink, User, Disc3, Download } from 'lucide-svelte';
 	import { toast } from 'svelte-sonner';
-	import { listen } from '@tauri-apps/api/event';
-	import { onDestroy } from 'svelte';
 	import type { Track, Album, Artist } from '$lib/types';
 
 	let track = $state<Track | null>(null);
@@ -15,18 +14,12 @@
 	let artist = $state<Artist | null>(null);
 	let loading = $state(true);
 	let enriching = $state(false);
-	let downloadingMV = $state(false);
-	let mvProgress = $state(0);
-	let lyricsOpen = $state(false);
+	let lyricsOpen = $state(true);
 
-	// Listen for music video download progress
-	let unlistenMvProgress: (() => void) | null = null;
-	listen<{ track_id: number; percent: number }>('music-video-download-progress', (event) => {
-		if (track && event.payload.track_id === track.id) {
-			mvProgress = Math.round(event.payload.percent);
-		}
-	}).then((fn) => { unlistenMvProgress = fn; });
-	onDestroy(() => { unlistenMvProgress?.(); });
+	const downloadingMV = $derived(track ? mvDownloadStore.isDownloading(track.id) : false);
+	const mvProgress = $derived(track ? mvDownloadStore.getProgress(track.id) : 0);
+
+	mvDownloadStore.init();
 
 	const trackId = $derived(Number(page.params.id));
 
@@ -66,6 +59,16 @@
 
 	$effect(() => {
 		load(trackId);
+	});
+
+	// Reload track when MV download finishes so the video appears
+	let wasMvDownloading = false;
+	$effect(() => {
+		const downloading = downloadingMV;
+		if (wasMvDownloading && !downloading && track) {
+			getTrack(track.id).then((t) => { track = t; });
+		}
+		wasMvDownloading = downloading;
 	});
 
 	function playTrack() {
@@ -108,19 +111,9 @@
 		return id ? `https://img.youtube.com/vi/${id}/maxresdefault.jpg` : null;
 	}
 
-	async function handleDownloadMV() {
+	function handleDownloadMV() {
 		if (!track || downloadingMV) return;
-		downloadingMV = true;
-		mvProgress = 0;
-		try {
-			await downloadMusicVideo(track.id);
-			toast.success('Music video downloaded');
-			track = await getTrack(track.id);
-		} catch (e) {
-			toast.error('Failed to download music video', { description: String(e) });
-		} finally {
-			downloadingMV = false;
-		}
+		mvDownloadStore.start(track.id);
 	}
 
 	function formatBitrate(br: number | null): string {
@@ -416,25 +409,49 @@
 			</div>
 		</div>
 		{#if plainLyrics}
-			<div class="rounded-lg border border-border overflow-hidden">
-				<button
-					class="w-full px-6 py-4 flex items-center justify-between hover:bg-muted/30 transition-colors"
-					onclick={() => lyricsOpen = !lyricsOpen}
-				>
-					<h2 class="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Lyrics</h2>
-					<span class="text-xs text-muted-foreground">{lyricsOpen ? '▲' : '▼'}</span>
-				</button>
-				{#if lyricsOpen}
-					<div class="px-6 pb-6 max-h-[32rem] overflow-y-auto">
-						{#each plainLyrics.split('\n') as line}
-							{#if line.trim() === ''}
-								<div class="h-4"></div>
-							{:else}
-								<p class="text-sm leading-7 text-foreground/80">{line}</p>
-							{/if}
-						{/each}
-					</div>
-				{/if}
+			{@const lyricLines = plainLyrics.split('\n')}
+			{@const verses = lyricLines.reduce<string[][]>((acc, line) => {
+				if (line.trim() === '') {
+					if (acc.length > 0 && acc[acc.length - 1].length > 0) acc.push([]);
+				} else {
+					if (acc.length === 0) acc.push([]);
+					acc[acc.length - 1].push(line);
+				}
+				return acc;
+			}, [])}
+			<div class="rounded-xl overflow-hidden relative">
+				<!-- Background glow from cover art -->
+				<div class="absolute inset-0 opacity-[0.07] blur-3xl pointer-events-none">
+					{#if track.cover_art_path}
+						<img src={assetUrl(track.cover_art_path)} alt="" class="size-full object-cover" />
+					{/if}
+				</div>
+				<div class="relative border border-border/60 rounded-xl bg-card/60 backdrop-blur-sm">
+					<button
+						class="w-full px-6 py-4 flex items-center justify-between hover:bg-muted/20 transition-colors"
+						onclick={() => lyricsOpen = !lyricsOpen}
+					>
+						<h2 class="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Lyrics</h2>
+						<span class="text-muted-foreground transition-transform duration-200 {lyricsOpen ? 'rotate-180' : ''}"
+							>&#9662;</span
+						>
+					</button>
+					{#if lyricsOpen}
+						<div class="px-6 pb-8 pt-2 max-h-[36rem] overflow-y-auto">
+							<div class="columns-2 gap-12">
+								{#each verses as verse}
+									{#if verse.length > 0}
+										<div class="mb-5 break-inside-avoid">
+											{#each verse as line}
+												<p class="text-sm leading-7 text-foreground/80">{line}</p>
+											{/each}
+										</div>
+									{/if}
+								{/each}
+							</div>
+						</div>
+					{/if}
+				</div>
 			</div>
 		{/if}
 

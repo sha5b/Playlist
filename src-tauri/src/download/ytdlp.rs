@@ -531,7 +531,9 @@ where
     let mut cmd = Command::new(binary);
     low_priority(&mut cmd);
     cmd.args([
-        "--recode-video", "mp4",
+        // Prefer h264+aac (widely compatible), fall back to best available
+        "-f", "bv*[vcodec~='^(h264|avc)'][height<=1080]+ba[acodec~='^(mp4a|aac)'] / bv*[height<=1080]+ba / b[height<=1080] / b",
+        "--merge-output-format", "mp4",
         "--embed-metadata",
         "--output", &output_template,
         "--newline",

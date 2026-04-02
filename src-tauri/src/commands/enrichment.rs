@@ -39,11 +39,17 @@ pub async fn enrich_track(
         (track.title, track.artist_name, track.duration_ms, track.lyrics.is_some(), track.music_video_url.is_some())
     };
 
-    let enrichment = crate::metadata::musicbrainz::enrich_track(&title, artist_name.as_deref()).await?;
+    let enrichment = match crate::metadata::musicbrainz::enrich_track(&title, artist_name.as_deref()).await {
+        Ok(e) => Some(e),
+        Err(e) => {
+            log::warn!("MusicBrainz enrichment failed for '{}': {}", title, e);
+            None
+        }
+    };
 
     // Apply enrichment to DB (only fill missing fields) — scoped to drop conn before async work
     let mut updated = 0i64;
-    {
+    if let Some(ref enrichment) = enrichment {
     let conn = db.lock().map_err(|e| e.to_string())?;
 
     macro_rules! update_if_missing {
@@ -174,7 +180,7 @@ pub async fn enrich_track(
 
     // Release DB lock before async lyrics/MV fetches
     let _ = crate::db::tracks::update_fts(&conn, track_id);
-    } // conn dropped here
+    } // conn dropped here (enrichment block)
 
     // Fetch lyrics if missing
     if !has_lyrics {
@@ -195,7 +201,7 @@ pub async fn enrich_track(
     // Find official music video if missing
     if !has_mv {
         // Step 1: Use MusicBrainz confirmed MV URL if available
-        let mut mv_url = enrichment.music_video_url.clone();
+        let mut mv_url = enrichment.as_ref().and_then(|e| e.music_video_url.clone());
 
         // Step 2: Fall back to YouTube search for official music video
         if mv_url.is_none() {
