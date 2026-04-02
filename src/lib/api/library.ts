@@ -12,6 +12,7 @@ import type {
 	EnrichAlbumResult,
 	ScanMissingResult,
 	MetadataStats,
+	Download,
 } from '$lib/types';
 
 // --- Simple TTL cache for frequently accessed data ---
@@ -61,6 +62,18 @@ export async function getTracks(
 
 export async function getTrack(id: number): Promise<Track | null> {
 	return invoke('library_get_track', { id });
+}
+
+export async function getGenres(): Promise<string[]> {
+	const cached = getCached<string[]>('genres');
+	if (cached) return cached;
+	const result: string[] = await invoke('library_get_genres');
+	setCache('genres', result);
+	return result;
+}
+
+export async function getTracksByGenre(genre: string, limit = 20): Promise<Track[]> {
+	return invoke('library_get_tracks_by_genre', { genre, limit });
 }
 
 export async function deleteTrack(id: number, deleteFile = false): Promise<void> {
@@ -328,6 +341,6 @@ export async function getArtistMissingAlbums(artistId: number): Promise<ArtistMi
 	return invoke('library_get_artist_missing_albums', { artistId });
 }
 
-export async function downloadArtistMissing(artistId: number, albumMbids: string[]): Promise<any[]> {
+export async function downloadArtistMissing(artistId: number, albumMbids: string[]): Promise<Download[]> {
 	return invoke('download_artist_missing', { artistId, albumMbids });
 }

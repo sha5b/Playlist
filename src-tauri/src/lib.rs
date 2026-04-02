@@ -191,6 +191,8 @@ pub fn run() {
             // Tracks
             commands::library_get_tracks,
             commands::library_get_track,
+            commands::library_get_genres,
+            commands::library_get_tracks_by_genre,
             commands::library_delete_track,
             commands::library_reset,
             // Albums
@@ -272,6 +274,8 @@ pub fn run() {
             commands::player::player_get_state,
             commands::player::player_get_queue,
             commands::player::player_random_tracks,
+            commands::player::player_get_audio_devices,
+            commands::player::player_set_audio_device,
             // Metadata enrichment
             commands::enrich_track,
             commands::enrich_album,

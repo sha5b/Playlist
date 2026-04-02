@@ -1,21 +1,24 @@
 <script lang="ts">
-	import { Button } from '$lib/components/ui/button';
-	import { Input } from '$lib/components/ui/input';
-	import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '$lib/components/ui/card';
-	import { getLibraryStats, importFolder } from '$lib/api/library';
-	import { addPlaylist, getMonitoredPlaylists } from '$lib/api/manager';
-	import { open } from '@tauri-apps/plugin-dialog';
-	import { FolderOpen, Music, Disc, Users, ListMusic, Loader2, Plus } from 'lucide-svelte';
-	import { formatDurationLong, formatFileSize } from '$lib/utils/format';
-	import { toast } from 'svelte-sonner';
+	import { getLibraryStats, getTracks } from '$lib/api/library';
+	import { getMonitoredPlaylists } from '$lib/api/manager';
 	import { libraryStore } from '$lib/stores/library.svelte';
-	import type { LibraryStats } from '$lib/types';
+	import { Clock, TrendingUp, Sparkles, Shuffle } from 'lucide-svelte';
+	import type { LibraryStats, Track } from '$lib/types';
+
+	import WelcomeScreen from '$lib/components/home/WelcomeScreen.svelte';
+	import StatsBar from '$lib/components/home/StatsBar.svelte';
+	import DiscoveryCard from '$lib/components/home/DiscoveryCard.svelte';
+	import GenreCards from '$lib/components/home/GenreCards.svelte';
 
 	let stats = $state<LibraryStats | null>(null);
-	let importing = $state(false);
-	let playlistUrlInput = $state('');
-	let addingPlaylist = $state(false);
 	let hasPlaylists = $state(false);
+
+	let recentlyAdded = $state<Track[]>([]);
+	let mostListened = $state<Track[]>([]);
+	let forgotten = $state<Track[]>([]);
+	let randomMix = $state<Track[]>([]);
+
+	let discoveryLoading = $state(true);
 
 	async function loadStats() {
 		try {
@@ -34,141 +37,89 @@
 		}
 	}
 
-	async function handleAddPlaylist() {
-		const url = playlistUrlInput.trim();
-		if (!url) return;
-
-		addingPlaylist = true;
+	async function loadDiscovery() {
+		if (!stats || stats.total_tracks === 0) return;
+		discoveryLoading = true;
 		try {
-			await addPlaylist(url);
-			toast.success('Playlist added successfully');
-			playlistUrlInput = '';
-			hasPlaylists = true;
-			await loadStats();
+			const [recent, top, least, random] = await Promise.all([
+				getTracks(0, 10, 'date_added', 'desc'),
+				getTracks(0, 10, 'play_count', 'desc'),
+				getTracks(0, 10, 'play_count', 'asc'),
+				getTracks(0, 10, 'random', 'desc'),
+			]);
+			recentlyAdded = recent.tracks;
+			mostListened = top.tracks;
+			forgotten = least.tracks;
+			randomMix = random.tracks;
 		} catch (e) {
-			toast.error(`Failed to add playlist: ${e}`);
+			console.error('Failed to load discovery:', e);
 		} finally {
-			addingPlaylist = false;
+			discoveryLoading = false;
 		}
 	}
 
-	function handlePlaylistKeydown(e: KeyboardEvent) {
-		if (e.key === 'Enter') handleAddPlaylist();
-	}
-
-	async function handleImportFolder() {
-		const selected = await open({ directory: true, multiple: false });
-		if (!selected) return;
-
-		importing = true;
+	async function refreshRandom() {
 		try {
-			const count = await importFolder(selected);
-			toast.success(`Imported ${count} track${count !== 1 ? 's' : ''}`);
-			await loadStats();
+			const result = await getTracks(0, 10, 'random', 'desc');
+			randomMix = result.tracks;
 		} catch (e) {
-			toast.error(`Import failed: ${e}`);
-		} finally {
-			importing = false;
+			console.error('Failed to refresh random:', e);
 		}
 	}
 
 	$effect(() => {
 		libraryStore.version;
-		loadStats();
+		loadStats().then(() => {
+			if (stats && stats.total_tracks > 0) {
+				loadDiscovery();
+			}
+		});
 		loadPlaylists();
 	});
-
-	const statCards = $derived([
-		{ label: 'Tracks', value: stats?.total_tracks, icon: Music },
-		{ label: 'Albums', value: stats?.total_albums, icon: Disc },
-		{ label: 'Artists', value: stats?.total_artists, icon: Users },
-		{ label: 'Playlists', value: stats?.total_playlists, icon: ListMusic },
-	]);
 
 	const isEmpty = $derived(!hasPlaylists && stats !== null && stats.total_tracks === 0);
 </script>
 
 <div class="flex-1 min-h-0 overflow-y-auto space-y-6">
 	{#if isEmpty}
-		<div class="flex flex-col items-center justify-center min-h-[60vh] text-center space-y-6 max-w-lg mx-auto">
-			<div class="rounded-full bg-muted p-6">
-				<Music class="size-12 text-muted-foreground" />
-			</div>
-			<div class="space-y-2">
-				<h1 class="text-3xl font-bold tracking-tight">Welcome to Playlist</h1>
-				<p class="text-muted-foreground text-lg">
-					Monitor your favorite playlists from YouTube, Spotify, and more.
-					Tracks are automatically synced and downloaded to your local library.
-				</p>
-			</div>
-
-			<div class="w-full space-y-3">
-				<p class="text-sm font-medium text-muted-foreground">Add your first playlist to get started</p>
-				<div class="flex gap-2">
-					<div class="relative flex-1">
-						<ListMusic class="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" />
-						<Input
-							placeholder="Paste a playlist URL..."
-							class="pl-10"
-							bind:value={playlistUrlInput}
-							onkeydown={handlePlaylistKeydown}
-						/>
-					</div>
-					<Button
-						onclick={handleAddPlaylist}
-						disabled={!playlistUrlInput.trim() || addingPlaylist}
-					>
-						{#if addingPlaylist}
-							<Loader2 class="size-4 animate-spin" />
-						{:else}
-							<Plus class="size-4" />
-						{/if}
-						Add
-					</Button>
-				</div>
-			</div>
-		</div>
+		<WelcomeScreen onChanged={() => { loadStats(); loadPlaylists(); }} />
 	{:else}
 		<div>
 			<h1 class="text-3xl font-bold tracking-tight">Home</h1>
-			<p class="text-muted-foreground mt-1">Welcome to Playlist</p>
+			<p class="text-muted-foreground mt-1">Your library, your way</p>
 		</div>
 
-		<div class="grid grid-cols-2 gap-4 md:grid-cols-4">
-			{#each statCards as card}
-				<Card>
-					<CardHeader class="flex flex-row items-center justify-between pb-2">
-						<CardDescription>{card.label}</CardDescription>
-						<card.icon class="size-4 text-muted-foreground" />
-					</CardHeader>
-					<CardContent>
-						<p class="text-2xl font-bold tabular-nums">{card.value ?? '...'}</p>
-					</CardContent>
-				</Card>
-			{/each}
-		</div>
+		<StatsBar {stats} />
 
-		{#if stats && stats.total_tracks > 0}
-			<Card>
-				<CardHeader>
-					<CardTitle>Library</CardTitle>
-					<CardDescription>
-						{formatDurationLong(stats.total_duration_ms)} of music
-						 &middot; {formatFileSize(stats.total_size_bytes)}
-					</CardDescription>
-				</CardHeader>
-				<CardContent>
-					<Button variant="outline" onclick={handleImportFolder} disabled={importing}>
-						{#if importing}
-							<Loader2 class="size-4 animate-spin" />
-							Importing...
-						{:else}
-							<FolderOpen class="size-4" />
-							Import More Music
-						{/if}
-					</Button>
-				</CardContent>
-			</Card>
-		{/if}
+		<DiscoveryCard
+			title="Recently Added"
+			icon={Clock}
+			tracks={recentlyAdded}
+			loading={discoveryLoading}
+		/>
+
+		<DiscoveryCard
+			title="Most Listened"
+			icon={TrendingUp}
+			tracks={mostListened}
+			loading={discoveryLoading}
+		/>
+
+		<DiscoveryCard
+			title="Forgotten Gems"
+			icon={Sparkles}
+			tracks={forgotten}
+			loading={discoveryLoading}
+		/>
+
+		<DiscoveryCard
+			title="Random Mix"
+			icon={Shuffle}
+			tracks={randomMix}
+			loading={discoveryLoading}
+			onRefresh={refreshRandom}
+		/>
+
+		<GenreCards />
 	{/if}
 </div>

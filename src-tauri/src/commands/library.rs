@@ -1,0 +1,784 @@
+use std::sync::Arc;
+use rusqlite::params;
+use tauri::{Emitter, Manager, State};
+use walkdir::WalkDir;
+
+use crate::db::DbPool;
+use crate::db::models::*;
+use crate::metadata::tags;
+
+// --- Library Stats ---
+
+#[tauri::command]
+pub fn get_library_stats(db: State<'_, Arc<DbPool>>) -> Result<LibraryStats, String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+
+    let total_tracks: i64 = conn.query_row("SELECT COUNT(*) FROM tracks", [], |row| row.get(0)).map_err(|e| e.to_string())?;
+    let total_albums: i64 = conn.query_row("SELECT COUNT(*) FROM albums", [], |row| row.get(0)).map_err(|e| e.to_string())?;
+    let total_artists: i64 = conn.query_row("SELECT COUNT(*) FROM artists", [], |row| row.get(0)).map_err(|e| e.to_string())?;
+    let total_playlists: i64 = conn.query_row("SELECT COUNT(*) FROM playlists", [], |row| row.get(0)).map_err(|e| e.to_string())?;
+    let total_duration_ms: i64 = conn.query_row("SELECT COALESCE(SUM(duration_ms), 0) FROM tracks", [], |row| row.get(0)).map_err(|e| e.to_string())?;
+    let total_size_bytes: i64 = conn.query_row("SELECT COALESCE(SUM(file_size), 0) FROM tracks", [], |row| row.get(0)).map_err(|e| e.to_string())?;
+
+    Ok(LibraryStats {
+        total_tracks,
+        total_albums,
+        total_artists,
+        total_playlists,
+        total_duration_ms,
+        total_size_bytes,
+    })
+}
+
+// --- Tracks ---
+
+#[tauri::command]
+pub fn library_get_tracks(
+    db: State<'_, Arc<DbPool>>,
+    offset: i64,
+    limit: i64,
+    sort_by: String,
+    sort_dir: String,
+    search: Option<String>,
+) -> Result<TrackPage, String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    crate::db::tracks::get_tracks(&conn, offset, limit, &sort_by, &sort_dir, search.as_deref())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn library_get_track(db: State<'_, Arc<DbPool>>, id: i64) -> Result<Option<Track>, String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    crate::db::tracks::get_track(&conn, id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn library_get_genres(db: State<'_, Arc<DbPool>>) -> Result<Vec<String>, String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    crate::db::tracks::get_distinct_genres(&conn).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn library_get_tracks_by_genre(
+    db: State<'_, Arc<DbPool>>,
+    genre: String,
+    limit: i64,
+) -> Result<Vec<Track>, String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    crate::db::tracks::get_tracks_by_genre(&conn, &genre, limit).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn library_delete_track(
+    db: State<'_, Arc<DbPool>>,
+    id: i64,
+    delete_file: bool,
+) -> Result<(), String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    let file_path = crate::db::tracks::delete_track(&conn, id, delete_file)
+        .map_err(|e| e.to_string())?;
+
+    if let Some(ref path) = file_path {
+        if let Err(e) = std::fs::remove_file(path) {
+            log::warn!("Failed to delete track file {}: {}", path, e);
+        }
+    }
+    Ok(())
+}
+
+/// Delete all library data: tracks (and their files), albums, artists, playlists, downloads, monitored entries.
+/// Settings are preserved.
+#[tauri::command]
+pub async fn library_reset(
+    db: State<'_, Arc<DbPool>>,
+    manager: State<'_, Arc<crate::download::DownloadManager>>,
+    app_handle: tauri::AppHandle,
+    delete_files: bool,
+) -> Result<(), String> {
+    // Cancel all active downloads before wiping data
+    manager.cancel_all().await;
+
+    let conn = db.lock().map_err(|e| e.to_string())?;
+
+    // Optionally delete downloaded files
+    if delete_files {
+        let download_dir = {
+            let dir = crate::db::settings::get_setting(&conn, "download_dir").ok().flatten();
+            match dir {
+                Some(d) if !d.is_empty() => std::path::PathBuf::from(d),
+                _ => app_handle
+                    .path()
+                    .app_data_dir()
+                    .unwrap_or_else(|_| std::path::PathBuf::from("."))
+                    .join("downloads"),
+            }
+        };
+        if download_dir.exists() {
+            if let Err(e) = std::fs::remove_dir_all(&download_dir) {
+                log::warn!("Failed to remove downloads directory: {}", e);
+            }
+            if let Err(e) = std::fs::create_dir_all(&download_dir) {
+                log::warn!("Failed to recreate downloads directory: {}", e);
+            }
+        }
+    }
+
+    // Clear all tables (order matters for foreign keys)
+    conn.execute_batch(
+        "DELETE FROM monitored_playlist_entries;
+         DELETE FROM playlist_tracks;
+         DELETE FROM downloads;
+         DELETE FROM tracks;
+         DELETE FROM albums;
+         DELETE FROM artists;
+         DELETE FROM playlists;
+         DROP TABLE IF EXISTS tracks_fts;
+         CREATE VIRTUAL TABLE tracks_fts USING fts5(
+             title, artist_name, album_title, album_artist, genre,
+             content='',
+             tokenize='unicode61 remove_diacritics 2'
+         );"
+    ).map_err(|e| e.to_string())?;
+
+    // Remove cover art
+    if let Ok(covers_dir) = app_handle.path().app_data_dir().map(|d| d.join("covers")) {
+        if covers_dir.exists() {
+            if let Err(e) = std::fs::remove_dir_all(&covers_dir) {
+                log::warn!("Failed to remove covers directory: {}", e);
+            }
+            if let Err(e) = std::fs::create_dir_all(&covers_dir) {
+                log::warn!("Failed to recreate covers directory: {}", e);
+            }
+        }
+    }
+
+    // Best-effort notification to frontend
+    let _ = app_handle.emit("library-changed", ());
+    log::info!("Library reset complete");
+    Ok(())
+}
+
+// --- Albums ---
+
+#[tauri::command]
+pub fn library_get_albums(
+    db: State<'_, Arc<DbPool>>,
+    offset: i64,
+    limit: i64,
+    search: Option<String>,
+) -> Result<(Vec<Album>, i64), String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    crate::db::albums::get_albums(&conn, offset, limit, search.as_deref()).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn library_get_album(db: State<'_, Arc<DbPool>>, id: i64) -> Result<Option<Album>, String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    crate::db::albums::get_album(&conn, id).map_err(|e| e.to_string())
+}
+
+// --- Artists ---
+
+#[tauri::command]
+pub fn library_get_artists(
+    db: State<'_, Arc<DbPool>>,
+    offset: i64,
+    limit: i64,
+    search: Option<String>,
+) -> Result<(Vec<Artist>, i64), String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    crate::db::artists::get_artists(&conn, offset, limit, search.as_deref()).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn library_get_artist(db: State<'_, Arc<DbPool>>, id: i64) -> Result<Option<Artist>, String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    crate::db::artists::get_artist(&conn, id).map_err(|e| e.to_string())
+}
+
+// --- Playlists ---
+
+#[tauri::command]
+pub fn library_get_playlists(db: State<'_, Arc<DbPool>>) -> Result<Vec<Playlist>, String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    crate::db::playlists::get_playlists(&conn).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn library_get_playlist(
+    db: State<'_, Arc<DbPool>>,
+    id: i64,
+) -> Result<Option<PlaylistDetail>, String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    let playlist = crate::db::playlists::get_playlist(&conn, id).map_err(|e| e.to_string())?;
+    match playlist {
+        Some(p) => {
+            // Backfill playlist_tracks from monitored entries for already-downloaded tracks
+            let _ = crate::db::playlists::backfill_playlist_tracks(&conn, id);
+            let tracks = crate::db::playlists::get_playlist_tracks(&conn, id)
+                .map_err(|e| e.to_string())?;
+            Ok(Some(PlaylistDetail { playlist: p, tracks }))
+        }
+        None => Ok(None),
+    }
+}
+
+#[tauri::command]
+pub fn library_get_playlist_tracks(
+    db: State<'_, Arc<DbPool>>,
+    playlist_id: i64,
+    offset: i64,
+    limit: i64,
+) -> Result<TrackPage, String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    let _ = crate::db::playlists::backfill_playlist_tracks(&conn, playlist_id);
+    crate::db::playlists::get_playlist_tracks_page(&conn, playlist_id, offset, limit)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn library_create_playlist(
+    db: State<'_, Arc<DbPool>>,
+    name: String,
+    description: Option<String>,
+) -> Result<Playlist, String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    crate::db::playlists::create_playlist(&conn, &name, description.as_deref())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn library_update_playlist(
+    db: State<'_, Arc<DbPool>>,
+    id: i64,
+    name: Option<String>,
+    description: Option<String>,
+) -> Result<Playlist, String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    crate::db::playlists::update_playlist(&conn, id, name.as_deref(), description.as_deref())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn library_delete_playlist(db: State<'_, Arc<DbPool>>, id: i64) -> Result<(), String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    crate::db::playlists::delete_playlist(&conn, id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn library_add_to_playlist(
+    db: State<'_, Arc<DbPool>>,
+    playlist_id: i64,
+    track_ids: Vec<i64>,
+) -> Result<(), String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    for track_id in track_ids {
+        crate::db::playlists::add_track_to_playlist(&conn, playlist_id, track_id)
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn library_remove_from_playlist(
+    db: State<'_, Arc<DbPool>>,
+    playlist_id: i64,
+    track_id: i64,
+) -> Result<(), String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    crate::db::playlists::remove_track_from_playlist(&conn, playlist_id, track_id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn library_reorder_playlist(
+    db: State<'_, Arc<DbPool>>,
+    playlist_id: i64,
+    from: i64,
+    to: i64,
+) -> Result<(), String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    crate::db::playlists::reorder_playlist(&conn, playlist_id, from, to)
+        .map_err(|e| e.to_string())
+}
+
+// --- Search ---
+
+#[tauri::command]
+pub fn search(
+    db: State<'_, Arc<DbPool>>,
+    query: String,
+    limit: Option<i64>,
+) -> Result<SearchResults, String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    let limit = limit.unwrap_or(50);
+
+    let tracks = if query.trim().is_empty() {
+        vec![]
+    } else {
+        crate::db::tracks::search_tracks_fts(&conn, &query, limit)
+            .unwrap_or_default()
+    };
+
+    // Also search albums and artists by name
+    let albums = if query.trim().is_empty() {
+        vec![]
+    } else {
+        let pattern = format!("%{}%", query);
+        let mut stmt = conn
+            .prepare(
+                "SELECT al.id, al.title, al.artist_id, al.album_artist, al.year, al.genre,
+                        al.total_tracks, al.total_discs, al.musicbrainz_id, al.cover_art_path,
+                        a.name as artist_name, COUNT(t.id) as track_count
+                 FROM albums al
+                 LEFT JOIN artists a ON al.artist_id = a.id
+                 LEFT JOIN tracks t ON t.album_id = al.id
+                 WHERE al.title LIKE ?1
+                 GROUP BY al.id
+                 LIMIT ?2",
+            )
+            .map_err(|e| e.to_string())?;
+
+        let result = stmt.query_map(params![pattern, limit], |row| {
+            Ok(Album {
+                id: row.get(0)?,
+                title: row.get(1)?,
+                artist_id: row.get(2)?,
+                album_artist: row.get(3)?,
+                year: row.get(4)?,
+                genre: row.get(5)?,
+                total_tracks: row.get(6)?,
+                total_discs: row.get(7)?,
+                musicbrainz_id: row.get(8)?,
+                cover_art_path: row.get(9)?,
+                label: None,
+                release_date: None,
+                description: None,
+                album_type: None,
+                enriched_tracklist: None,
+                purchase_url: None,
+                artist_name: row.get(10)?,
+                track_count: row.get(11)?,
+            })
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap_or_default();
+        result
+    };
+
+    let artists = if query.trim().is_empty() {
+        vec![]
+    } else {
+        let pattern = format!("%{}%", query);
+        let mut stmt = conn
+            .prepare(
+                "SELECT a.id, a.name, a.sort_name, a.musicbrainz_id, a.image_path, a.bio,
+                        COUNT(t.id) as track_count
+                 FROM artists a
+                 LEFT JOIN tracks t ON t.artist_id = a.id
+                 WHERE a.name LIKE ?1
+                 GROUP BY a.id
+                 LIMIT ?2",
+            )
+            .map_err(|e| e.to_string())?;
+
+        let result = stmt.query_map(params![pattern, limit], |row| {
+            Ok(Artist {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                sort_name: row.get(2)?,
+                musicbrainz_id: row.get(3)?,
+                image_path: row.get(4)?,
+                bio: row.get(5)?,
+                country: None,
+                begin_year: None,
+                artist_type: None,
+                website_url: None,
+                track_count: row.get(6)?,
+            })
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap_or_default();
+        result
+    };
+
+    Ok(SearchResults {
+        tracks,
+        albums,
+        artists,
+    })
+}
+
+// --- Album Tracks ---
+
+#[tauri::command]
+pub fn library_get_album_tracks(
+    db: State<'_, Arc<DbPool>>,
+    album_id: i64,
+) -> Result<Vec<Track>, String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    crate::db::tracks::get_tracks_by_album(&conn, album_id).map_err(|e| e.to_string())
+}
+
+// --- Artist Tracks & Albums ---
+
+#[tauri::command]
+pub fn library_get_artist_tracks(
+    db: State<'_, Arc<DbPool>>,
+    artist_id: i64,
+) -> Result<Vec<Track>, String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    crate::db::tracks::get_tracks_by_artist(&conn, artist_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn library_get_artist_albums(
+    db: State<'_, Arc<DbPool>>,
+    artist_id: i64,
+) -> Result<Vec<Album>, String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    crate::db::albums::get_albums_by_artist(&conn, artist_id).map_err(|e| e.to_string())
+}
+
+// --- Settings ---
+
+#[tauri::command]
+pub fn settings_get(
+    db: State<'_, Arc<DbPool>>,
+    key: String,
+) -> Result<Option<String>, String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    crate::db::settings::get_setting(&conn, &key).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn settings_set(
+    db: State<'_, Arc<DbPool>>,
+    key: String,
+    value: String,
+) -> Result<(), String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    crate::db::settings::set_setting(&conn, &key, &value).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn settings_get_all(
+    db: State<'_, Arc<DbPool>>,
+) -> Result<Vec<(String, String)>, String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    crate::db::settings::get_all_settings(&conn).map_err(|e| e.to_string())
+}
+
+// --- Import ---
+
+#[tauri::command]
+pub fn library_import_folder(
+    db: State<'_, Arc<DbPool>>,
+    app_handle: tauri::AppHandle,
+    path: String,
+) -> Result<i64, String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+
+    let covers_dir = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|e: tauri::Error| e.to_string())?
+        .join("covers");
+
+    let mut imported = 0i64;
+
+    // Collect all audio file paths first
+    let audio_files: Vec<_> = WalkDir::new(&path)
+        .follow_links(true)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().is_file() && tags::is_audio_file(e.path()))
+        .collect();
+
+    if audio_files.is_empty() {
+        return Ok(0);
+    }
+
+    // Batch-check which files already exist in the library
+    let existing_paths: std::collections::HashSet<String> = {
+        let mut stmt = conn
+            .prepare("SELECT file_path FROM tracks")
+            .map_err(|e| e.to_string())?;
+        let rows: Vec<String> = stmt.query_map([], |row| row.get::<_, String>(0))
+            .map_err(|e| e.to_string())?
+            .filter_map(|r| r.ok())
+            .collect();
+        rows.into_iter().collect()
+    };
+
+    // Wrap all inserts in a single transaction (10-50x faster than auto-commit per row)
+    conn.execute_batch("BEGIN").map_err(|e| e.to_string())?;
+
+    let mut fts_ids: Vec<i64> = Vec::new();
+
+    for entry in &audio_files {
+        let file_path = entry.path();
+        let path_str = file_path.to_string_lossy().to_string();
+
+        if existing_paths.contains(&path_str) {
+            continue;
+        }
+
+        // Read tags and cover art in a single file read
+        let (tag_data, cover_art_path) = match tags::read_tags_and_cover(file_path, &covers_dir) {
+            Ok((d, c)) => (d, c),
+            Err(e) => {
+                log::warn!("Failed to read tags from {:?}: {}", file_path, e);
+                continue;
+            }
+        };
+
+        // Find or create artist
+        let artist_id = tag_data
+            .artist
+            .as_ref()
+            .and_then(|name| crate::db::artists::find_or_create(&conn, name).ok());
+
+        // Find or create album
+        let album_id = tag_data.album.as_ref().and_then(|title| {
+            crate::db::albums::find_or_create(
+                &conn,
+                title,
+                artist_id,
+                tag_data.album_artist.as_deref(),
+                tag_data.year.map(|y| y as i64),
+            )
+            .ok()
+        });
+
+        // Get file size
+        let file_size = std::fs::metadata(file_path).map(|m| m.len() as i64).ok();
+
+        // Save values needed after INSERT (before they get moved into params)
+        let total_tracks_val = tag_data.total_tracks.map(|t| t as i64);
+        let total_discs_val = tag_data.total_discs.map(|d| d as i64);
+        let genre_for_album = tag_data.genre.clone();
+
+        // Insert track
+        let result = conn.execute(
+            "INSERT INTO tracks (title, artist_id, album_id, album_artist, duration_ms,
+                track_number, disc_number, genre, year, file_path, file_size, format,
+                bitrate, sample_rate, channels, cover_art_path, source_platform)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, 'local')",
+            params![
+                tag_data.title.unwrap_or_else(|| "Unknown".to_string()),
+                artist_id,
+                album_id,
+                tag_data.album_artist,
+                tag_data.duration_ms.map(|d| d as i64),
+                tag_data.track_number.map(|t| t as i64),
+                tag_data.disc_number.map(|d| d as i64),
+                tag_data.genre,
+                tag_data.year.map(|y| y as i64),
+                path_str,
+                file_size,
+                tag_data.format,
+                tag_data.bitrate.map(|b| b as i64),
+                tag_data.sample_rate.map(|s| s as i64),
+                tag_data.channels.map(|c| c as i64),
+                cover_art_path,
+            ],
+        );
+
+        match result {
+            Ok(_) => {
+                fts_ids.push(conn.last_insert_rowid());
+                imported += 1;
+
+                // Propagate cover art to album and artist
+                if let Some(ref cover) = cover_art_path {
+                    if let Some(aid) = album_id {
+                        let _ = crate::db::albums::update_cover_art_if_missing(&conn, aid, cover);
+                    }
+                    if let Some(aid) = artist_id {
+                        let _ = crate::db::artists::update_image_if_missing(&conn, aid, cover);
+                    }
+                }
+                // Propagate album metadata from tags
+                if let Some(aid) = album_id {
+                    let _ = crate::db::albums::update_metadata_if_missing(
+                        &conn,
+                        aid,
+                        total_tracks_val,
+                        total_discs_val,
+                        genre_for_album.as_deref(),
+                    );
+                }
+            }
+            Err(e) => {
+                log::warn!("Failed to insert track {:?}: {}", file_path, e);
+            }
+        }
+    }
+
+    // Batch FTS updates after all inserts
+    for track_id in fts_ids {
+        let _ = crate::db::tracks::update_fts(&conn, track_id);
+    }
+
+    conn.execute_batch("COMMIT").map_err(|e| e.to_string())?;
+
+    log::info!("Imported {} tracks from {}", imported, path);
+    if imported > 0 {
+        let _ = app_handle.emit("library-updated", ());
+    }
+    Ok(imported)
+}
+
+// --- Album Download Status ---
+
+#[tauri::command]
+pub fn library_get_album_download_status(
+    db: State<'_, Arc<DbPool>>,
+    album_id: i64,
+) -> Result<serde_json::Value, String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+
+    let tracklist_json: Option<String> = conn.query_row(
+        "SELECT enriched_tracklist FROM albums WHERE id = ?1",
+        params![album_id],
+        |row| row.get(0),
+    ).map_err(|e| e.to_string())?;
+
+    let Some(json_str) = tracklist_json else {
+        return Ok(serde_json::json!({ "total_expected": 0, "total_local": 0, "status": "unknown" }));
+    };
+
+    let tracklist: Vec<serde_json::Value> = serde_json::from_str(&json_str).unwrap_or_default();
+    if tracklist.is_empty() {
+        return Ok(serde_json::json!({ "total_expected": 0, "total_local": 0, "status": "unknown" }));
+    }
+
+    let total_expected = tracklist.len() as i64;
+    let total_local: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM tracks WHERE album_id = ?1",
+        params![album_id],
+        |row| row.get(0),
+    ).unwrap_or(0);
+
+    let status = if total_local >= total_expected {
+        "complete"
+    } else if total_local > 0 {
+        "partial"
+    } else {
+        "none"
+    };
+
+    Ok(serde_json::json!({
+        "total_expected": total_expected,
+        "total_local": total_local,
+        "status": status,
+    }))
+}
+
+#[tauri::command]
+pub fn library_get_albums_download_status(
+    db: State<'_, Arc<DbPool>>,
+    album_ids: Vec<i64>,
+) -> Result<serde_json::Value, String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    let mut results = serde_json::Map::new();
+
+    for album_id in &album_ids {
+        let tracklist_json: Option<String> = conn.query_row(
+            "SELECT enriched_tracklist FROM albums WHERE id = ?1",
+            params![album_id],
+            |row| row.get(0),
+        ).unwrap_or(None);
+
+        let (total_expected, status) = if let Some(ref json_str) = tracklist_json {
+            let tracklist: Vec<serde_json::Value> = serde_json::from_str(json_str).unwrap_or_default();
+            if tracklist.is_empty() {
+                (0i64, "unknown")
+            } else {
+                let expected = tracklist.len() as i64;
+                let local: i64 = conn.query_row(
+                    "SELECT COUNT(*) FROM tracks WHERE album_id = ?1",
+                    params![album_id],
+                    |row| row.get(0),
+                ).unwrap_or(0);
+                let s = if local >= expected { "complete" } else if local > 0 { "partial" } else { "none" };
+                (expected, s)
+            }
+        } else {
+            (0, "unknown")
+        };
+
+        let total_local: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM tracks WHERE album_id = ?1",
+            params![album_id],
+            |row| row.get(0),
+        ).unwrap_or(0);
+
+        results.insert(album_id.to_string(), serde_json::json!({
+            "total_expected": total_expected,
+            "total_local": total_local,
+            "status": status,
+        }));
+    }
+
+    Ok(serde_json::Value::Object(results))
+}
+
+#[tauri::command]
+pub fn library_get_artist_missing_albums(
+    db: State<'_, Arc<DbPool>>,
+    artist_id: i64,
+) -> Result<serde_json::Value, String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+
+    // Get enriched discography
+    let disco_json: Option<String> = conn.query_row(
+        "SELECT enriched_discography FROM artists WHERE id = ?1",
+        params![artist_id],
+        |row| row.get(0),
+    ).map_err(|e| e.to_string())?;
+
+    let Some(json_str) = disco_json else {
+        return Ok(serde_json::json!({ "missing": [], "total_discography": 0 }));
+    };
+
+    let discography: Vec<crate::metadata::musicbrainz::ArtistDiscographyEntry> =
+        serde_json::from_str(&json_str).unwrap_or_default();
+
+    // Get local albums for this artist (titles, lowercased for comparison)
+    let mut stmt = conn.prepare(
+        "SELECT LOWER(title), musicbrainz_id FROM albums WHERE artist_id = ?1"
+    ).map_err(|e| e.to_string())?;
+    let local_albums: std::collections::HashSet<String> = stmt.query_map(params![artist_id], |row| {
+        Ok(row.get::<_, String>(0)?)
+    }).map_err(|e| e.to_string())?
+    .filter_map(|r| r.ok())
+    .collect();
+
+    let local_mbids: std::collections::HashSet<String> = {
+        let mut stmt2 = conn.prepare(
+            "SELECT musicbrainz_id FROM albums WHERE artist_id = ?1 AND musicbrainz_id IS NOT NULL"
+        ).map_err(|e| e.to_string())?;
+        let results: std::collections::HashSet<String> = stmt2.query_map(params![artist_id], |row| row.get::<_, String>(0))
+            .map_err(|e| e.to_string())?
+            .filter_map(|r| r.ok())
+            .collect();
+        results
+    };
+
+    let missing: Vec<&crate::metadata::musicbrainz::ArtistDiscographyEntry> = discography.iter()
+        .filter(|entry| {
+            !local_mbids.contains(&entry.mbid)
+                && !local_albums.contains(&entry.title.to_lowercase())
+        })
+        .collect();
+
+    let total = discography.len();
+    Ok(serde_json::json!({
+        "missing": missing,
+        "total_discography": total,
+    }))
+}

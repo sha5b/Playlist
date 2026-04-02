@@ -4,8 +4,9 @@
 	import { Button } from '$lib/components/ui/button';
 	import { Input } from '$lib/components/ui/input';
 	import { Slider } from '$lib/components/ui/slider';
-	import { FolderOpen, Volume2, RotateCcw, Music, Trash2, Cookie, Sparkles, Loader2, CircleX } from 'lucide-svelte';
+	import { FolderOpen, Volume2, RotateCcw, Music, Trash2, Cookie, Sparkles, Loader2, CircleX, Speaker } from 'lucide-svelte';
 	import { getSetting, setSetting, resetLibrary, getMetadataStats, scanMissingMetadata, stopMetadataScan, deleteAllMetadata } from '$lib/api/library';
+	import { getAudioDevices, setAudioDevice } from '$lib/api/player';
 	import type { MetadataStats } from '$lib/types';
 	import { player } from '$lib/stores/player.svelte';
 	import { metadataScanStore } from '$lib/stores/metadataScan.svelte';
@@ -18,6 +19,8 @@
 	let cookiesBrowser = $state('chrome');
 	let defaultVolume = $state(75);
 	let autoDownloadMV = $state(false);
+	let audioDevices = $state<[string, boolean][]>([]);
+	let selectedDevice = $state<string>('');
 
 	const formatOptions = ['mp3', 'opus', 'flac', 'm4a'] as const;
 	const browserOptions = [
@@ -73,6 +76,23 @@
 		const vol = value / 100;
 		await setSetting('default_volume', String(vol));
 		player.setVolume(vol);
+	}
+
+	async function loadAudioDevices() {
+		try {
+			audioDevices = await getAudioDevices();
+			const saved = await getSetting('audio_device');
+			selectedDevice = saved || '';
+		} catch (e) {
+			console.error('Failed to load audio devices:', e);
+		}
+	}
+
+	async function handleDeviceChange(deviceName: string) {
+		selectedDevice = deviceName;
+		await setAudioDevice(deviceName || null);
+		await setSetting('audio_device', deviceName);
+		toast.success(deviceName ? `Audio output: ${deviceName}` : 'Using system default audio device');
 	}
 
 	let metadataStats = $state<MetadataStats | null>(null);
@@ -158,6 +178,7 @@
 	$effect(() => {
 		load();
 		loadMetadataStats();
+		loadAudioDevices();
 	});
 </script>
 
@@ -255,6 +276,25 @@
 					step={1}
 					onValueChange={handleVolumeChange}
 				/>
+			</div>
+			<div class="space-y-2">
+				<label class="text-sm font-medium flex items-center gap-2">
+					<Speaker class="size-4 text-muted-foreground" />
+					Audio Output Device
+				</label>
+				<select
+					class="w-full rounded-md border bg-background px-3 py-2 text-sm"
+					value={selectedDevice}
+					onchange={(e) => handleDeviceChange(e.currentTarget.value)}
+				>
+					<option value="">System Default</option>
+					{#each audioDevices as [name, isDefault]}
+						<option value={name}>{name}{isDefault ? ' (Default)' : ''}</option>
+					{/each}
+				</select>
+				<p class="text-xs text-muted-foreground">
+					Select which audio device to use for playback. Change takes effect immediately.
+				</p>
 			</div>
 		</CardContent>
 	</Card>
@@ -406,12 +446,16 @@
 		<CardContent class="space-y-2">
 			<div class="flex justify-between text-sm">
 				<span class="text-muted-foreground">Version</span>
-				<span>0.1.0</span>
+				<span>0.2.1</span>
 			</div>
 			<Separator />
 			<div class="flex justify-between text-sm">
 				<span class="text-muted-foreground">Stack</span>
 				<span>Tauri 2.x + SvelteKit + Svelte 5</span>
+			</div>
+			<Separator />
+			<div class="text-sm text-muted-foreground pt-2">
+				<p>Liberate your music from streaming platforms. Own your data, build your library, support artists directly. Buy their albums, back them on Patreon, go to their shows.</p>
 			</div>
 		</CardContent>
 	</Card>

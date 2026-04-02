@@ -21,6 +21,7 @@ async function init() {
 
 	// Register event listener FIRST to avoid missing completion events
 	// that fire between the getActiveDownloads() call and listener setup
+	try {
 	unlisten = await listen<DownloadEvent>('download-event', (event) => {
 		const data = event.payload;
 		const idx = downloads.findIndex((d) => d.id === data.id);
@@ -77,6 +78,11 @@ async function init() {
 			downloads = [...active, ...rest];
 		}
 	});
+	} catch (e) {
+		console.error('Failed to register download listener:', e);
+		initialized = false;
+		return;
+	}
 
 	// Now load current state from DB (listener is already catching any new events)
 	try {
@@ -107,11 +113,27 @@ export const downloadStore = {
 	destroy,
 
 	addDownload(download: Download) {
-		downloads = [download, ...downloads];
+		const idx = downloads.findIndex((d) => d.id === download.id);
+		if (idx >= 0) {
+			// Merge: command response has richer data than the early event
+			downloads[idx] = { ...downloads[idx], ...download };
+			downloads = [...downloads];
+		} else {
+			downloads = [download, ...downloads];
+		}
 	},
 
 	addDownloads(newDownloads: Download[]) {
-		downloads = [...newDownloads, ...downloads];
+		const toAdd: Download[] = [];
+		for (const dl of newDownloads) {
+			const idx = downloads.findIndex((d) => d.id === dl.id);
+			if (idx >= 0) {
+				downloads[idx] = { ...downloads[idx], ...dl };
+			} else {
+				toAdd.push(dl);
+			}
+		}
+		downloads = [...toAdd, ...downloads];
 	},
 
 	removeDownload(id: number) {

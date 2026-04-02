@@ -1,8 +1,8 @@
 {
 	"name": "playlist",
 	"private": true,
-	"version": "0.2.1",
-	"description": "A cross-platform music playlist manager",
+	"version": "0.2.3",
+	"description": "Liberate your music from streaming platforms. Own your data, build your library, support artists directly.",
 	"author": "sha5b",
 	"license": "MIT",
 	"repository": "https://github.com/sha5b/Playlist",

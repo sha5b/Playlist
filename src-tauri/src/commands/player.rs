@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use rusqlite::params;
 use tauri::State;
 
 use crate::audio::engine::{AudioEngine, PlaybackState, PlayerCommand, RepeatMode};
@@ -247,6 +248,20 @@ pub fn player_get_queue(engine: State<'_, Arc<AudioEngine>>) -> Result<(Vec<Queu
     Ok(engine.get_queue())
 }
 
+#[tauri::command]
+pub fn player_get_audio_devices() -> Vec<(String, bool)> {
+    AudioEngine::list_output_devices()
+}
+
+#[tauri::command]
+pub fn player_set_audio_device(
+    engine: State<'_, Arc<AudioEngine>>,
+    device_name: Option<String>,
+) -> Result<(), String> {
+    engine.send(PlayerCommand::SwitchDevice(device_name));
+    Ok(())
+}
+
 /// Get random tracks from the library, optionally excluding certain track IDs.
 #[tauri::command]
 pub fn player_random_tracks(
@@ -256,26 +271,33 @@ pub fn player_random_tracks(
 ) -> Result<Vec<i64>, String> {
     let conn = db.lock().map_err(|e| e.to_string())?;
     let limit = if limit == 0 { 1 } else { limit };
+    let limit_i64 = limit as i64;
     if exclude_ids.is_empty() {
         let mut stmt = conn.prepare(
-            &format!("SELECT id FROM tracks ORDER BY RANDOM() LIMIT {}", limit)
+            "SELECT id FROM tracks ORDER BY RANDOM() LIMIT ?1"
         ).map_err(|e| e.to_string())?;
-        let ids: Vec<i64> = stmt.query_map([], |row| row.get(0))
+        let ids: Vec<i64> = stmt.query_map(params![limit_i64], |row| row.get(0))
             .map_err(|e| e.to_string())?
             .filter_map(|r| r.ok())
             .collect();
         Ok(ids)
     } else {
-        let placeholders: Vec<String> = (1..=exclude_ids.len()).map(|i| format!("?{}", i)).collect();
+        let param_start = 1;
+        let placeholders: Vec<String> = (param_start..param_start + exclude_ids.len()).map(|i| format!("?{}", i)).collect();
+        let limit_param = param_start + exclude_ids.len();
         let sql = format!(
-            "SELECT id FROM tracks WHERE id NOT IN ({}) ORDER BY RANDOM() LIMIT {}",
-            placeholders.join(","), limit
+            "SELECT id FROM tracks WHERE id NOT IN ({}) ORDER BY RANDOM() LIMIT ?{}",
+            placeholders.join(","), limit_param
         );
-        let params: Vec<&dyn rusqlite::types::ToSql> = exclude_ids.iter()
-            .map(|id| id as &dyn rusqlite::types::ToSql)
+        let mut all_params: Vec<Box<dyn rusqlite::types::ToSql>> = exclude_ids.iter()
+            .map(|id| Box::new(*id) as Box<dyn rusqlite::types::ToSql>)
+            .collect();
+        all_params.push(Box::new(limit_i64));
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> = all_params.iter()
+            .map(|p| p.as_ref())
             .collect();
         let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
-        let ids: Vec<i64> = stmt.query_map(params.as_slice(), |row| row.get(0))
+        let ids: Vec<i64> = stmt.query_map(param_refs.as_slice(), |row| row.get(0))
             .map_err(|e| e.to_string())?
             .filter_map(|r| r.ok())
             .collect();

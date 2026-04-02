@@ -58,19 +58,30 @@
 				player.removeFromQueue(removed.queueIndex);
 			}
 		} else {
-			// Find which item moved and where
-			dndItems = newItems;
+			// In a single drag, exactly one item moved. Find it by comparing
+			// each item's stored queueIndex (its old position) with what would
+			// be expected if nothing had moved (startOffset + i).
+			// The dragged item's old queueIndex is furthest from its new slot.
+			let draggedIdx = -1;
+			let maxDist = 0;
 			for (let i = 0; i < newItems.length; i++) {
-				const item = newItems[i];
-				const expectedQueueIndex = startOffset + i;
-				if (item.queueIndex !== expectedQueueIndex) {
-					player.moveInQueue(item.queueIndex, expectedQueueIndex);
-					// Update all queueIndex values to match new positions
-					for (let j = 0; j < newItems.length; j++) {
-						newItems[j].queueIndex = startOffset + j;
-					}
-					break;
+				const dist = Math.abs(newItems[i].queueIndex - (startOffset + i));
+				if (dist > maxDist) {
+					maxDist = dist;
+					draggedIdx = i;
 				}
+			}
+
+			if (draggedIdx >= 0 && maxDist > 0) {
+				const from = newItems[draggedIdx].queueIndex;
+				const to = startOffset + draggedIdx;
+				player.moveInQueue(from, to);
+			}
+
+			// Update all queueIndex values to match new positions
+			dndItems = newItems;
+			for (let j = 0; j < newItems.length; j++) {
+				newItems[j].queueIndex = startOffset + j;
 			}
 		}
 

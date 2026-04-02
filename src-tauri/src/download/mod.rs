@@ -72,7 +72,14 @@ impl DownloadManager {
     }
 
     fn get_download_dir(&self) -> PathBuf {
-        let conn = self.db.lock().expect("DB mutex poisoned");
+        let conn = match self.db.lock() {
+            Ok(c) => c,
+            Err(e) => {
+                log::error!("DB mutex poisoned in get_download_dir: {}", e);
+                let app_dir = self.app_handle.path().app_data_dir().unwrap_or_else(|_| PathBuf::from("."));
+                return app_dir.join("downloads");
+            }
+        };
         let dir = crate::db::settings::get_setting(&conn, "download_dir")
             .ok()
             .flatten();
@@ -108,7 +115,13 @@ impl DownloadManager {
     /// Get the cookies-from-browser setting (e.g. "chrome", "firefox", "edge").
     /// Defaults to "chrome" to avoid bot detection on YouTube.
     fn get_cookies_from_browser(&self) -> Option<String> {
-        let conn = self.db.lock().expect("DB mutex poisoned");
+        let conn = match self.db.lock() {
+            Ok(c) => c,
+            Err(e) => {
+                log::error!("DB mutex poisoned in get_cookies_from_browser: {}", e);
+                return None;
+            }
+        };
         crate::db::settings::get_cookies_browser(&conn)
     }
 
@@ -133,23 +146,27 @@ impl DownloadManager {
                 Ok(s) => s,
                 Err(_) => return,
             };
-            stmt.query_map([], |row| row.get(0))
-                .unwrap()
-                .filter_map(|r| r.ok())
-                .collect()
+            let result: Vec<i64> = match stmt.query_map([], |row| row.get(0)) {
+                Ok(rows) => rows.filter_map(|r| r.ok()).collect(),
+                Err(e) => {
+                    log::error!("Failed to query interrupted downloads: {}", e);
+                    return;
+                }
+            };
+            result
         };
         if !ids.is_empty() {
             log::info!("Resuming {} interrupted download(s)", ids.len());
             let mgr = Arc::clone(self);
             tauri::async_runtime::spawn(async move {
                 for id in ids {
-                    mgr.start_download(id);
+                    mgr.start_download(id, None);
                 }
             });
         }
     }
 
-    pub fn start_download(&self, download_id: i64) {
+    pub fn start_download(&self, download_id: i64, title: Option<String>) {
         let db = self.db.clone();
         let app_handle = self.app_handle.clone();
         let active_tasks = self.active_tasks.clone();
@@ -161,7 +178,7 @@ impl DownloadManager {
         let sources = self.sources.clone();
 
         // Emit queued event immediately so the frontend can show all pending downloads
-        emit_event(&self.app_handle, download_id, "queued", 0.0, None, None, None, None);
+        emit_event(&self.app_handle, download_id, "queued", 0.0, None, None, None, title);
 
         let active_tasks_insert = self.active_tasks.clone();
         tokio::spawn(async move {
@@ -222,13 +239,23 @@ impl DownloadManager {
         if let Ok(conn) = self.db.lock() {
             // Collect IDs before updating so we can emit events
             let ids: Vec<i64> = {
-                let mut stmt = conn.prepare(
+                let mut stmt = match conn.prepare(
                     "SELECT id FROM downloads WHERE status IN ('queued', 'downloading', 'processing')"
-                ).unwrap();
-                stmt.query_map([], |row| row.get(0))
-                    .unwrap()
-                    .filter_map(|r| r.ok())
-                    .collect()
+                ) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        log::error!("Failed to prepare cancel_all query: {}", e);
+                        return;
+                    }
+                };
+                let result: Vec<i64> = match stmt.query_map([], |row| row.get(0)) {
+                    Ok(rows) => rows.filter_map(|r| r.ok()).collect(),
+                    Err(e) => {
+                        log::error!("Failed to query downloads for cancellation: {}", e);
+                        return;
+                    }
+                };
+                result
             };
             let _ = conn.execute(
                 "UPDATE downloads SET status = 'cancelled' WHERE status IN ('queued', 'downloading', 'processing')",

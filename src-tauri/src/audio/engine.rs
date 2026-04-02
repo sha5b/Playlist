@@ -48,6 +48,8 @@ pub enum PlayerCommand {
     RemoveFromQueue(usize), // order index
     SkipTo(usize),          // order index — jump to specific position in queue
     ClearQueue,
+    /// Switch audio output device. None = use OS default.
+    SwitchDevice(Option<String>),
     /// Graceful shutdown -- audio thread stops and exits
     Shutdown,
 }
@@ -160,6 +162,23 @@ impl AudioEngine {
         }
     }
 
+    /// List available audio output devices. Returns (name, is_default) pairs.
+    pub fn list_output_devices() -> Vec<(String, bool)> {
+        use cpal::traits::{DeviceTrait, HostTrait};
+        let host = cpal::default_host();
+        let default_name = host.default_output_device().and_then(|d| d.name().ok());
+        match host.output_devices() {
+            Ok(devices) => devices
+                .filter_map(|d| {
+                    let name = d.name().ok()?;
+                    let is_default = default_name.as_deref() == Some(&name);
+                    Some((name, is_default))
+                })
+                .collect(),
+            Err(_) => vec![],
+        }
+    }
+
     pub fn get_state(&self) -> PlaybackState {
         self.shared.read().unwrap().playback.clone()
     }
@@ -229,7 +248,11 @@ impl AudioEngine {
     /// is never cleared), so we must create a new Sink each time we want to play
     /// something new.  New sinks start un-paused.
     fn make_sink(stream_handle: &OutputStreamHandle, volume: f32) -> Sink {
-        let sink = Sink::try_new(stream_handle).expect("Failed to create audio sink");
+        let sink = Sink::try_new(stream_handle).unwrap_or_else(|e| {
+            // This should never fail if the output stream handle is valid.
+            // If it does, audio is fundamentally broken and we cannot recover.
+            panic!("Failed to create audio sink (audio output unavailable): {}", e);
+        });
         sink.set_volume(volume);
         sink
     }
@@ -259,7 +282,7 @@ impl AudioEngine {
         ffmpeg_path: Option<String>,
     ) {
         // Create audio output on this dedicated thread -- OutputStream must stay alive
-        let (_stream, stream_handle) = match OutputStream::try_default() {
+        let (mut _stream, mut stream_handle) = match OutputStream::try_default() {
             Ok(s) => {
                 log::info!("[audio] Audio output device initialized");
                 s
@@ -584,6 +607,50 @@ impl AudioEngine {
                                 emit(PlayerEvent::StateChanged(s.playback.clone()));
                                 emit(PlayerEvent::TrackChanged(None));
                                 emit(PlayerEvent::QueueUpdated { tracks: vec![], position: None });
+                            }
+                        }
+                        PlayerCommand::SwitchDevice(device_name) => {
+                            log::info!("[audio] SwitchDevice: {:?}", device_name);
+                            let result = if let Some(ref name) = device_name {
+                                use cpal::traits::{DeviceTrait, HostTrait};
+                                let host = cpal::default_host();
+                                match host.output_devices() {
+                                    Ok(mut devices) => {
+                                        match devices.find(|d| d.name().ok().as_deref() == Some(name.as_str())) {
+                                            Some(device) => OutputStream::try_from_device(&device),
+                                            None => Err(rodio::StreamError::NoDevice),
+                                        }
+                                    }
+                                    Err(_) => Err(rodio::StreamError::NoDevice),
+                                }
+                            } else {
+                                OutputStream::try_default()
+                            };
+
+                            match result {
+                                Ok((new_stream, new_handle)) => {
+                                    let vol = sink.volume();
+                                    sink.stop();
+                                    _stream = new_stream;
+                                    stream_handle = new_handle;
+                                    sink = Self::make_sink(&stream_handle, vol);
+                                    sink.pause();
+                                    play_start = None;
+                                    accumulated_ms = 0;
+                                    is_playing = false;
+                                    preloaded = None;
+                                    {
+                                        let mut s = shared.write().unwrap();
+                                        s.playback.state = PlayerState::Stopped;
+                                        s.playback.position_ms = 0;
+                                        emit(PlayerEvent::StateChanged(s.playback.clone()));
+                                    }
+                                    log::info!("[audio] Switched to device: {:?}", device_name);
+                                }
+                                Err(e) => {
+                                    log::error!("[audio] Failed to switch device: {}", e);
+                                    emit(PlayerEvent::Error(format!("Failed to switch audio device: {}", e)));
+                                }
                             }
                         }
                         PlayerCommand::Shutdown => {

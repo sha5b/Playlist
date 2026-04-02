@@ -1,6 +1,12 @@
 # Playlist
 
-A cross-platform desktop music manager built with Tauri 2, SvelteKit, and Svelte 5. Download music from YouTube, SoundCloud, Bandcamp and more, manage your library, track playlists for new releases, and play everything with the built-in audio player.
+**Liberate your music. Own your data.**
+
+Streaming platforms decide what you hear, lock your library behind a subscription, and pay artists fractions of a cent. Playlist is built on a simple idea: your music collection belongs to you, not to a corporation.
+
+This is a cross-platform desktop music manager built with Tauri 2, SvelteKit, and Svelte 5. Download music from YouTube, SoundCloud, Bandcamp and more, manage your library locally, track playlists for new releases, and play everything with the built-in audio player — all offline, all yours.
+
+> **Support artists directly.** Buy their albums. Back them on Patreon. Buy them a coffee. Go to their shows. Give them your attention, not just your streams. This tool gives you autonomy over your data — use that freedom to support the people who make the music you love.
 
 ## Prerequisites
 

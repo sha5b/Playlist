@@ -72,23 +72,30 @@ pub fn get_tracks(
     };
 
     // When searching, use FTS for matching then apply sort/pagination
-    let (where_clause, count_sql, use_fts) = match search {
-        Some(q) if !q.trim().is_empty() => {
-            let fts_query = q.split_whitespace()
+    let fts_query = search
+        .filter(|q| !q.trim().is_empty())
+        .map(|q| {
+            q.split_whitespace()
                 .map(|w| format!("{}*", w))
                 .collect::<Vec<_>>()
-                .join(" ");
-            (
-                format!("JOIN tracks_fts ON tracks_fts.rowid = t.id WHERE tracks_fts MATCH '{}'", fts_query.replace('\'', "''")),
-                format!("SELECT COUNT(*) FROM tracks_fts WHERE tracks_fts MATCH '{}'", fts_query.replace('\'', "''")),
-                true,
-            )
-        }
-        _ => (String::new(), "SELECT COUNT(*) FROM tracks".to_string(), false),
-    };
-    let _ = use_fts;
+                .join(" ")
+        });
 
-    let total: i64 = conn.query_row(&count_sql, [], |row| row.get(0))?;
+    let total: i64 = if let Some(ref fts) = fts_query {
+        conn.query_row(
+            "SELECT COUNT(*) FROM tracks_fts WHERE tracks_fts MATCH ?1",
+            params![fts],
+            |row| row.get(0),
+        )?
+    } else {
+        conn.query_row("SELECT COUNT(*) FROM tracks", [], |row| row.get(0))?
+    };
+
+    let (where_clause, param_offset) = if fts_query.is_some() {
+        ("JOIN tracks_fts ON tracks_fts.rowid = t.id WHERE tracks_fts MATCH ?1", 1)
+    } else {
+        ("", 0)
+    };
 
     let sql = format!(
         "SELECT {}
@@ -97,14 +104,18 @@ pub fn get_tracks(
          LEFT JOIN albums al ON t.album_id = al.id
          {}
          ORDER BY {}
-         LIMIT ?1 OFFSET ?2",
-        TRACK_COLUMNS, where_clause, order_clause
+         LIMIT ?{} OFFSET ?{}",
+        TRACK_COLUMNS, where_clause, order_clause, param_offset + 1, param_offset + 2
     );
 
     let mut stmt = conn.prepare(&sql)?;
-    let tracks = stmt
-        .query_map(params![limit, offset], |row| row_to_track(row))?
-        .collect::<Result<Vec<_>, _>>()?;
+    let tracks = if let Some(ref fts) = fts_query {
+        stmt.query_map(params![fts, limit, offset], |row| row_to_track(row))?
+            .collect::<Result<Vec<_>, _>>()?
+    } else {
+        stmt.query_map(params![limit, offset], |row| row_to_track(row))?
+            .collect::<Result<Vec<_>, _>>()?
+    };
 
     Ok(TrackPage { tracks, total })
 }
@@ -222,6 +233,38 @@ pub fn get_tracks_by_artist(conn: &Connection, artist_id: i64) -> Result<Vec<Tra
         .query_map(params![artist_id], |row| row_to_track(row))?
         .collect::<Result<Vec<_>, _>>()?;
 
+    Ok(tracks)
+}
+
+pub fn get_distinct_genres(conn: &Connection) -> Result<Vec<String>, rusqlite::Error> {
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT genre FROM tracks WHERE genre IS NOT NULL AND genre != '' ORDER BY genre",
+    )?;
+    let genres = stmt
+        .query_map([], |row| row.get(0))?
+        .collect::<Result<Vec<String>, _>>()?;
+    Ok(genres)
+}
+
+pub fn get_tracks_by_genre(
+    conn: &Connection,
+    genre: &str,
+    limit: i64,
+) -> Result<Vec<Track>, rusqlite::Error> {
+    let sql = format!(
+        "SELECT {}
+         FROM tracks t
+         LEFT JOIN artists a ON t.artist_id = a.id
+         LEFT JOIN albums al ON t.album_id = al.id
+         WHERE t.genre = ?1
+         ORDER BY RANDOM()
+         LIMIT ?2",
+        TRACK_COLUMNS
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let tracks = stmt
+        .query_map(params![genre, limit], |row| row_to_track(row))?
+        .collect::<Result<Vec<_>, _>>()?;
     Ok(tracks)
 }
 
