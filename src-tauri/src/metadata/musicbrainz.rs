@@ -196,13 +196,14 @@ pub struct AlbumTrackInfo {
 
 /// Search MusicBrainz for a recording and return enrichment data.
 pub async fn enrich_track(title: &str, artist: Option<&str>) -> Result<TrackEnrichment, String> {
+    // Simple search: just artist + title as plain keywords (most robust for all scripts)
     let query = if let Some(art) = artist {
-        format!("recording:\"{}\" AND artist:\"{}\"", escape_lucene(title), escape_lucene(art))
+        format!("{} {}", art, title)
     } else {
-        format!("recording:\"{}\"", escape_lucene(title))
+        title.to_string()
     };
 
-    let url = format!("{}/recording/?query={}&fmt=json&limit=5", MB_BASE, urlencoding(& query));
+    let url = format!("{}/recording/?query={}&fmt=json&limit=5", MB_BASE, urlencoding(&query));
 
     let resp: RecordingSearchResult = client()
         .get(&url)
@@ -259,10 +260,11 @@ pub async fn enrich_track(title: &str, artist: Option<&str>) -> Result<TrackEnri
 
 /// Search MusicBrainz for a release (album) and return enrichment data including full tracklist.
 pub async fn enrich_album(title: &str, artist: Option<&str>) -> Result<AlbumEnrichment, String> {
+    // Simple search: just artist + title as plain keywords
     let query = if let Some(art) = artist {
-        format!("release:\"{}\" AND artist:\"{}\"", escape_lucene(title), escape_lucene(art))
+        format!("{} {}", art, title)
     } else {
-        format!("release:\"{}\"", escape_lucene(title))
+        title.to_string()
     };
 
     let url = format!(
@@ -386,23 +388,14 @@ pub async fn download_cover_art(release_mbid: &str) -> Option<Vec<u8>> {
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
-fn escape_lucene(s: &str) -> String {
-    let special = ['+', '-', '&', '|', '!', '(', ')', '{', '}', '[', ']', '^', '"', '~', '*', '?', ':', '\\', '/'];
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        if special.contains(&c) {
-            out.push('\\');
-        }
-        out.push(c);
-    }
-    out
-}
-
 fn urlencoding(s: &str) -> String {
-    s.chars()
-        .map(|c| match c {
-            'A'..='Z' | 'a'..='z' | '0'..='9' | '-' | '_' | '.' | '~' => c.to_string(),
-            _ => format!("%{:02X}", c as u32),
+    // Encode each UTF-8 byte (not Unicode code point) for correct percent-encoding
+    s.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b' ' => {
+                if b == b' ' { "+".to_string() } else { (b as char).to_string() }
+            }
+            _ => format!("%{:02X}", b),
         })
         .collect()
 }

@@ -14,6 +14,7 @@ let queueTracks: QueueTrack[] = $state([]);
 let queuePosition: number | null = $state(null);
 let queueOpen: boolean = $state(false);
 let autoplay: boolean = $state(false);
+let previousTrack: QueueTrack | null = $state(null);
 let playedHistory: Set<number> = new Set();
 
 // --- Event listener setup ---
@@ -45,6 +46,10 @@ function handleEvent(event: PlayerEvent) {
 			break;
 		}
 		case 'track_changed':
+			// Save outgoing track as previous (only if it's a different track)
+			if (currentTrack && (!event.data || event.data.id !== currentTrack.id)) {
+				previousTrack = currentTrack;
+			}
 			currentTrack = event.data;
 			if (event.data) {
 				positionMs = 0;
@@ -148,6 +153,7 @@ export const player = {
 	get queuePosition() { return queuePosition; },
 	get queueOpen() { return queueOpen; },
 	get autoplay() { return autoplay; },
+	get previousTrack() { return previousTrack; },
 	get isPlaying() { return state === 'playing'; },
 	get isPaused() { return state === 'paused'; },
 	get isStopped() { return state === 'stopped'; },

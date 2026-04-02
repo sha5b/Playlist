@@ -7,6 +7,7 @@
 	import { depsStore } from '$lib/stores/deps.svelte';
 	import { libraryStore } from '$lib/stores/library.svelte';
 	import { downloadStore } from '$lib/stores/downloads.svelte';
+	import { metadataScanStore } from '$lib/stores/metadataScan.svelte';
 
 	let { children } = $props();
 
@@ -17,6 +18,7 @@
 		depsStore.init();
 		libraryStore.init();
 		downloadStore.init();
+		metadataScanStore.init();
 	});
 
 	function handleKeydown(e: KeyboardEvent) {

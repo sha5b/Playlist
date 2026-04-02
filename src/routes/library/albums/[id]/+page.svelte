@@ -13,19 +13,25 @@
 	let tracks: Track[] = $state([]);
 	let loading = $state(true);
 	let enriching = $state(false);
-	let enrichedPlaceholders: { track_number: number; disc_number: number; title?: string }[] = $state([]);
 
 	const albumId = $derived(Number(page.params.id));
 
+	// Parse saved enriched tracklist from the album's DB column
+	let savedTracklist = $derived.by(() => {
+		if (!album?.enriched_tracklist) return [];
+		try {
+			return JSON.parse(album.enriched_tracklist) as AlbumTrackInfo[];
+		} catch { return []; }
+	});
+
 	async function load(id: number) {
 		loading = true;
-		enrichedPlaceholders = [];
 		try {
 			const [a, t] = await Promise.all([getAlbum(id), getAlbumTracks(id)]);
 			album = a;
 			tracks = t;
 			// Auto-enrich if album hasn't been enriched yet
-			if (a && !a.musicbrainz_id) {
+			if (a && (!a.musicbrainz_id || !a.enriched_tracklist)) {
 				autoEnrich(a);
 			}
 		} catch (e) {
@@ -38,16 +44,9 @@
 	async function autoEnrich(a: Album) {
 		enriching = true;
 		try {
-			const result = await enrichAlbum(a.id);
-			if (result.tracklist.length > 0) {
-				const existingKeys = new Set(
-					tracks.map((t) => `${t.disc_number ?? 1}:${t.track_number ?? 0}`)
-				);
-				enrichedPlaceholders = result.tracklist
-					.filter((t) => !existingKeys.has(`${t.disc_number}:${t.track_number}`))
-					.map((t) => ({ track_number: t.track_number, disc_number: t.disc_number, title: t.title }));
-			}
+			await enrichAlbum(a.id);
 			album = await getAlbum(a.id);
+			tracks = await getAlbumTracks(a.id);
 		} catch {
 			// Silent fail for auto-enrich
 		} finally {
@@ -67,8 +66,12 @@
 	function shuffleAll() {
 		if (tracks.length === 0) return;
 		const ids = tracks.map((t) => t.id);
-		const randomStart = Math.floor(Math.random() * ids.length);
-		player.playTracks(ids, randomStart);
+		// Fisher-Yates shuffle
+		for (let i = ids.length - 1; i > 0; i--) {
+			const j = Math.floor(Math.random() * (i + 1));
+			[ids[i], ids[j]] = [ids[j], ids[i]];
+		}
+		player.playTracks(ids, 0);
 	}
 
 	async function handleEnrich() {
@@ -85,9 +88,11 @@
 		const existing = new Set(
 			tracks.map((t) => `${t.disc_number ?? 1}:${t.track_number ?? 0}`)
 		);
-		// First: use enriched placeholders from MusicBrainz if available
-		if (enrichedPlaceholders.length > 0) {
-			return enrichedPlaceholders.filter((p) => !existing.has(`${p.disc_number}:${p.track_number}`));
+		// Use saved enriched tracklist from DB (persisted across page reloads)
+		if (savedTracklist.length > 0) {
+			return savedTracklist
+				.filter((p) => !existing.has(`${p.disc_number}:${p.track_number}`))
+				.map((p) => ({ track_number: p.track_number, disc_number: p.disc_number, title: p.title }));
 		}
 		// Fallback: generate from total_tracks count
 		if (!album?.total_tracks || album.total_tracks <= tracks.length) return [];

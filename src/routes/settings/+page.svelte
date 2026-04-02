@@ -6,9 +6,9 @@
 	import { Slider } from '$lib/components/ui/slider';
 	import { FolderOpen, Volume2, RotateCcw, Music, Trash2, Cookie, Sparkles, Loader2 } from 'lucide-svelte';
 	import { getSetting, setSetting, resetLibrary, getMetadataStats, scanMissingMetadata } from '$lib/api/library';
-	import { listen } from '@tauri-apps/api/event';
-	import type { MetadataStats, MetadataScanProgress } from '$lib/types';
+	import type { MetadataStats } from '$lib/types';
 	import { player } from '$lib/stores/player.svelte';
+	import { metadataScanStore } from '$lib/stores/metadataScan.svelte';
 	import { open } from '@tauri-apps/plugin-dialog';
 	import { toast } from 'svelte-sonner';
 
@@ -72,8 +72,8 @@
 	}
 
 	let metadataStats: MetadataStats | null = $state(null);
-	let scanning = $state(false);
-	let scanProgress: MetadataScanProgress | null = $state(null);
+	let scanning = $derived(metadataScanStore.scanning);
+	let scanProgress = $derived(metadataScanStore.progress);
 
 	async function loadMetadataStats() {
 		try {
@@ -84,13 +84,8 @@
 	}
 
 	async function handleScanMetadata() {
-		if (scanning) return;
-		scanning = true;
-		scanProgress = null;
-
-		const unlisten = await listen<MetadataScanProgress>('metadata-scan-progress', (event) => {
-			scanProgress = event.payload;
-		});
+		if (metadataScanStore.scanning) return;
+		metadataScanStore.markScanning();
 
 		try {
 			const result = await scanMissingMetadata();
@@ -101,9 +96,7 @@
 		} catch (e) {
 			toast.error('Metadata scan failed', { description: String(e) });
 		} finally {
-			scanning = false;
-			scanProgress = null;
-			unlisten();
+			metadataScanStore.markDone();
 		}
 	}
 
@@ -139,7 +132,7 @@
 	});
 </script>
 
-<div class="flex-1 min-h-0 overflow-y-auto space-y-6 max-w-2xl">
+<div class="flex-1 min-h-0 overflow-y-auto space-y-6">
 	<div>
 		<h1 class="text-3xl font-bold tracking-tight">Settings</h1>
 		<p class="text-muted-foreground mt-1">Configure your preferences</p>
@@ -289,7 +282,7 @@
 			<div class="flex items-center justify-between gap-4">
 				<div>
 					<p class="text-sm font-medium">Scan for Missing Metadata</p>
-					<p class="text-xs text-muted-foreground">Looks up tracks with incomplete data on MusicBrainz (up to 50 at a time)</p>
+					<p class="text-xs text-muted-foreground">Looks up all tracks with incomplete data on MusicBrainz and Last.fm</p>
 				</div>
 				<Button variant="outline" size="sm" onclick={handleScanMetadata} disabled={scanning}>
 					{#if scanning}

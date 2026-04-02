@@ -2,12 +2,12 @@ use rusqlite::{params, Connection, Row};
 
 use super::models::Album;
 
-/// Shared column list for album queries. Indexes 0–15.
+/// Shared column list for album queries. Indexes 0–16.
 const ALBUM_COLUMNS: &str =
     "al.id, al.title, al.artist_id, al.album_artist, al.year, al.genre,
      al.total_tracks, al.total_discs, al.musicbrainz_id, al.cover_art_path,
      al.label, al.release_date, al.description, al.album_type,
-     a.name as artist_name, COUNT(t.id) as track_count";
+     al.enriched_tracklist, a.name as artist_name, COUNT(t.id) as track_count";
 
 fn row_to_album(row: &Row) -> Result<Album, rusqlite::Error> {
     Ok(Album {
@@ -25,8 +25,9 @@ fn row_to_album(row: &Row) -> Result<Album, rusqlite::Error> {
         release_date: row.get(11)?,
         description: row.get(12)?,
         album_type: row.get(13)?,
-        artist_name: row.get(14)?,
-        track_count: row.get(15)?,
+        enriched_tracklist: row.get(14)?,
+        artist_name: row.get(15)?,
+        track_count: row.get(16)?,
     })
 }
 

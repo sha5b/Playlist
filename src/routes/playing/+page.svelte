@@ -3,7 +3,7 @@
 	import { Slider } from '$lib/components/ui/slider';
 	import {
 		Shuffle, SkipBack, Play, Pause, SkipForward,
-		Repeat, Repeat1, Music, Trash2, AudioLines
+		Repeat, Repeat1, Music, Trash2, AudioLines, History
 	} from 'lucide-svelte';
 	import { player } from '$lib/stores/player.svelte';
 	import { formatDuration, assetUrl } from '$lib/utils/format';
@@ -143,6 +143,49 @@
 					</div>
 				</div>
 			</div>
+
+			<!-- Previously Played -->
+			{#if player.previousTrack}
+				<div>
+					<div class="flex items-center gap-2 mb-3">
+						<History class="size-4 text-muted-foreground" />
+						<h2 class="text-lg font-semibold">Previously Played</h2>
+					</div>
+					<button
+						class="w-full flex items-center gap-4 p-3 rounded-lg border border-border bg-card/50 hover:bg-muted/50 transition-colors text-left group"
+						onclick={() => player.prev()}
+					>
+						<div class="size-12 shrink-0 rounded-md bg-muted overflow-hidden">
+							{#if player.previousTrack.cover_art_path}
+								<img
+									src={assetUrl(player.previousTrack.cover_art_path)}
+									alt=""
+									class="size-full object-cover"
+									loading="lazy"
+								/>
+							{:else}
+								<div class="size-full flex items-center justify-center">
+									<Music class="size-5 text-muted-foreground" />
+								</div>
+							{/if}
+						</div>
+						<div class="min-w-0 flex-1">
+							<p class="text-sm font-medium truncate text-muted-foreground group-hover:text-foreground transition-colors">
+								{player.previousTrack.title}
+							</p>
+							<p class="text-xs text-muted-foreground/60 truncate">
+								{player.previousTrack.artist_name ?? 'Unknown Artist'}
+								{#if player.previousTrack.album_title}
+									&middot; {player.previousTrack.album_title}
+								{/if}
+							</p>
+						</div>
+						<div class="shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+							<SkipBack class="size-4 text-muted-foreground" />
+						</div>
+					</button>
+				</div>
+			{/if}
 
 			<!-- Up Next Section -->
 			<div>

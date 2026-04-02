@@ -64,6 +64,7 @@ export interface Album {
 	release_date: string | null;
 	description: string | null;
 	album_type: string | null;
+	enriched_tracklist: string | null;
 	artist_name: string | null;
 	track_count: number;
 }

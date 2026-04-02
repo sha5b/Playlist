@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { Button } from '$lib/components/ui/button';
-	import { X, Music, Trash2, ListPlus } from 'lucide-svelte';
+	import { X, Music, Trash2, ListPlus, SkipBack } from 'lucide-svelte';
 	import { player } from '$lib/stores/player.svelte';
 	import { formatDuration, assetUrl } from '$lib/utils/format';
 	import { getAlbumTracks, getArtistTracks } from '$lib/api/library';
@@ -163,8 +163,40 @@
 				</div>
 			{:else}
 				<div class="p-2">
-					{#if player.currentTrack}
+					{#if player.previousTrack}
 						<div class="px-2 py-1.5 mb-1">
+							<p class="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Previously Played</p>
+						</div>
+						<button
+							class="w-full flex items-center gap-2 px-2 py-1.5 rounded-md bg-muted/30 hover:bg-muted/50 transition-colors text-left"
+							onclick={() => player.prev()}
+						>
+							<div class="size-8 shrink-0 rounded bg-muted flex items-center justify-center overflow-hidden">
+								{#if player.previousTrack.cover_art_path}
+									<img
+										src={assetUrl(player.previousTrack.cover_art_path)}
+										alt=""
+										class="size-full object-cover"
+										loading="lazy"
+									/>
+								{:else}
+									<Music class="size-3.5 text-muted-foreground" />
+								{/if}
+							</div>
+							<div class="min-w-0 flex-1">
+								<p class="text-xs font-medium truncate text-muted-foreground">
+									{player.previousTrack.title}
+								</p>
+								<p class="text-[10px] text-muted-foreground/60 truncate">
+									{player.previousTrack.artist_name ?? 'Unknown'}
+								</p>
+							</div>
+							<SkipBack class="size-3 text-muted-foreground shrink-0" />
+						</button>
+					{/if}
+
+					{#if player.currentTrack}
+						<div class="px-2 py-1.5 mb-1 {player.previousTrack ? 'mt-3' : ''}">
 							<p class="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Now Playing</p>
 						</div>
 						<div class="flex items-center gap-2 px-2 py-1.5 rounded-md bg-primary/10">

@@ -173,7 +173,11 @@ ALTER TABLE artists ADD COLUMN begin_year INTEGER;
 ALTER TABLE artists ADD COLUMN artist_type TEXT;
 ";
 
-const MIGRATIONS: &[&str] = &[MIGRATION_001, MIGRATION_002, MIGRATION_003, MIGRATION_004];
+const MIGRATION_005: &str = "
+ALTER TABLE albums ADD COLUMN enriched_tracklist TEXT;
+";
+
+const MIGRATIONS: &[&str] = &[MIGRATION_001, MIGRATION_002, MIGRATION_003, MIGRATION_004, MIGRATION_005];
 
 pub fn run(conn: &Connection) -> Result<(), Box<dyn std::error::Error>> {
     conn.execute(

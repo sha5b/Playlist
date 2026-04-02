@@ -71,6 +71,7 @@ pub struct Album {
     pub release_date: Option<String>,
     pub description: Option<String>,
     pub album_type: Option<String>,
+    pub enriched_tracklist: Option<String>,
     pub artist_name: Option<String>,
     pub track_count: i64,
 }
