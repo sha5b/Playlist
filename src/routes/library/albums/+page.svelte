@@ -8,20 +8,21 @@
 	import { assetUrl } from '$lib/utils/format';
 	import { libraryStore } from '$lib/stores/library.svelte';
 	import { toast } from 'svelte-sonner';
+	import { useSearch } from '$lib/hooks/useSearch.svelte';
 	import type { Album } from '$lib/types';
 
 	let albums: Album[] = $state([]);
 	let total = $state(0);
 	let loading = $state(true);
-	let searchQuery = $state('');
-	let debounceTimer: ReturnType<typeof setTimeout>;
 	let downloadStatuses: Record<string, AlbumDownloadStatus> = $state({});
 	let cleaningDuplicates = $state(false);
+
+	const search = useSearch(load);
 
 	async function load() {
 		loading = true;
 		try {
-			const [data, count] = await getAlbums(0, 200, searchQuery || undefined);
+			const [data, count] = await getAlbums(0, 200, search.query || undefined);
 			albums = data;
 			total = count;
 			// Load download statuses for all albums
@@ -34,17 +35,6 @@
 		} finally {
 			loading = false;
 		}
-	}
-
-	function handleSearch(e: Event) {
-		searchQuery = (e.target as HTMLInputElement).value;
-		clearTimeout(debounceTimer);
-		debounceTimer = setTimeout(() => load(), 250);
-	}
-
-	function clearSearch() {
-		searchQuery = '';
-		load();
 	}
 
 	async function handleCleanupDuplicates() {
@@ -73,7 +63,7 @@
 		<div>
 			<h1 class="text-3xl font-bold tracking-tight">Albums</h1>
 			<p class="text-muted-foreground mt-1">
-				{loading ? 'Loading...' : `${total} album${total !== 1 ? 's' : ''}${searchQuery ? ` matching "${searchQuery}"` : ''}`}
+				{loading ? 'Loading...' : `${total} album${total !== 1 ? 's' : ''}${search.query ? ` matching "${search.query}"` : ''}`}
 			</p>
 		</div>
 		<div class="flex items-center gap-2">
@@ -91,11 +81,11 @@
 				<Input
 					placeholder="Search albums..."
 					class="pl-9 pr-8"
-					value={searchQuery}
-					oninput={handleSearch}
+					value={search.query}
+					oninput={search.handleSearch}
 				/>
-				{#if searchQuery}
-					<button class="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground" onclick={clearSearch}>
+				{#if search.query}
+					<button class="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground" onclick={search.clearSearch}>
 						<X class="size-4" />
 					</button>
 				{/if}
@@ -108,7 +98,7 @@
 	{:else if albums.length === 0}
 		<div class="flex items-center justify-center h-48 rounded-lg border border-dashed border-border">
 			<p class="text-muted-foreground text-sm">
-				{searchQuery ? `No albums matching "${searchQuery}"` : 'No albums in your library yet'}
+				{search.query ? `No albums matching "${search.query}"` : 'No albums in your library yet'}
 			</p>
 		</div>
 	{:else}

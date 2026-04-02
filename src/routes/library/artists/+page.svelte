@@ -5,18 +5,19 @@
 	import { Users, Search, X } from 'lucide-svelte';
 	import { assetUrl } from '$lib/utils/format';
 	import { libraryStore } from '$lib/stores/library.svelte';
+	import { useSearch } from '$lib/hooks/useSearch.svelte';
 	import type { Artist } from '$lib/types';
 
 	let artists: Artist[] = $state([]);
 	let total = $state(0);
 	let loading = $state(true);
-	let searchQuery = $state('');
-	let debounceTimer: ReturnType<typeof setTimeout>;
+
+	const search = useSearch(load);
 
 	async function load() {
 		loading = true;
 		try {
-			const [data, count] = await getArtists(0, 200, searchQuery || undefined);
+			const [data, count] = await getArtists(0, 200, search.query || undefined);
 			artists = data;
 			total = count;
 		} catch (e) {
@@ -24,17 +25,6 @@
 		} finally {
 			loading = false;
 		}
-	}
-
-	function handleSearch(e: Event) {
-		searchQuery = (e.target as HTMLInputElement).value;
-		clearTimeout(debounceTimer);
-		debounceTimer = setTimeout(() => load(), 250);
-	}
-
-	function clearSearch() {
-		searchQuery = '';
-		load();
 	}
 
 	$effect(() => {
@@ -48,7 +38,7 @@
 		<div>
 			<h1 class="text-3xl font-bold tracking-tight">Artists</h1>
 			<p class="text-muted-foreground mt-1">
-				{loading ? 'Loading...' : `${total} artist${total !== 1 ? 's' : ''}${searchQuery ? ` matching "${searchQuery}"` : ''}`}
+				{loading ? 'Loading...' : `${total} artist${total !== 1 ? 's' : ''}${search.query ? ` matching "${search.query}"` : ''}`}
 			</p>
 		</div>
 		<div class="relative w-64">
@@ -56,11 +46,11 @@
 			<Input
 				placeholder="Search artists..."
 				class="pl-9 pr-8"
-				value={searchQuery}
-				oninput={handleSearch}
+				value={search.query}
+				oninput={search.handleSearch}
 			/>
-			{#if searchQuery}
-				<button class="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground" onclick={clearSearch}>
+			{#if search.query}
+				<button class="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground" onclick={search.clearSearch}>
 					<X class="size-4" />
 				</button>
 			{/if}
@@ -72,7 +62,7 @@
 	{:else if artists.length === 0}
 		<div class="flex items-center justify-center h-48 rounded-lg border border-dashed border-border">
 			<p class="text-muted-foreground text-sm">
-				{searchQuery ? `No artists matching "${searchQuery}"` : 'No artists in your library yet'}
+				{search.query ? `No artists matching "${search.query}"` : 'No artists in your library yet'}
 			</p>
 		</div>
 	{:else}

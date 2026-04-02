@@ -58,7 +58,8 @@
 		ManagerEntryEvent,
 		MonitoredEntryStatus,
 	} from '$lib/types';
-	import { formatDate } from '$lib/utils/format';
+	import { formatDate, formatSeconds, timeAgo, platformLabel, platformColor } from '$lib/utils/format';
+	import { groupDownloadsByAlbum, type DownloadGroup } from '$lib/utils/grouping';
 
 	// --- Deps state (from global store, checked once at app startup) ---
 	const depsStatus = $derived(depsStore.status);
@@ -418,50 +419,6 @@
 		}
 	}
 
-	// --- Helpers ---
-	function platformLabel(platform: string): string {
-		const labels: Record<string, string> = {
-			youtube: 'YouTube',
-			spotify: 'Spotify',
-			soundcloud: 'SoundCloud',
-			bandcamp: 'Bandcamp',
-			direct: 'Direct',
-			other: 'Other',
-		};
-		return labels[platform] ?? platform;
-	}
-
-	function platformColor(platform: string): 'default' | 'secondary' | 'outline' | 'destructive' {
-		switch (platform) {
-			case 'youtube': return 'destructive';
-			case 'spotify': return 'default';
-			case 'soundcloud': return 'secondary';
-			default: return 'outline';
-		}
-	}
-
-	function formatSeconds(seconds: number | null): string {
-		if (!seconds) return '--:--';
-		const m = Math.floor(seconds / 60);
-		const s = Math.round(seconds % 60);
-		return `${m}:${s.toString().padStart(2, '0')}`;
-	}
-
-	function timeAgo(dateStr: string | null): string {
-		if (!dateStr) return 'Never';
-		const date = new Date(dateStr + 'Z');
-		const now = new Date();
-		const diff = now.getTime() - date.getTime();
-		const minutes = Math.floor(diff / 60000);
-		if (minutes < 1) return 'Just now';
-		if (minutes < 60) return `${minutes}m ago`;
-		const hours = Math.floor(minutes / 60);
-		if (hours < 24) return `${hours}h ago`;
-		const days = Math.floor(hours / 24);
-		if (days < 7) return `${days}d ago`;
-		return formatDate(dateStr);
-	}
-
 	const activeDownloads = $derived(
 		downloadStore.downloads.filter(
 			(d) => d.status === 'queued' || d.status === 'downloading' || d.status === 'processing'
@@ -474,50 +431,11 @@
 		)
 	);
 
-	// Group active downloads: album-grouped first, then ungrouped
-	interface DownloadGroup {
-		albumId: number | null;
-		albumTitle: string | null;
-		downloads: typeof activeDownloads;
-	}
-
-	const groupedActiveDownloads = $derived.by(() => {
-		const groups: DownloadGroup[] = [];
-		const albumMap = new Map<number, typeof activeDownloads>();
-		const ungrouped: typeof activeDownloads = [];
-
-		for (const dl of activeDownloads) {
-			if (dl.target_album_id) {
-				let list = albumMap.get(dl.target_album_id);
-				if (!list) {
-					list = [];
-					albumMap.set(dl.target_album_id, list);
-				}
-				list.push(dl);
-			} else {
-				ungrouped.push(dl);
-			}
-		}
-
-		for (const [albumId, dls] of albumMap) {
-			// Derive album title from first download's artist + common pattern
-			const firstWithTitle = dls.find((d) => d.title);
-			groups.push({
-				albumId,
-				albumTitle: albumNames[albumId] ?? (firstWithTitle?.artist ? `Album #${albumId}` : `Album #${albumId}`),
-				downloads: dls,
-			});
-		}
-
-		if (ungrouped.length > 0) {
-			groups.push({ albumId: null, albumTitle: null, downloads: ungrouped });
-		}
-
-		return groups;
-	});
-
 	// Cache album names for grouped downloads
 	let albumNames: Record<number, string> = $state({});
+
+	// Group active downloads: album-grouped first, then ungrouped
+	const groupedActiveDownloads = $derived(groupDownloadsByAlbum(activeDownloads, albumNames));
 
 	$effect(() => {
 		const albumIds = new Set<number>();

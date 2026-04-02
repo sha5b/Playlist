@@ -5,7 +5,7 @@
 	import TrackTable from '$lib/components/library/TrackTable.svelte';
 	import { Button } from '$lib/components/ui/button';
 	import { player } from '$lib/stores/player.svelte';
-	import { formatDurationLong, assetUrl } from '$lib/utils/format';
+	import { formatDurationLong, assetUrl, shuffleArray } from '$lib/utils/format';
 	import { ArrowLeft, ListMusic, Play, Shuffle, Trash2, Loader2 } from 'lucide-svelte';
 	import { toast } from 'svelte-sonner';
 	import type { PlaylistDetail, Track } from '$lib/types';
@@ -37,9 +37,8 @@
 
 	function shuffleAll() {
 		if (!detail || detail.tracks.length === 0) return;
-		const ids = detail.tracks.map((t) => t.id);
-		const randomStart = Math.floor(Math.random() * ids.length);
-		player.playTracks(ids, randomStart);
+		const ids = shuffleArray(detail.tracks.map((t) => t.id));
+		player.playTracks(ids, 0);
 	}
 
 	async function handleDelete() {

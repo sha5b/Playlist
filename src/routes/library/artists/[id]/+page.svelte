@@ -8,7 +8,7 @@
 	import { player } from '$lib/stores/player.svelte';
 	import { ArrowLeft, Users, Disc, Play, Shuffle, Loader2, Sparkles, Download, Check } from 'lucide-svelte';
 	import { toast } from 'svelte-sonner';
-	import { assetUrl } from '$lib/utils/format';
+	import { assetUrl, shuffleArray } from '$lib/utils/format';
 	import { listen } from '@tauri-apps/api/event';
 	import { onMount } from 'svelte';
 	import type { Artist, Album, Track } from '$lib/types';
@@ -92,11 +92,7 @@
 
 	function shuffleAll() {
 		if (tracks.length === 0) return;
-		const ids = tracks.map((t) => t.id);
-		for (let i = ids.length - 1; i > 0; i--) {
-			const j = Math.floor(Math.random() * (i + 1));
-			[ids[i], ids[j]] = [ids[j], ids[i]];
-		}
+		const ids = shuffleArray(tracks.map((t) => t.id));
 		player.playTracks(ids, 0);
 	}
 

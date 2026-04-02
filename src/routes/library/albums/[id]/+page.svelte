@@ -6,7 +6,7 @@
 	import TrackTable from '$lib/components/library/TrackTable.svelte';
 	import { Button } from '$lib/components/ui/button';
 	import { player } from '$lib/stores/player.svelte';
-	import { formatDurationLong, assetUrl } from '$lib/utils/format';
+	import { formatDurationLong, assetUrl, shuffleArray } from '$lib/utils/format';
 	import { ArrowLeft, Disc, Play, Shuffle, Loader2, Sparkles, Download } from 'lucide-svelte';
 	import { toast } from 'svelte-sonner';
 	import { listen } from '@tauri-apps/api/event';
@@ -70,12 +70,7 @@
 
 	function shuffleAll() {
 		if (tracks.length === 0) return;
-		const ids = tracks.map((t) => t.id);
-		// Fisher-Yates shuffle
-		for (let i = ids.length - 1; i > 0; i--) {
-			const j = Math.floor(Math.random() * (i + 1));
-			[ids[i], ids[j]] = [ids[j], ids[i]];
-		}
+		const ids = shuffleArray(tracks.map((t) => t.id));
 		player.playTracks(ids, 0);
 	}
 

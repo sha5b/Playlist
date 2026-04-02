@@ -8,8 +8,8 @@
 	} from 'lucide-svelte';
 	import { goto } from '$app/navigation';
 	import { player } from '$lib/stores/player.svelte';
-	import { getAlbumTracks, getArtistTracks } from '$lib/api/library';
 	import { formatDuration, assetUrl } from '$lib/utils/format';
+	import { processQueueDrop, handleQueueDragOver } from '$lib/utils/queueDrop';
 
 	function handleProgressChange(value: number) {
 		const seconds = (value / 100) * (player.durationMs / 1000);
@@ -45,67 +45,17 @@
 	// Drop zone on the queue button area
 	let queueDragOver = $state(false);
 
-	const DRAG_TYPES = ['application/x-playlist-track', 'application/x-playlist-album', 'application/x-playlist-artist'];
-
-	function handleQueueDragOver(e: DragEvent) {
-		if (e.dataTransfer && DRAG_TYPES.some((t) => Array.from(e.dataTransfer!.types).includes(t))) {
-			e.preventDefault();
-			e.dataTransfer.dropEffect = 'copy';
+	function onQueueDragOver(e: DragEvent) {
+		if (handleQueueDragOver(e)) {
 			queueDragOver = true;
 			if (!player.queueOpen) player.toggleQueuePanel();
 		}
 	}
 
-	async function handleQueueDrop(e: DragEvent) {
+	async function onQueueDrop(e: DragEvent) {
 		queueDragOver = false;
-		if (!e.dataTransfer) return;
 		e.preventDefault();
-
-		const trackData = e.dataTransfer.getData('application/x-playlist-track');
-		if (trackData) {
-			try {
-				const { trackId } = JSON.parse(trackData);
-				if (player.queueTracks.length === 0 || player.isStopped) {
-					player.playTracks([trackId], 0);
-				} else {
-					player.addToQueue(trackId);
-				}
-			} catch { /* ignore */ }
-			return;
-		}
-
-		const albumData = e.dataTransfer.getData('application/x-playlist-album');
-		if (albumData) {
-			try {
-				const { albumId } = JSON.parse(albumData);
-				const tracks = await getAlbumTracks(albumId);
-				if (tracks.length > 0) {
-					const ids = tracks.map((t) => t.id);
-					if (player.queueTracks.length === 0 || player.isStopped) {
-						player.playTracks(ids, 0);
-					} else {
-						for (const id of ids) await player.addToQueue(id);
-					}
-				}
-			} catch { /* ignore */ }
-			return;
-		}
-
-		const artistData = e.dataTransfer.getData('application/x-playlist-artist');
-		if (artistData) {
-			try {
-				const { artistId } = JSON.parse(artistData);
-				const tracks = await getArtistTracks(artistId);
-				if (tracks.length > 0) {
-					const ids = tracks.map((t) => t.id);
-					if (player.queueTracks.length === 0 || player.isStopped) {
-						player.playTracks(ids, 0);
-					} else {
-						for (const id of ids) await player.addToQueue(id);
-					}
-				}
-			} catch { /* ignore */ }
-		}
+		await processQueueDrop(e.dataTransfer);
 	}
 </script>
 
@@ -237,9 +187,9 @@
 		<!-- svelte-ignore a11y_no_static_element_interactions -->
 		<div
 			class="rounded-md transition-colors {queueDragOver ? 'ring-2 ring-primary bg-primary/10' : ''}"
-			ondragover={handleQueueDragOver}
+			ondragover={onQueueDragOver}
 			ondragleave={() => { queueDragOver = false; }}
-			ondrop={handleQueueDrop}
+			ondrop={onQueueDrop}
 		>
 			<Button
 				variant="ghost"

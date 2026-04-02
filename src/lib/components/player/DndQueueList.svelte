@@ -3,8 +3,8 @@
 	import { GripVertical, X, Music } from 'lucide-svelte';
 	import { Button } from '$lib/components/ui/button';
 	import { player } from '$lib/stores/player.svelte';
-	import { getAlbumTracks, getArtistTracks } from '$lib/api/library';
 	import { formatDuration, assetUrl } from '$lib/utils/format';
+	import { DRAG_TYPES, processQueueDrop } from '$lib/utils/queueDrop';
 	import type { QueueTrack } from '$lib/types';
 	import { flip } from 'svelte/animate';
 
@@ -79,7 +79,6 @@
 
 	// Handle external drops (tracks, albums, artists)
 	let dragOver = $state(false);
-	const DRAG_TYPES = ['application/x-playlist-track', 'application/x-playlist-album', 'application/x-playlist-artist'];
 
 	function handleDragOver(e: DragEvent) {
 		if (e.dataTransfer && DRAG_TYPES.some((t) => Array.from(e.dataTransfer!.types).includes(t))) {
@@ -95,54 +94,8 @@
 
 	async function handleDrop(e: DragEvent) {
 		dragOver = false;
-		if (!e.dataTransfer) return;
 		e.preventDefault();
-
-		const trackData = e.dataTransfer.getData('application/x-playlist-track');
-		if (trackData) {
-			try {
-				const { trackId } = JSON.parse(trackData);
-				if (player.queueTracks.length === 0 || player.isStopped) {
-					player.playTrack(trackId);
-				} else {
-					player.addToQueue(trackId);
-				}
-			} catch { /* ignore */ }
-			return;
-		}
-
-		const albumData = e.dataTransfer.getData('application/x-playlist-album');
-		if (albumData) {
-			try {
-				const { albumId } = JSON.parse(albumData);
-				const tracks = await getAlbumTracks(albumId);
-				const ids = tracks.map((t) => t.id);
-				if (ids.length > 0) {
-					if (player.queueTracks.length === 0 || player.isStopped) {
-						player.playTracks(ids, 0);
-					} else {
-						for (const id of ids) await player.addToQueue(id);
-					}
-				}
-			} catch { /* ignore */ }
-			return;
-		}
-
-		const artistData = e.dataTransfer.getData('application/x-playlist-artist');
-		if (artistData) {
-			try {
-				const { artistId } = JSON.parse(artistData);
-				const tracks = await getArtistTracks(artistId);
-				const ids = tracks.map((t) => t.id);
-				if (ids.length > 0) {
-					if (player.queueTracks.length === 0 || player.isStopped) {
-						player.playTracks(ids, 0);
-					} else {
-						for (const id of ids) await player.addToQueue(id);
-					}
-				}
-			} catch { /* ignore */ }
-		}
+		await processQueueDrop(e.dataTransfer);
 	}
 
 	const itemSize = $derived(compact ? 'py-1.5 gap-2' : 'py-2 gap-3');

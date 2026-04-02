@@ -3,18 +3,10 @@
 	import { X, Music, Trash2, ListPlus, SkipBack } from 'lucide-svelte';
 	import { player } from '$lib/stores/player.svelte';
 	import { formatDuration, assetUrl } from '$lib/utils/format';
-	import { getAlbumTracks, getArtistTracks } from '$lib/api/library';
+	import { hasDragData, processQueueDrop } from '$lib/utils/queueDrop';
 	import DndQueueList from '$lib/components/player/DndQueueList.svelte';
 
 	let dragOver = $state(false);
-
-	const DRAG_TYPES = ['application/x-playlist-track', 'application/x-playlist-album', 'application/x-playlist-artist'];
-
-	function hasDragData(dt: DataTransfer | null): boolean {
-		if (!dt) return false;
-		const types = Array.from(dt.types);
-		return DRAG_TYPES.some((t) => types.includes(t));
-	}
 
 	function handleDragOver(e: DragEvent) {
 		if (hasDragData(e.dataTransfer)) {
@@ -32,55 +24,8 @@
 
 	async function processDrop(e: DragEvent) {
 		dragOver = false;
-		if (!e.dataTransfer) return;
 		e.preventDefault();
-
-		// Track drop
-		const trackData = e.dataTransfer.getData('application/x-playlist-track');
-		if (trackData) {
-			try {
-				const { trackId } = JSON.parse(trackData);
-				if (player.queueTracks.length === 0 || player.isStopped) {
-					player.playTrack(trackId);
-				} else {
-					player.addToQueue(trackId);
-				}
-			} catch { /* ignore */ }
-			return;
-		}
-
-		// Album drop — fetch all tracks and add them
-		const albumData = e.dataTransfer.getData('application/x-playlist-album');
-		if (albumData) {
-			try {
-				const { albumId } = JSON.parse(albumData);
-				const tracks = await getAlbumTracks(albumId);
-				if (tracks.length === 0) return;
-				const ids = tracks.map((t) => t.id);
-				if (player.queueTracks.length === 0 || player.isStopped) {
-					player.playTracks(ids, 0);
-				} else {
-					for (const id of ids) await player.addToQueue(id);
-				}
-			} catch { /* ignore */ }
-			return;
-		}
-
-		// Artist drop — fetch all tracks and add them
-		const artistData = e.dataTransfer.getData('application/x-playlist-artist');
-		if (artistData) {
-			try {
-				const { artistId } = JSON.parse(artistData);
-				const tracks = await getArtistTracks(artistId);
-				if (tracks.length === 0) return;
-				const ids = tracks.map((t) => t.id);
-				if (player.queueTracks.length === 0 || player.isStopped) {
-					player.playTracks(ids, 0);
-				} else {
-					for (const id of ids) await player.addToQueue(id);
-				}
-			} catch { /* ignore */ }
-		}
+		await processQueueDrop(e.dataTransfer);
 	}
 </script>
 

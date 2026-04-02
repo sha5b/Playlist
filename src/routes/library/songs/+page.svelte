@@ -5,39 +5,29 @@
 	import { Button } from '$lib/components/ui/button';
 	import { Input } from '$lib/components/ui/input';
 	import { libraryStore } from '$lib/stores/library.svelte';
+	import { useSearch } from '$lib/hooks/useSearch.svelte';
 	import { Search, X } from 'lucide-svelte';
 	import type { TrackPage } from '$lib/types';
 
 	let page = $state<TrackPage | null>(null);
 	let loading = $state(true);
 	let currentPage = $state(0);
-	let searchQuery = $state('');
-	let debounceTimer: ReturnType<typeof setTimeout>;
 	const pageSize = 50;
+
+	const search = useSearch(async () => {
+		currentPage = 0;
+		await load();
+	});
 
 	async function load() {
 		loading = true;
 		try {
-			page = await getTracks(currentPage * pageSize, pageSize, 'date_added', 'desc', searchQuery || undefined);
+			page = await getTracks(currentPage * pageSize, pageSize, 'date_added', 'desc', search.query || undefined);
 		} catch (e) {
 			console.error('Failed to load tracks:', e);
 		} finally {
 			loading = false;
 		}
-	}
-
-	function handleSearch(e: Event) {
-		const value = (e.target as HTMLInputElement).value;
-		searchQuery = value;
-		currentPage = 0;
-		clearTimeout(debounceTimer);
-		debounceTimer = setTimeout(() => load(), 250);
-	}
-
-	function clearSearch() {
-		searchQuery = '';
-		currentPage = 0;
-		load();
 	}
 
 	$effect(() => {
@@ -54,7 +44,7 @@
 			<h1 class="text-3xl font-bold tracking-tight">Songs</h1>
 			<p class="text-muted-foreground mt-1">
 				{#if page}
-					{page.total} track{page.total !== 1 ? 's' : ''}{searchQuery ? ` matching "${searchQuery}"` : ' in your library'}
+					{page.total} track{page.total !== 1 ? 's' : ''}{search.query ? ` matching "${search.query}"` : ' in your library'}
 				{:else}
 					Loading...
 				{/if}
@@ -65,11 +55,11 @@
 			<Input
 				placeholder="Search songs..."
 				class="pl-9 pr-8"
-				value={searchQuery}
-				oninput={handleSearch}
+				value={search.query}
+				oninput={search.handleSearch}
 			/>
-			{#if searchQuery}
-				<button class="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground" onclick={clearSearch}>
+			{#if search.query}
+				<button class="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground" onclick={search.clearSearch}>
 					<X class="size-4" />
 				</button>
 			{/if}
