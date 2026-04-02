@@ -1,6 +1,12 @@
 import { listen } from '@tauri-apps/api/event';
 import * as playerApi from '$lib/api/player';
 import type { PlaybackState, QueueTrack, PlayerEvent, RepeatMode, PlayerStateEnum } from '$lib/types';
+import {
+	initMediaSession,
+	updateMediaSessionMetadata,
+	updateMediaSessionPlaybackState,
+	updateMediaSessionPosition,
+} from '$lib/utils/mediaSession';
 
 // --- Reactive state ---
 let state: PlayerStateEnum = $state('stopped');
@@ -37,6 +43,8 @@ function handleEvent(event: PlayerEvent) {
 			shuffle = event.data.shuffle;
 			repeat = event.data.repeat;
 			queuePosition = event.data.queue_position;
+			updateMediaSessionPlaybackState(state === 'playing');
+			updateMediaSessionMetadata(currentTrack);
 			// Autoplay: when playback stops naturally, start a new random track
 			if (autoplay && prevState === 'playing' && state === 'stopped') {
 				handleAutoplay();
@@ -56,6 +64,7 @@ function handleEvent(event: PlayerEvent) {
 				durationMs = event.data.duration_ms ?? 0;
 				playedHistory.add(event.data.id);
 			}
+			updateMediaSessionMetadata(currentTrack);
 			break;
 		case 'progress':
 			pendingPositionMs = event.data.position_ms;
@@ -65,6 +74,7 @@ function handleEvent(event: PlayerEvent) {
 				requestAnimationFrame(() => {
 					positionMs = pendingPositionMs;
 					durationMs = pendingDurationMs;
+					updateMediaSessionPosition(positionMs, durationMs);
 					progressRafPending = false;
 				});
 			}
@@ -83,6 +93,15 @@ function handleEvent(event: PlayerEvent) {
 async function init() {
 	if (initialized) return;
 	initialized = true;
+
+	// Register OS media session (media keys, overlay, lock screen)
+	initMediaSession({
+		togglePlayPause: () => player.togglePlayPause(),
+		next: () => player.next(),
+		prev: () => player.prev(),
+		seek: (seconds) => player.seek(seconds),
+	});
+
 	await listen<PlayerEvent>('player-event', (e) => handleEvent(e.payload));
 	// Fetch initial state
 	try {
