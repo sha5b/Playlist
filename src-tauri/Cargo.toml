@@ -1,6 +1,6 @@
 [package]
 name = "playlist"
-version = "0.2.3"
+version = "0.3.1"
 description = "Liberate your music from streaming platforms. Own your data, build your library, support artists directly."
 authors = ["sha5b"]
 license = "MIT"
