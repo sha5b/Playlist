@@ -12,7 +12,11 @@
 	import { metadataScanStore } from '$lib/stores/metadataScan.svelte';
 	import { open } from '@tauri-apps/plugin-dialog';
 	import { toast } from 'svelte-sonner';
+	import * as AlertDialog from '$lib/components/ui/alert-dialog';
 	import { downloadStore } from '$lib/stores/downloads.svelte';
+
+	let resetLibraryOpen = $state(false);
+	let deleteMetadataOpen = $state(false);
 
 	let downloadDir = $state('');
 	let downloadFormat = $state('mp3');
@@ -398,15 +402,33 @@
 					<p class="text-sm font-medium">Delete All Metadata</p>
 					<p class="text-xs text-muted-foreground">Automatically stops any running scan, then clears all enriched metadata from tracks, albums, and artists</p>
 				</div>
-				<Button variant="destructive" size="sm" onclick={handleDeleteMetadata} disabled={deletingMetadata}>
-					{#if deletingMetadata}
-						<Loader2 class="size-4 animate-spin" />
-						Deleting...
-					{:else}
-						<Trash2 class="size-4" />
-						Delete Metadata
-					{/if}
-				</Button>
+				<AlertDialog.Root bind:open={deleteMetadataOpen}>
+					<AlertDialog.Trigger>
+						{#snippet child({ props })}
+							<Button variant="destructive" size="sm" disabled={deletingMetadata} {...props}>
+								{#if deletingMetadata}
+									<Loader2 class="size-4 animate-spin" />
+									Deleting...
+								{:else}
+									<Trash2 class="size-4" />
+									Delete Metadata
+								{/if}
+							</Button>
+						{/snippet}
+					</AlertDialog.Trigger>
+					<AlertDialog.Content>
+						<AlertDialog.Header>
+							<AlertDialog.Title>Delete All Metadata</AlertDialog.Title>
+							<AlertDialog.Description>
+								This will stop any running scans and clear all enriched metadata from tracks, albums, and artists. This cannot be undone.
+							</AlertDialog.Description>
+						</AlertDialog.Header>
+						<AlertDialog.Footer>
+							<AlertDialog.Cancel>Cancel</AlertDialog.Cancel>
+							<AlertDialog.Action onclick={handleDeleteMetadata}>Delete All Metadata</AlertDialog.Action>
+						</AlertDialog.Footer>
+					</AlertDialog.Content>
+				</AlertDialog.Root>
 			</div>
 			<Separator />
 			<div class="flex items-center justify-between gap-4">
@@ -414,15 +436,33 @@
 					<p class="text-sm font-medium">Reset Library</p>
 					<p class="text-xs text-muted-foreground">Delete all tracks, playlists, downloads, and downloaded files</p>
 				</div>
-				<Button variant="destructive" size="sm" onclick={handleResetLibrary} disabled={resettingLibrary}>
-					{#if resettingLibrary}
-						<RotateCcw class="size-4 animate-spin" />
-						Resetting...
-					{:else}
-						<Trash2 class="size-4" />
-						Reset Library
-					{/if}
-				</Button>
+				<AlertDialog.Root bind:open={resetLibraryOpen}>
+					<AlertDialog.Trigger>
+						{#snippet child({ props })}
+							<Button variant="destructive" size="sm" disabled={resettingLibrary} {...props}>
+								{#if resettingLibrary}
+									<RotateCcw class="size-4 animate-spin" />
+									Resetting...
+								{:else}
+									<Trash2 class="size-4" />
+									Reset Library
+								{/if}
+							</Button>
+						{/snippet}
+					</AlertDialog.Trigger>
+					<AlertDialog.Content>
+						<AlertDialog.Header>
+							<AlertDialog.Title>Reset Library</AlertDialog.Title>
+							<AlertDialog.Description>
+								This will permanently delete all tracks, playlists, downloads, and downloaded files. This cannot be undone.
+							</AlertDialog.Description>
+						</AlertDialog.Header>
+						<AlertDialog.Footer>
+							<AlertDialog.Cancel>Cancel</AlertDialog.Cancel>
+							<AlertDialog.Action onclick={handleResetLibrary}>Reset Library</AlertDialog.Action>
+						</AlertDialog.Footer>
+					</AlertDialog.Content>
+				</AlertDialog.Root>
 			</div>
 			<Separator />
 			<div class="flex items-center justify-between gap-4">

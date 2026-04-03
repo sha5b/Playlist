@@ -140,6 +140,7 @@ pub struct Download {
     pub completed_at: Option<String>,
     pub target_album_id: Option<i64>,
     pub target_artist_id: Option<i64>,
+    pub target_isrc: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

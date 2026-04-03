@@ -1,5 +1,6 @@
 import { listen } from '@tauri-apps/api/event';
 import * as playerApi from '$lib/api/player';
+import { toast } from 'svelte-sonner';
 import type { PlaybackState, QueueTrack, PlayerEvent, RepeatMode, PlayerStateEnum } from '$lib/types';
 import {
 	initMediaSession,
@@ -86,6 +87,7 @@ function handleEvent(event: PlayerEvent) {
 			break;
 		case 'error':
 			console.error('Player error:', event.data);
+			toast.error('Playback error', { description: String(event.data) });
 			break;
 	}
 }
@@ -285,7 +287,9 @@ export const player = {
 	},
 
 	async moveInQueue(fromIndex: number, toIndex: number) {
-		// Optimistic update for smooth DnD
+		// Optimistic update for smooth DnD (save state for rollback)
+		const prevTracks = [...queueTracks];
+		const prevPos = queuePosition;
 		const newTracks = [...queueTracks];
 		const [moved] = newTracks.splice(fromIndex, 1);
 		newTracks.splice(toIndex, 0, moved);
@@ -299,7 +303,14 @@ export const player = {
 				queuePosition = queuePosition + 1;
 			}
 		}
-		await playerApi.moveInQueue(fromIndex, toIndex);
+		try {
+			await playerApi.moveInQueue(fromIndex, toIndex);
+		} catch {
+			// Rollback on failure
+			queueTracks = prevTracks;
+			queuePosition = prevPos;
+			toast.error('Failed to reorder queue');
+		}
 	},
 
 	async removeFromQueue(index: number) {

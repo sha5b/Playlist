@@ -41,7 +41,7 @@ export async function setShuffle(shuffle: boolean): Promise<void> {
 	return invoke('player_set_shuffle', { shuffle });
 }
 
-export async function setRepeat(mode: string): Promise<void> {
+export async function setRepeat(mode: import('$lib/types').RepeatMode): Promise<void> {
 	return invoke('player_set_repeat', { mode });
 }
 

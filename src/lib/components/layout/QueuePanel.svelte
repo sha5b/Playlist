@@ -73,7 +73,9 @@
 		ondrop={processDrop}
 	>
 		<div class="flex items-center justify-between px-4 h-14 border-b border-border">
-			<h2 class="text-sm font-semibold">Queue</h2>
+			<h2 class="text-sm font-semibold">
+				Queue{#if player.queueTracks.length > 0}<span class="text-muted-foreground font-normal ml-1">({player.queueTracks.length})</span>{/if}
+			</h2>
 			<div class="flex items-center gap-1">
 				{#if player.queueTracks.length > 0}
 					<Button

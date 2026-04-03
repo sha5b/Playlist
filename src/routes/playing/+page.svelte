@@ -16,6 +16,9 @@
 	type DisplayMode = 'artwork' | 'video' | 'lyrics';
 	let preferredMode = $state<DisplayMode>('artwork');
 	let fullTrack = $state<Track | null>(null);
+	let videoPausedAudio = $state(false);
+	let videoPlaying = $state(false);
+	let videoElement = $state<HTMLVideoElement | null>(null);
 
 	const hasVideo = $derived(!!fullTrack?.music_video_path);
 	const hasLyrics = $derived(!!fullTrack?.lyrics);
@@ -36,6 +39,50 @@
 			fullTrack = null;
 		}
 	});
+
+	// Pause/resume audio engine when entering/leaving video mode
+	$effect(() => {
+		const isVideoMode = displayMode === 'video' && !!fullTrack?.music_video_path;
+
+		if (isVideoMode) {
+			if (player.isPlaying) {
+				player.pause();
+				videoPausedAudio = true;
+			}
+		} else if (videoPausedAudio) {
+			player.resume();
+			videoPausedAudio = false;
+		}
+	});
+
+	// Reset flag when player stops
+	$effect(() => {
+		if (player.isStopped) {
+			videoPausedAudio = false;
+		}
+	});
+
+	function handleVideoPlay() {
+		videoPlaying = true;
+		if (player.isPlaying) {
+			player.pause();
+			videoPausedAudio = true;
+		}
+	}
+
+	function handleVideoPause() {
+		videoPlaying = false;
+	}
+
+	function handleVideoEnded() {
+		videoPlaying = false;
+		videoPausedAudio = false;
+		player.next();
+	}
+
+	const effectivelyPlaying = $derived(
+		displayMode === 'video' && hasVideo ? videoPlaying : player.isPlaying
+	);
 
 	function handleProgressChange(value: number) {
 		const seconds = (value / 100) * (player.durationMs / 1000);
@@ -180,9 +227,19 @@
 								variant="default"
 								size="icon"
 								class="rounded-full size-12"
-								onclick={() => player.togglePlayPause()}
+								onclick={() => {
+									if (displayMode === 'video' && videoElement) {
+										if (videoElement.paused) {
+											videoElement.play();
+										} else {
+											videoElement.pause();
+										}
+									} else {
+										player.togglePlayPause();
+									}
+								}}
 							>
-								{#if player.isPlaying}
+								{#if effectivelyPlaying}
 									<Pause class="size-6" fill="currentColor" />
 								{:else}
 									<Play class="size-6" fill="currentColor" />
@@ -214,10 +271,14 @@
 				<div class="rounded-xl border border-border bg-black overflow-hidden">
 					<!-- svelte-ignore a11y_media_has_caption -->
 					<video
+						bind:this={videoElement}
 						src={assetUrl(fullTrack.music_video_path)}
 						controls
 						autoplay
 						class="w-full max-h-[28rem] object-contain"
+						onplay={handleVideoPlay}
+						onpause={handleVideoPause}
+						onended={handleVideoEnded}
 					></video>
 				</div>
 			{:else if displayMode === 'lyrics' && fullTrack?.lyrics}

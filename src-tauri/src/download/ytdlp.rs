@@ -41,6 +41,8 @@ pub struct VideoInfo {
     pub language: Option<String>,
     pub tags: Option<Vec<String>>,
     pub channel_url: Option<String>,
+    /// ISRC (International Standard Recording Code) for precise track matching
+    pub isrc: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -135,7 +137,15 @@ fn video_info_from_json(json: &serde_json::Value) -> VideoInfo {
             .map(|s| s.get(..4).unwrap_or(s).to_string()),
         description: json["description"].as_str()
             .filter(|d| !d.is_empty())
-            .map(|d| if d.len() > 500 { format!("{}...", &d[..497]) } else { d.to_string() }),
+            .map(|d| {
+                if d.len() > 500 {
+                    // Find a valid char boundary at or before byte 497
+                    let end = d.floor_char_boundary(497);
+                    format!("{}...", &d[..end])
+                } else {
+                    d.to_string()
+                }
+            }),
         track_number: json["track_number"].as_i64(),
         disc_number: json["disc_number"].as_i64(),
         composer: json["composer"].as_str().map(|s| s.to_string()),
@@ -144,6 +154,9 @@ fn video_info_from_json(json: &serde_json::Value) -> VideoInfo {
             arr.iter().filter_map(|v| v.as_str().map(String::from)).collect()
         }),
         channel_url: json["channel_url"].as_str().map(|s| s.to_string()),
+        isrc: json["isrc"].as_str()
+            .or_else(|| json["external_ids"]["isrc"].as_str())
+            .map(|s| s.to_string()),
     }
 }
 
@@ -390,6 +403,10 @@ pub async fn get_playlist_entries(
                 let url_field = json["url"].as_str().unwrap_or("");
                 if url_field.starts_with("http") {
                     info.webpage_url = Some(url_field.to_string());
+                } else if url_field.starts_with("spotify:track:") {
+                    // Spotify URI — convert to a proper Spotify URL
+                    let track_id = url_field.strip_prefix("spotify:track:").unwrap_or("");
+                    info.webpage_url = Some(format!("https://open.spotify.com/track/{}", track_id));
                 } else if !url_field.is_empty() {
                     info.webpage_url = Some(format!("https://www.youtube.com/watch?v={}", url_field));
                 } else if let Some(id) = json["id"].as_str().filter(|s| !s.is_empty()) {

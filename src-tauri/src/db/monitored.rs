@@ -18,6 +18,7 @@ pub struct MonitoredEntry {
     pub position: i64,
     pub first_seen_at: String,
     pub downloaded_at: Option<String>,
+    pub isrc: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -123,7 +124,7 @@ pub fn create_monitored_playlist(
 pub fn upsert_entries(
     conn: &Connection,
     playlist_id: i64,
-    entries: &[(String, Option<String>, Option<String>, Option<f64>, Option<String>)], // (url, title, artist, duration, thumbnail)
+    entries: &[(String, Option<String>, Option<String>, Option<f64>, Option<String>, Option<String>)], // (url, title, artist, duration, thumbnail, isrc)
 ) -> Result<(i64, i64), rusqlite::Error> {
     log::info!("upsert_entries called for playlist_id: {} with {} entries", playlist_id, entries.len());
     let mut new_count = 0i64;
@@ -139,7 +140,7 @@ pub fn upsert_entries(
             "UPDATE monitored_playlist_entries SET source_url = ?1
              WHERE playlist_id = ?2 AND title = ?3 AND source_url LIKE 'ytsearch%'"
         )?;
-        for (url, title, _artist, _dur, _thumb) in entries.iter() {
+        for (url, title, _artist, _dur, _thumb, _isrc) in entries.iter() {
             if !url.starts_with("ytsearch") {
                 if let Some(t) = title {
                     let changed = fix_stmt.execute(params![url, playlist_id, t]).unwrap_or(0);
@@ -162,17 +163,18 @@ pub fn upsert_entries(
     drop(existing_stmt);
 
     let mut insert_stmt = conn.prepare(
-        "INSERT INTO monitored_playlist_entries (playlist_id, source_url, title, artist, duration_seconds, thumbnail, position)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+        "INSERT INTO monitored_playlist_entries (playlist_id, source_url, title, artist, duration_seconds, thumbnail, position, isrc)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
          ON CONFLICT(playlist_id, source_url) DO UPDATE SET
             title = COALESCE(excluded.title, monitored_playlist_entries.title),
             artist = COALESCE(excluded.artist, monitored_playlist_entries.artist),
             duration_seconds = COALESCE(excluded.duration_seconds, monitored_playlist_entries.duration_seconds),
             thumbnail = COALESCE(excluded.thumbnail, monitored_playlist_entries.thumbnail),
+            isrc = COALESCE(excluded.isrc, monitored_playlist_entries.isrc),
             position = excluded.position",
     )?;
 
-    for (i, (url, title, artist, duration, thumbnail)) in entries.iter().enumerate() {
+    for (i, (url, title, artist, duration, thumbnail, isrc)) in entries.iter().enumerate() {
         insert_stmt.execute(params![
             playlist_id,
             url,
@@ -181,6 +183,7 @@ pub fn upsert_entries(
             duration,
             thumbnail,
             i as i64,
+            isrc,
         ])?;
         // If the URL wasn't in the existing set, it's a new entry
         if !existing_urls.contains(url) {
@@ -222,12 +225,13 @@ fn entry_from_row(row: &rusqlite::Row) -> rusqlite::Result<MonitoredEntry> {
         position: row.get(10)?,
         first_seen_at: row.get(11)?,
         downloaded_at: row.get(12)?,
+        isrc: row.get(13)?,
     })
 }
 
 const ENTRY_COLUMNS: &str =
     "id, playlist_id, source_url, title, artist, duration_seconds, thumbnail, \
-     status, download_id, track_id, position, first_seen_at, downloaded_at";
+     status, download_id, track_id, position, first_seen_at, downloaded_at, isrc";
 
 fn query_entries(conn: &Connection, playlist_id: i64, status_filter: Option<&str>) -> Result<Vec<MonitoredEntry>, rusqlite::Error> {
     match status_filter {

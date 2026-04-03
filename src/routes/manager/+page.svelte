@@ -89,6 +89,7 @@
 	let playlistUrlInput = $state('');
 	let addingPlaylist = $state(false);
 	let syncingAll = $state(false);
+	let syncAllProgress = $state({ current: 0, total: 0, name: '' });
 	let syncingIds = $state<Set<number>>(new Set());
 	let selectedPlaylist = $state<MonitoredPlaylist | null>(null);
 	let selectedEntries: MonitoredEntry[] = $state([]);
@@ -273,9 +274,12 @@
 
 	async function handleSyncAll() {
 		syncingAll = true;
+		syncAllProgress = { current: 0, total: playlists.length, name: '' };
 		try {
 			let totalNew = 0;
-			for (const pl of playlists) {
+			for (let i = 0; i < playlists.length; i++) {
+				const pl = playlists[i];
+				syncAllProgress = { current: i + 1, total: playlists.length, name: pl.name };
 				try {
 					const result = await syncPlaylist(pl.id);
 					totalNew += result.new_count;
@@ -855,10 +859,11 @@
 							>
 								{#if syncingAll}
 									<Loader2 class="size-4 animate-spin" />
+									Syncing {syncAllProgress.current}/{syncAllProgress.total}
 								{:else}
 									<RefreshCw class="size-4" />
+									Sync all
 								{/if}
-								Sync all
 							</Button>
 						{/if}
 					</div>

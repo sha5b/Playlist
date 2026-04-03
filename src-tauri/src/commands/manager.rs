@@ -54,7 +54,7 @@ pub async fn manager_add_playlist(
         crate::db::settings::get_cookies_browser(&conn)
     };
 
-    // For Spotify, skip yt-dlp entirely and use native API to avoid bot detection
+    // For DRM platforms, use native API (yt-dlp blocks Spotify with DRM error)
     let drm_platforms = ["spotify", "apple_music", "tidal", "deezer", "amazon_music"];
     let fetch_result = if drm_platforms.contains(&parsed.platform.as_str()) {
         log::info!("Using native API for {} playlist (skipping yt-dlp)", parsed.platform);
@@ -123,6 +123,7 @@ pub async fn manager_add_playlist(
                 best_artist,
                 e.duration,
                 e.thumbnail.clone(),
+                e.isrc.clone(),
             )
         })
         .collect();
@@ -175,7 +176,7 @@ pub async fn manager_sync_playlist(
         crate::db::settings::get_cookies_browser(&conn)
     };
 
-    // For Spotify, skip yt-dlp entirely and use native API to avoid bot detection
+    // For DRM platforms, use native API (yt-dlp blocks Spotify with DRM error)
     let drm_platforms = ["spotify", "apple_music", "tidal", "deezer", "amazon_music"];
     let fetch_result = if drm_platforms.contains(&platform.as_str()) {
         log::info!("Using native API for {} playlist sync (skipping yt-dlp)", platform);
@@ -184,7 +185,6 @@ pub async fn manager_sync_playlist(
             .await
             .map_err(|e| format!("Native API error: {}", e))?
     } else {
-        // For non-DRM platforms (YouTube, SoundCloud, etc.), use yt-dlp
         crate::download::ytdlp::get_playlist_entries(
             &ytdlp_binary,
             ffmpeg_dir.as_deref(),
@@ -216,6 +216,7 @@ pub async fn manager_sync_playlist(
                 best_artist,
                 e.duration,
                 e.thumbnail.clone(),
+                e.isrc.clone(),
             )
         })
         .collect();
@@ -294,6 +295,7 @@ pub async fn manager_download_entry(
         &qual,
         None,
         None,
+        entry.isrc.as_deref(),
     )
     .map_err(|e| e.to_string())?;
 
@@ -359,6 +361,7 @@ pub async fn manager_download_new(
                 &qual,
                 None,
                 None,
+                entry.isrc.as_deref(),
             )
             .map_err(|e| e.to_string())?;
 

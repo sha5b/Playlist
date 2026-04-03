@@ -2,6 +2,8 @@
 	import { getPlaylists, createPlaylist } from '$lib/api/library';
 	import { Button } from '$lib/components/ui/button';
 	import { Card } from '$lib/components/ui/card';
+	import { Input } from '$lib/components/ui/input';
+	import * as Dialog from '$lib/components/ui/dialog';
 	import CardGridSkeleton from '$lib/components/shared/CardGridSkeleton.svelte';
 	import { ListMusic, Plus } from 'lucide-svelte';
 	import { formatDurationLong, assetUrl } from '$lib/utils/format';
@@ -9,6 +11,9 @@
 
 	let playlists: Playlist[] = $state([]);
 	let loading = $state(true);
+	let createOpen = $state(false);
+	let newName = $state('');
+	let creating = $state(false);
 
 	async function load() {
 		loading = true;
@@ -22,14 +27,23 @@
 	}
 
 	async function handleCreate() {
-		const name = prompt('Playlist name:');
-		if (!name) return;
+		if (!newName.trim()) return;
+		creating = true;
 		try {
-			await createPlaylist(name);
+			await createPlaylist(newName.trim());
+			createOpen = false;
+			newName = '';
 			await load();
 		} catch (e) {
 			console.error('Failed to create playlist:', e);
+		} finally {
+			creating = false;
 		}
+	}
+
+	function openCreateDialog() {
+		newName = '';
+		createOpen = true;
 	}
 
 	$effect(() => {
@@ -45,7 +59,7 @@
 				{loading ? 'Loading...' : `${playlists.length} playlist${playlists.length !== 1 ? 's' : ''}`}
 			</p>
 		</div>
-		<Button onclick={handleCreate}>
+		<Button onclick={openCreateDialog}>
 			<Plus class="size-4" />
 			New Playlist
 		</Button>
@@ -56,7 +70,7 @@
 	{:else if playlists.length === 0}
 		<div class="flex flex-col items-center justify-center h-48 rounded-lg border border-dashed border-border gap-3">
 			<p class="text-muted-foreground text-sm">No playlists created yet</p>
-			<Button variant="outline" size="sm" onclick={handleCreate}>
+			<Button variant="outline" size="sm" onclick={openCreateDialog}>
 				<Plus class="size-4" />
 				Create your first playlist
 			</Button>
@@ -89,3 +103,28 @@
 		</div>
 	{/if}
 </div>
+
+<Dialog.Root bind:open={createOpen}>
+	<Dialog.Content class="sm:max-w-md">
+		<Dialog.Header>
+			<Dialog.Title>Create Playlist</Dialog.Title>
+			<Dialog.Description>Enter a name for your new playlist.</Dialog.Description>
+		</Dialog.Header>
+		<form onsubmit={(e) => { e.preventDefault(); handleCreate(); }}>
+			<Input
+				placeholder="Playlist name"
+				bind:value={newName}
+				autofocus
+				class="mb-4"
+			/>
+			<Dialog.Footer>
+				<Dialog.Close>
+					<Button variant="outline">Cancel</Button>
+				</Dialog.Close>
+				<Button type="submit" disabled={!newName.trim() || creating}>
+					{creating ? 'Creating...' : 'Create'}
+				</Button>
+			</Dialog.Footer>
+		</form>
+	</Dialog.Content>
+</Dialog.Root>

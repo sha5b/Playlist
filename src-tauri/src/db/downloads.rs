@@ -22,12 +22,13 @@ fn row_to_download(row: &rusqlite::Row) -> rusqlite::Result<Download> {
         completed_at: row.get(15)?,
         target_album_id: row.get(16)?,
         target_artist_id: row.get(17)?,
+        target_isrc: row.get(18)?,
     })
 }
 
 const SELECT_COLS: &str = "id, url, title, artist, platform, status, progress, error_message,
     file_path, track_id, playlist_id, format, quality, created_at, started_at, completed_at,
-    target_album_id, target_artist_id";
+    target_album_id, target_artist_id, target_isrc";
 
 pub fn create_download(
     conn: &Connection,
@@ -39,11 +40,12 @@ pub fn create_download(
     quality: &str,
     target_album_id: Option<i64>,
     target_artist_id: Option<i64>,
+    target_isrc: Option<&str>,
 ) -> Result<Download, rusqlite::Error> {
     conn.execute(
-        "INSERT INTO downloads (url, title, artist, platform, format, quality, target_album_id, target_artist_id)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-        params![url, title, artist, platform, format, quality, target_album_id, target_artist_id],
+        "INSERT INTO downloads (url, title, artist, platform, format, quality, target_album_id, target_artist_id, target_isrc)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        params![url, title, artist, platform, format, quality, target_album_id, target_artist_id, target_isrc],
     )?;
     let id = conn.last_insert_rowid();
     get_download(conn, id)?.ok_or(rusqlite::Error::QueryReturnedNoRows)

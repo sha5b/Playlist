@@ -9,7 +9,10 @@
 	import { Badge } from '$lib/components/ui/badge';
 	import { ArrowLeft, ListMusic, Play, Shuffle, Trash2, Loader2, ExternalLink } from 'lucide-svelte';
 	import { toast } from 'svelte-sonner';
+	import * as AlertDialog from '$lib/components/ui/alert-dialog';
 	import type { Playlist, TrackPage, Track } from '$lib/types';
+
+	let deleteOpen = $state(false);
 
 	let playlist = $state<Playlist | null>(null);
 	let trackPage = $state<TrackPage | null>(null);
@@ -62,7 +65,6 @@
 
 	async function handleDelete() {
 		if (!playlist) return;
-		if (!confirm(`Delete playlist "${playlist.name}"?`)) return;
 		try {
 			await deletePlaylist(playlist.id);
 			toast.success('Playlist deleted');
@@ -155,9 +157,27 @@
 						<Shuffle class="size-4" />
 						Shuffle
 					</Button>
-					<Button variant="outline" class="text-destructive hover:text-destructive" onclick={handleDelete}>
-						<Trash2 class="size-4" />
-					</Button>
+					<AlertDialog.Root bind:open={deleteOpen}>
+						<AlertDialog.Trigger>
+							{#snippet child({ props })}
+								<Button variant="outline" class="text-destructive hover:text-destructive" {...props}>
+									<Trash2 class="size-4" />
+								</Button>
+							{/snippet}
+						</AlertDialog.Trigger>
+						<AlertDialog.Content>
+							<AlertDialog.Header>
+								<AlertDialog.Title>Delete Playlist</AlertDialog.Title>
+								<AlertDialog.Description>
+									Are you sure you want to delete "{playlist?.name}"? This cannot be undone.
+								</AlertDialog.Description>
+							</AlertDialog.Header>
+							<AlertDialog.Footer>
+								<AlertDialog.Cancel>Cancel</AlertDialog.Cancel>
+								<AlertDialog.Action onclick={handleDelete}>Delete</AlertDialog.Action>
+							</AlertDialog.Footer>
+						</AlertDialog.Content>
+					</AlertDialog.Root>
 				</div>
 			</div>
 		</div>

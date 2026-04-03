@@ -167,6 +167,7 @@ export interface Download {
 	completed_at: string | null;
 	target_album_id: number | null;
 	target_artist_id: number | null;
+	target_isrc: string | null;
 }
 
 export interface UrlInfo {
@@ -178,7 +179,7 @@ export interface UrlInfo {
 
 export interface DownloadEvent {
 	id: number;
-	status: string;
+	status: DownloadStatus;
 	progress: number;
 	speed: string | null;
 	eta: string | null;

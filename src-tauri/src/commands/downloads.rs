@@ -85,6 +85,7 @@ pub async fn download_start(
             &qual,
             None,
             None,
+            None,
         )
         .map_err(|e| e.to_string())?
     };
@@ -147,6 +148,7 @@ pub async fn download_start_batch(
                 &qual,
                 None,
                 None,
+                None,
             )
             .map_err(|e| e.to_string())?
         };
@@ -200,6 +202,7 @@ pub async fn download_search_and_start(
             &qual,
             album_id,
             artist_id,
+            None,
         )
         .map_err(|e| e.to_string())?
     };
@@ -240,6 +243,7 @@ pub async fn download_search_and_start_batch(
                 &qual,
                 req.album_id,
                 req.artist_id,
+                None,
             )
             .map_err(|e| e.to_string())?
         };
@@ -496,6 +500,7 @@ pub async fn download_artist_missing(
                     "best",
                     Some(album_id),
                     Some(artist_id),
+                    None,
                 )
                 .map_err(|e| e.to_string())?
             };

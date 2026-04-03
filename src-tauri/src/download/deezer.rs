@@ -436,6 +436,7 @@ pub async fn fetch_playlist_entries(url: &str) -> Result<super::ytdlp::PlaylistF
                     language: None,
                     tags: None,
                     channel_url: None,
+                    isrc: track["isrc"].as_str().map(|s| s.to_string()),
                 });
             }
         }
@@ -508,4 +509,60 @@ impl AudioSource for DeezerSource {
         let _ = self.get_api_token().await?;
         Ok(())
     }
+}
+
+/// Search Deezer's public API for a track and return metadata (ISRC, duration, title, artist).
+/// This requires NO authentication — works for anyone.
+pub async fn search_public_metadata(query: &str) -> Option<DeezerPublicResult> {
+    let client = Client::new();
+    let resp = client
+        .get(format!("{}/search/track", DEEZER_API))
+        .query(&[("q", query), ("limit", "1")])
+        .send()
+        .await
+        .ok()?;
+
+    let data: serde_json::Value = resp.json().await.ok()?;
+    let track = data["data"].as_array()?.first()?;
+
+    let track_id = track["id"].as_i64()?;
+    let title = track["title"].as_str()?.to_string();
+    let artist = track["artist"]["name"].as_str().map(|s| s.to_string());
+    let duration = track["duration"].as_f64();
+    let album = track["album"]["title"].as_str().map(|s| s.to_string());
+
+    // The public search API doesn't return ISRC directly,
+    // but the individual track endpoint does (no auth needed).
+    let isrc = match client
+        .get(format!("{}/track/{}", DEEZER_API, track_id))
+        .send()
+        .await
+    {
+        Ok(resp) => {
+            if let Ok(track_data) = resp.json::<serde_json::Value>().await {
+                track_data["isrc"].as_str().map(|s| s.to_string())
+            } else {
+                None
+            }
+        }
+        Err(_) => None,
+    };
+
+    Some(DeezerPublicResult {
+        title,
+        artist,
+        duration,
+        album,
+        isrc,
+    })
+}
+
+/// Metadata from Deezer's public API (no authentication required)
+#[allow(dead_code)]
+pub struct DeezerPublicResult {
+    pub title: String,
+    pub artist: Option<String>,
+    pub duration: Option<f64>,
+    pub album: Option<String>,
+    pub isrc: Option<String>,
 }

@@ -53,6 +53,11 @@ fn parse_spotify_track(track: &serde_json::Value, album_name: Option<&str>) -> O
         .or_else(|| track["duration_ms"].as_f64().map(|ms| ms / 1000.0));
     let track_uri = track["uri"].as_str().unwrap_or("").to_string();
 
+    // ISRC from embed data (if available)
+    let isrc = track["external_ids"]["isrc"].as_str()
+        .or_else(|| track["isrc"].as_str())
+        .map(|s| s.to_string());
+
     Some(super::ytdlp::VideoInfo {
         title: title.to_string(),
         track: Some(title.to_string()),
@@ -71,6 +76,7 @@ fn parse_spotify_track(track: &serde_json::Value, album_name: Option<&str>) -> O
         language: None,
         tags: None,
         channel_url: None,
+        isrc,
     })
 }
 
@@ -93,6 +99,9 @@ fn parse_api_track(item: &serde_json::Value, fallback_album: Option<&str>) -> Op
     let album_name = track["album"]["name"].as_str()
         .map(|s| s.to_string())
         .or_else(|| fallback_album.map(|s| s.to_string()));
+    // ISRC from Spotify Web API response
+    let isrc = track["external_ids"]["isrc"].as_str()
+        .map(|s| s.to_string());
 
     Some(super::ytdlp::VideoInfo {
         title: title.to_string(),
@@ -112,7 +121,85 @@ fn parse_api_track(item: &serde_json::Value, fallback_album: Option<&str>) -> Op
         language: None,
         tags: None,
         channel_url: None,
+        isrc,
     })
+}
+
+/// Search the raw HTML for an access token. Spotify may embed it outside of __NEXT_DATA__
+/// in script tags or inline JSON configuration.
+fn extract_token_from_html(html: &str) -> Option<String> {
+    // Search for "accessToken":"<token>" pattern anywhere in the HTML
+    let pattern = "\"accessToken\":\"";
+    if let Some(start) = html.find(pattern) {
+        let token_start = start + pattern.len();
+        if let Some(end) = html[token_start..].find('"') {
+            let token = &html[token_start..token_start + end];
+            if !token.is_empty() && token.len() > 20 {
+                return Some(token.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Fetch an anonymous access token from Spotify's web player token endpoint.
+/// Tries multiple approaches: web player token with cookies, embed token, and cookieless.
+async fn fetch_anonymous_token(_client: &reqwest::Client) -> Option<String> {
+    let jar_client = reqwest::Client::builder()
+        .cookie_store(true)
+        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36")
+        .build()
+        .ok()?;
+
+    // Establish session cookies by visiting the main page
+    let _ = jar_client.get("https://open.spotify.com/").send().await;
+
+    // Attempt 1: Web player token with session cookies
+    let token_urls = [
+        "https://open.spotify.com/get_access_token?reason=transport&productType=web_player",
+        "https://open.spotify.com/get_access_token?reason=transport&productType=embed",
+    ];
+
+    for token_url in &token_urls {
+        if let Ok(resp) = jar_client
+            .get(*token_url)
+            .header("Referer", "https://open.spotify.com/")
+            .send()
+            .await
+        {
+            if let Ok(data) = resp.json::<serde_json::Value>().await {
+                if let Some(token) = data["accessToken"].as_str() {
+                    if !token.is_empty() {
+                        log::info!("[spotify] Obtained anonymous access token from {}", token_url);
+                        return Some(token.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    // Attempt 2: Try without cookies (works in some regions)
+    let bare_client = reqwest::Client::builder()
+        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36")
+        .build()
+        .ok()?;
+    if let Ok(resp) = bare_client
+        .get("https://open.spotify.com/get_access_token?reason=transport&productType=web_player")
+        .send()
+        .await
+    {
+        if let Ok(data) = resp.json::<serde_json::Value>().await {
+            if let Some(token) = data["accessToken"].as_str() {
+                if !token.is_empty() {
+                    log::info!("[spotify] Obtained anonymous access token (cookieless)");
+                    return Some(token.to_string());
+                }
+            }
+        }
+    }
+
+    log::warn!("[spotify] All anonymous token acquisition methods failed");
+    None
 }
 
 /// Fetch playlist entries from Spotify using the public embed/oEmbed API.
@@ -190,31 +277,59 @@ pub async fn fetch_playlist_entries(url: &str) -> Result<super::ytdlp::PlaylistF
             // The embed page typically only includes ~100 tracks.
             // Use the anonymous access token from the embed data to fetch remaining pages.
             let total_tracks = entity["tracks"]["totalCount"].as_u64()
-                .or_else(|| entity["trackList"].as_array().map(|_| {
-                    // trackList format doesn't have totalCount; check trackCount on the entity
-                    entity["trackCount"].as_u64().unwrap_or(0)
-                }))
-                .unwrap_or(entries.len() as u64);
+                .or_else(|| entity["trackCount"].as_u64())
+                .or_else(|| entity["tracks"]["total"].as_u64());
 
-            if (total_tracks as usize) > entries.len() {
-                // Try to extract the anonymous access token from the embed page data
-                let access_token = data["props"]["pageProps"]["state"]["data"]["accessToken"].as_str()
-                    .or_else(|| data["props"]["pageProps"]["accessToken"].as_str());
+            // If we can't determine total, or total > what we have, attempt pagination.
+            // When total is unknown, always try -- the loop stops on empty items / null next.
+            let should_paginate = match total_tracks {
+                Some(total) => (total as usize) > entries.len(),
+                None => true,
+            };
 
-                if let Some(token) = access_token {
+            log::info!(
+                "[spotify] Embed returned {} tracks, detected total: {:?}, will paginate: {}",
+                entries.len(), total_tracks, should_paginate
+            );
+
+            if should_paginate {
+                // Try to extract the access token from the embed data JSON paths,
+                // then from the raw HTML, then from the anonymous token endpoint.
+                let embed_token = data["props"]["pageProps"]["state"]["data"]["accessToken"].as_str()
+                    .or_else(|| data["props"]["pageProps"]["accessToken"].as_str())
+                    .map(|s| s.to_string());
+
+                let token = if embed_token.is_some() {
+                    log::info!("[spotify] Found token in __NEXT_DATA__ JSON");
+                    embed_token
+                } else if let Some(html_token) = extract_token_from_html(&html) {
+                    log::info!("[spotify] Found token in raw HTML");
+                    Some(html_token)
+                } else {
+                    log::info!("[spotify] No token in embed page, trying anonymous token endpoint");
+                    fetch_anonymous_token(&client).await
+                };
+
+                if let Some(token) = token {
                     log::info!(
-                        "[spotify] Embed returned {}/{} tracks, fetching remaining via API",
+                        "[spotify] Embed returned {}/{:?} tracks, fetching remaining via API",
                         entries.len(), total_tracks
                     );
                     let mut offset = entries.len();
+                    let max_offset: usize = total_tracks.map(|t| t as usize).unwrap_or(5000);
                     let api_path = if item_type == "playlist" {
                         format!("https://api.spotify.com/v1/playlists/{}/tracks", item_id)
                     } else {
                         format!("https://api.spotify.com/v1/albums/{}/tracks", item_id)
                     };
 
+                    // Wait before first API call — the embed page load already counts toward rate limits
+                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+                    let mut rate_limit_retries = 0u32;
+
                     loop {
-                        if offset >= total_tracks as usize {
+                        if offset >= max_offset {
                             break;
                         }
                         let api_url = format!("{}?offset={}&limit=100", api_path, offset);
@@ -225,28 +340,67 @@ pub async fn fetch_playlist_entries(url: &str) -> Result<super::ytdlp::PlaylistF
 
                         match api_resp {
                             Ok(resp) => {
-                                if let Ok(page) = resp.json::<serde_json::Value>().await {
-                                    if let Some(items) = page["items"].as_array() {
-                                        if items.is_empty() {
-                                            break;
-                                        }
-                                        for item in items {
-                                            if let Some(info) = parse_api_track(item, playlist_name.as_deref()) {
-                                                entries.push(info);
-                                            }
-                                        }
-                                        offset += items.len();
+                                let status = resp.status();
 
-                                        // If there's no "next" page, we're done
-                                        if page["next"].is_null() {
-                                            break;
-                                        }
-                                    } else {
+                                // Handle rate limiting (429) with retry + backoff
+                                if status.as_u16() == 429 {
+                                    rate_limit_retries += 1;
+                                    if rate_limit_retries > 10 {
+                                        log::warn!("[spotify] Too many rate limit retries, stopping pagination");
                                         break;
                                     }
-                                } else {
-                                    log::warn!("[spotify] Failed to parse API page at offset {}", offset);
+                                    let retry_after = resp.headers()
+                                        .get("retry-after")
+                                        .and_then(|v| v.to_str().ok())
+                                        .and_then(|v| v.parse::<u64>().ok())
+                                        .unwrap_or(3);
+                                    // Use at least the retry-after value, with increasing backoff
+                                    let wait = retry_after.max(2 * rate_limit_retries as u64).min(30);
+                                    log::info!("[spotify] Rate limited at offset {}, waiting {}s (attempt {}/10)...", offset, wait, rate_limit_retries);
+                                    tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
+                                    continue; // retry same offset
+                                }
+                                rate_limit_retries = 0; // reset on success
+
+                                let body = resp.text().await.unwrap_or_default();
+
+                                if !status.is_success() {
+                                    log::warn!(
+                                        "[spotify] API returned HTTP {} at offset {}: {}",
+                                        status, offset, &body[..body.len().min(200)]
+                                    );
                                     break;
+                                }
+
+                                match serde_json::from_str::<serde_json::Value>(&body) {
+                                    Ok(page) => {
+                                        if let Some(items) = page["items"].as_array() {
+                                            if items.is_empty() {
+                                                break;
+                                            }
+                                            for item in items {
+                                                if let Some(info) = parse_api_track(item, playlist_name.as_deref()) {
+                                                    entries.push(info);
+                                                }
+                                            }
+                                            offset += items.len();
+                                            log::info!("[spotify] Fetched page at offset {}, got {} items, total so far: {}", offset - items.len(), items.len(), entries.len());
+
+                                            // Delay between pages to avoid rate limiting
+                                            tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+
+                                            if page["next"].is_null() {
+                                                break;
+                                            }
+                                        } else {
+                                            log::warn!("[spotify] No 'items' array in API response at offset {}: {}", offset, &body[..body.len().min(300)]);
+                                            break;
+                                        }
+                                    }
+                                    Err(e) => {
+                                        log::warn!("[spotify] Failed to parse API page at offset {}: {} — body: {}", offset, e, &body[..body.len().min(200)]);
+                                        break;
+                                    }
                                 }
                             }
                             Err(e) => {
@@ -258,8 +412,9 @@ pub async fn fetch_playlist_entries(url: &str) -> Result<super::ytdlp::PlaylistF
                     log::info!("[spotify] Fetched {} total tracks", entries.len());
                 } else {
                     log::warn!(
-                        "[spotify] Embed has {}/{} tracks but no access token found for pagination",
-                        entries.len(), total_tracks
+                        "[spotify] Embed has {}/{:?} tracks but could not obtain any access token for pagination. \
+                         Only the first {} tracks were imported.",
+                        entries.len(), total_tracks, entries.len()
                     );
                 }
             }
