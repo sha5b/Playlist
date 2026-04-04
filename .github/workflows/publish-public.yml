@@ -49,7 +49,6 @@ jobs:
             --pattern '*.exe' \
             --pattern '*.deb' \
             --pattern '*.rpm' \
-            --pattern '*.AppImage' \
             --pattern '*.dmg' || true
           ls -la assets/
 
