@@ -52,6 +52,35 @@ jobs:
             --pattern '*.dmg' || true
           ls -la assets/
 
+      - name: Sync README, icon, and screenshot to public repo
+        env:
+          GH_TOKEN: ${{ secrets.PUBLIC_REPO_TOKEN }}
+        run: |
+          REPO="sha5b/Playlist-public"
+          BRANCH="main"
+
+          # Clone the public repo
+          git clone "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" /tmp/public-repo
+          cd /tmp/public-repo
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Copy README and assets
+          cp "$GITHUB_WORKSPACE/README.md" .
+          cp "$GITHUB_WORKSPACE/LICENSE" . 2>/dev/null || true
+          mkdir -p src-tauri/icons docs/screenshot
+          cp "$GITHUB_WORKSPACE/src-tauri/icons/icon.png" src-tauri/icons/
+          cp "$GITHUB_WORKSPACE/docs/screenshot/main.png" docs/screenshot/
+
+          # Commit and push if there are changes
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No changes to sync"
+          else
+            git commit -m "Sync README and assets from ${{ steps.tag.outputs.tag }}"
+            git push origin "$BRANCH"
+          fi
+
       - name: Create release on public repo
         env:
           GH_TOKEN: ${{ secrets.PUBLIC_REPO_TOKEN }}
