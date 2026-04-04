@@ -138,7 +138,7 @@ async fn lookup_composer(recording_mbid: &str) -> Option<String> {
 }
 
 /// Look up a recording's URL relations to find a confirmed music video link.
-async fn lookup_music_video_url(recording_mbid: &str) -> Option<String> {
+pub async fn lookup_music_video_url(recording_mbid: &str) -> Option<String> {
     // Rate limit: 1 req/sec
     tokio::time::sleep(std::time::Duration::from_millis(MB_RATE_LIMIT_MS)).await;
 

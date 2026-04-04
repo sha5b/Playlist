@@ -37,6 +37,8 @@ pub struct DownloadManager {
     concurrency: Arc<Semaphore>,
     /// Pluggable audio sources (Spotify, Deezer, etc.) for direct platform downloads
     pub(crate) sources: Arc<tokio::sync::RwLock<source::SourceRegistry>>,
+    /// Tracks YouTube URLs already used per album to prevent duplicate downloads
+    used_urls_by_album: Arc<tokio::sync::RwLock<HashMap<i64, HashSet<String>>>>,
 }
 
 impl DownloadManager {
@@ -48,6 +50,7 @@ impl DownloadManager {
             active_tasks: Arc::new(Mutex::new(HashMap::new())),
             concurrency: Arc::new(Semaphore::new(2)),
             sources: Arc::new(tokio::sync::RwLock::new(sources)),
+            used_urls_by_album: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
         }
     }
 
@@ -179,6 +182,7 @@ impl DownloadManager {
         let cookies_from_browser = self.get_cookies_from_browser();
         let semaphore = self.concurrency.clone();
         let sources = self.sources.clone();
+        let used_urls_by_album = self.used_urls_by_album.clone();
 
         // Emit queued event immediately so the frontend can show all pending downloads
         emit_event(&self.app_handle, download_id, "queued", 0.0, None, None, None, title);
@@ -194,7 +198,7 @@ impl DownloadManager {
                         return;
                     }
                 };
-                run_download(db, app_handle, download_id, download_dir, ytdlp_binary, ffmpeg_dir, cookies_from_browser, sources)
+                run_download(db, app_handle, download_id, download_dir, ytdlp_binary, ffmpeg_dir, cookies_from_browser, sources, used_urls_by_album)
                     .await;
                 active_tasks.lock().await.remove(&download_id);
             });
@@ -300,6 +304,7 @@ async fn run_download(
     ffmpeg_dir: Option<String>,
     cookies_from_browser: Option<String>,
     sources: Arc<tokio::sync::RwLock<source::SourceRegistry>>,
+    used_urls_by_album: Arc<tokio::sync::RwLock<HashMap<i64, HashSet<String>>>>,
 ) {
     let mut download = {
         let conn = match db.lock() {
@@ -323,7 +328,7 @@ async fn run_download(
                     Some(ref a) => format!("{} - {}", a, title),
                     None => title.clone(),
                 };
-                download.url = format!("ytsearch1:{}", search_query);
+                download.url = format!("ytsearch5:{}", search_query);
                 // Update the download URL in database
                 if let Ok(conn) = db.lock() {
                     let _ = conn.execute(
@@ -455,44 +460,115 @@ async fn run_download(
 
     // Try yt-dlp direct download (fast for YouTube/SoundCloud/Bandcamp URLs, skipped if search URL on DRM platform)
     let skip_ytdlp_initial = is_drm_platform && is_search_url;
-    // Album track downloads have target_duration_ms — use smart matching instead of blind first-result
-    let has_target_duration = download.target_duration_ms.is_some();
     let ytdlp_success = if !skip_ytdlp_initial {
-        if is_search_url && has_target_duration {
-            // Smart search: fetch multiple results and pick the best match by duration/title
-            let expected_secs = download.target_duration_ms.unwrap() as f64 / 1000.0;
-            let search_query = match (&download.artist, &download.title) {
+        if is_search_url {
+            // Smart search with cascading resolver: try deterministic lookups first,
+            // then fall back to search with improved scoring and album-level dedup.
+            // Works with or without target_duration_ms (title matching is always used).
+            let expected_secs = download.target_duration_ms.map(|ms| ms as f64 / 1000.0);
+            // Build search query using primary artist only (first artist before comma/&/feat)
+            // to avoid polluting search with too many featured artists
+            let primary_artist = download.artist.as_deref().map(|a| {
+                a.split(&[',', '&'][..])
+                    .next()
+                    .unwrap_or(a)
+                    .replace("feat.", "")
+                    .replace("ft.", "")
+                    .trim()
+                    .to_string()
+            });
+            let search_query = match (&primary_artist, &download.title) {
                 (Some(a), Some(t)) => format!("{} - {}", a, t),
                 (_, Some(t)) => t.clone(),
-                _ => download.url.trim_start_matches("ytmsearch5:").trim_start_matches("ytsearch5:").to_string(),
+                _ => download.url
+                    .trim_start_matches("ytmsearch5:")
+                    .trim_start_matches("ytmsearch1:")
+                    .trim_start_matches("ytsearch5:")
+                    .trim_start_matches("ytmsearch1:")
+                    .trim_start_matches("ytsearch1:")
+                    .to_string(),
             };
-            let search_variations = build_search_variations(&search_query, download.target_isrc.as_deref());
+            let is_album_track = download.target_album_id.is_some();
+
+            // Get URLs already used by other tracks in this album
+            let album_used_urls: HashSet<String> = if let Some(album_id) = download.target_album_id {
+                let guard = used_urls_by_album.read().await;
+                guard.get(&album_id).cloned().unwrap_or_default()
+            } else {
+                HashSet::new()
+            };
 
             let mut best_url: Option<String> = None;
-            for variation in &search_variations {
-                match ytdlp::get_search_results(
-                    &ytdlp_binary,
-                    ffmpeg_dir.as_deref(),
-                    variation,
-                    cookies_from_browser.as_deref(),
-                ).await {
-                    Ok(results) if !results.is_empty() => {
-                        if let Some(url) = pick_best_match(&results, Some(expected_secs), Some(&search_query)) {
-                            log::info!("Album track smart match found for '{}': {}", search_query, url);
+
+            // --- Layer 1: MusicBrainz URL relationships (direct YouTube link) ---
+            if best_url.is_none() {
+                if let Some(ref mbid) = download.target_recording_mbid {
+                    log::info!("[download] id={} trying MusicBrainz URL rels for recording {}", download_id, mbid);
+                    if let Some(url) = crate::metadata::musicbrainz::lookup_music_video_url(mbid).await {
+                        if !album_used_urls.contains(&url) {
+                            log::info!("[download] id={} MusicBrainz resolved → {}", download_id, url);
                             best_url = Some(url);
-                            break;
+                        } else {
+                            log::info!("[download] id={} MusicBrainz URL already used by another album track, skipping", download_id);
                         }
                     }
-                    Ok(_) => {
-                        log::warn!("Search variation '{}' returned no results", variation);
+                }
+            }
+
+            // --- Layer 2: SongLink/Odesli ISRC → YouTube URL ---
+            if best_url.is_none() {
+                if let Some(ref isrc) = download.target_isrc {
+                    log::info!("[download] id={} trying SongLink ISRC lookup: {}", download_id, isrc);
+                    if let Some(url) = crate::metadata::songlink::resolve_isrc(isrc).await {
+                        if !album_used_urls.contains(&url) {
+                            log::info!("[download] id={} SongLink resolved → {}", download_id, url);
+                            best_url = Some(url);
+                        } else {
+                            log::info!("[download] id={} SongLink URL already used by another album track, skipping", download_id);
+                        }
                     }
-                    Err(e) => {
-                        log::warn!("Search variation '{}' failed: {}", variation, e);
+                }
+            }
+
+            // --- Layer 3: yt-dlp search with improved matching ---
+            if best_url.is_none() {
+                let search_variations = build_search_variations(
+                    &search_query,
+                    download.target_isrc.as_deref(),
+                    download.target_album_name.as_deref(),
+                );
+
+                for variation in &search_variations {
+                    match ytdlp::get_search_results(
+                        &ytdlp_binary,
+                        ffmpeg_dir.as_deref(),
+                        variation,
+                        cookies_from_browser.as_deref(),
+                    ).await {
+                        Ok(results) if !results.is_empty() => {
+                            if let Some(url) = pick_best_match(&results, expected_secs, Some(&search_query), is_album_track, &album_used_urls) {
+                                log::info!("[download] id={} search match found via '{}': {}", download_id, variation, url);
+                                best_url = Some(url);
+                                break;
+                            }
+                        }
+                        Ok(_) => {
+                            log::warn!("Search variation '{}' returned no results", variation);
+                        }
+                        Err(e) => {
+                            log::warn!("Search variation '{}' failed: {}", variation, e);
+                        }
                     }
                 }
             }
 
             if let Some(ref url) = best_url {
+                // Register this URL as used for album dedup
+                if let Some(album_id) = download.target_album_id {
+                    let mut guard = used_urls_by_album.write().await;
+                    guard.entry(album_id).or_default().insert(url.clone());
+                }
+
                 let app_handle_progress = app_handle.clone();
                 let dl_id = download_id;
                 let result = ytdlp::download_audio(
@@ -806,13 +882,13 @@ async fn run_download(
                 // Step 3: YouTube search fallback with duration validation
                 if let Some(ref query) = search_query {
                     // Build search queries, using ytsearch5: to get multiple results for duration matching
-                    let query_variations = build_search_variations(query, isrc.as_deref());
+                    let query_variations = build_search_variations(query, isrc.as_deref(), None);
 
                     for (attempt, yt_query) in query_variations.iter().enumerate() {
                         // Replace ytsearch1: with ytsearch5: to get multiple candidates
                         let info_query = yt_query
                             .replace("ytsearch1:", "ytsearch5:")
-                            .replace("ytmsearch1:", "ytmsearch5:")
+                            .replace("ytmsearch1:", "ytsearch5:")
                             .replace("scsearch1:", "scsearch5:");
 
                         log::info!("YouTube search attempt {}: searching '{}'", attempt + 1, info_query);
@@ -825,7 +901,7 @@ async fn run_download(
                             cookies_from_browser.as_deref(),
                         ).await {
                             Ok(results) => {
-                                if let Some(best_url) = pick_best_match(&results, expected_duration_secs, Some(query)) {
+                                if let Some(best_url) = pick_best_match(&results, expected_duration_secs, Some(query), false, &HashSet::new()) {
                                     if failed_urls.contains(&best_url) {
                                         log::info!("YouTube search attempt {}: skipping already-failed URL {}", attempt + 1, best_url);
                                         continue;
@@ -886,7 +962,7 @@ async fn run_download(
                         &sc_info_query,
                         cookies_from_browser.as_deref(),
                     ).await {
-                        Ok(results) => pick_best_match(&results, expected_duration_secs, Some(query)),
+                        Ok(results) => pick_best_match(&results, expected_duration_secs, Some(query), false, &HashSet::new()),
                         Err(_) => None,
                     };
 
@@ -1123,13 +1199,27 @@ async fn import_downloaded_file(
         }
     }).await.ok()?;
 
-    // Use file tags if available, fall back to download metadata from yt-dlp.
-    // Then try to split "Artist / Title" or "Artist - Title" patterns common in YouTube titles.
-    let raw_title = tag_data.title
-        .or_else(|| dl_meta.title.clone())
-        .unwrap_or_else(|| "Unknown".to_string());
-    let raw_artist = tag_data.artist
-        .or_else(|| dl_meta.artist.clone());
+    // For album track downloads (target_album_id set), use the download metadata as the
+    // authoritative source — we know the correct title/artist from MusicBrainz.
+    // YouTube file tags contain the video title which is often wrong/noisy.
+    // For other downloads, prefer file tags and fall back to download metadata.
+    let is_album_download = dl_meta.target_album_id.is_some();
+    let raw_title = if is_album_download {
+        dl_meta.title.clone()
+            .or(tag_data.title)
+            .unwrap_or_else(|| "Unknown".to_string())
+    } else {
+        tag_data.title
+            .or_else(|| dl_meta.title.clone())
+            .unwrap_or_else(|| "Unknown".to_string())
+    };
+    let raw_artist = if is_album_download {
+        dl_meta.artist.clone()
+            .or(tag_data.artist)
+    } else {
+        tag_data.artist
+            .or_else(|| dl_meta.artist.clone())
+    };
 
     let (title, artist_name) = split_title_artist(&raw_title, raw_artist.as_deref());
 
@@ -1183,42 +1273,96 @@ async fn import_downloaded_file(
     let tags = dl_meta.tags.clone();
     let isrc = dl_meta.isrc.clone();
 
-    let result = conn.execute(
-        "INSERT INTO tracks (title, artist_id, album_id, album_artist, duration_ms,
-            track_number, disc_number, genre, year, file_path, file_size, format,
-            bitrate, sample_rate, channels, cover_art_path, source_platform, source_url,
-            description, language, composer, release_date, tags, isrc)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, 'download', ?17, ?18, ?19, ?20, ?21, ?22, ?23)",
-        rusqlite::params![
-            title,
-            artist_id,
-            album_id,
-            tag_data.album_artist,
-            tag_data.duration_ms.map(|d| d as i64),
-            tag_data.track_number.map(|t| t as i64).or(dl_meta.target_track_number),
-            tag_data.disc_number.map(|d| d as i64).or(dl_meta.target_disc_number),
-            genre,
-            year,
-            file_path,
-            file_size,
-            tag_data.format,
-            tag_data.bitrate.map(|b| b as i64),
-            tag_data.sample_rate.map(|s| s as i64),
-            tag_data.channels.map(|c| c as i64),
-            cover_art_path,
-            dl_meta.source_url,
-            description,
-            language,
-            composer,
-            release_date,
-            tags,
-            isrc,
-        ],
-    );
+    let track_number = if is_album_download { dl_meta.target_track_number.or(tag_data.track_number.map(|t| t as i64)) } else { tag_data.track_number.map(|t| t as i64).or(dl_meta.target_track_number) };
+    let disc_number = if is_album_download { dl_meta.target_disc_number.or(tag_data.disc_number.map(|d| d as i64)) } else { tag_data.disc_number.map(|d| d as i64).or(dl_meta.target_disc_number) };
+
+    // For album downloads, check if a track already exists at this position (e.g. a placeholder
+    // or previously downloaded track). If so, update it in-place instead of creating a duplicate.
+    let existing_track_id: Option<i64> = if is_album_download {
+        if let (Some(alb_id), Some(tn)) = (album_id, track_number) {
+            let dn = disc_number.unwrap_or(1);
+            conn.query_row(
+                "SELECT id FROM tracks WHERE album_id = ?1 AND track_number = ?2 AND disc_number = ?3",
+                rusqlite::params![alb_id, tn, dn],
+                |row| row.get(0),
+            ).ok()
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    let result = if let Some(existing_id) = existing_track_id {
+        // Update the existing track row with the downloaded file's data
+        conn.execute(
+            "UPDATE tracks SET title = ?1, artist_id = ?2, album_artist = ?3, duration_ms = ?4,
+                genre = ?5, year = ?6, file_path = ?7, file_size = ?8, format = ?9,
+                bitrate = ?10, sample_rate = ?11, channels = ?12, cover_art_path = ?13,
+                source_platform = 'download', source_url = ?14,
+                description = ?15, language = ?16, composer = ?17, release_date = ?18, tags = ?19, isrc = ?20
+             WHERE id = ?21",
+            rusqlite::params![
+                title,
+                artist_id,
+                tag_data.album_artist,
+                tag_data.duration_ms.map(|d| d as i64),
+                genre,
+                year,
+                file_path,
+                file_size,
+                tag_data.format,
+                tag_data.bitrate.map(|b| b as i64),
+                tag_data.sample_rate.map(|s| s as i64),
+                tag_data.channels.map(|c| c as i64),
+                cover_art_path,
+                dl_meta.source_url,
+                description,
+                language,
+                composer,
+                release_date,
+                tags,
+                isrc,
+                existing_id,
+            ],
+        ).map(|_| existing_id)
+    } else {
+        conn.execute(
+            "INSERT INTO tracks (title, artist_id, album_id, album_artist, duration_ms,
+                track_number, disc_number, genre, year, file_path, file_size, format,
+                bitrate, sample_rate, channels, cover_art_path, source_platform, source_url,
+                description, language, composer, release_date, tags, isrc)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, 'download', ?17, ?18, ?19, ?20, ?21, ?22, ?23)",
+            rusqlite::params![
+                title,
+                artist_id,
+                album_id,
+                tag_data.album_artist,
+                tag_data.duration_ms.map(|d| d as i64),
+                track_number,
+                disc_number,
+                genre,
+                year,
+                file_path,
+                file_size,
+                tag_data.format,
+                tag_data.bitrate.map(|b| b as i64),
+                tag_data.sample_rate.map(|s| s as i64),
+                tag_data.channels.map(|c| c as i64),
+                cover_art_path,
+                dl_meta.source_url,
+                description,
+                language,
+                composer,
+                release_date,
+                tags,
+                isrc,
+            ],
+        ).map(|_| conn.last_insert_rowid())
+    };
 
     match result {
-        Ok(_) => {
-            let track_id = conn.last_insert_rowid();
+        Ok(track_id) => {
             let _ = crate::db::tracks::update_fts(&conn, track_id);
             let _ = crate::db::tracks::update_completeness(&conn, track_id);
 
@@ -1342,6 +1486,27 @@ fn title_is_relevant(query: &str, result_title: &str) -> bool {
             .collect()
     };
 
+    // If the query is "Artist - Title", focus on matching the Title part
+    // since artist words match many tracks by the same artist
+    if query.contains(" - ") {
+        let parts: Vec<&str> = query.splitn(2, " - ").collect();
+        if parts.len() == 2 {
+            let title_part = parts[1].trim();
+            let title_words_query = normalize(title_part);
+            let title_words_result = normalize(result_title);
+
+            if !title_words_query.is_empty() && !title_words_result.is_empty() {
+                let matching = title_words_query.iter()
+                    .filter(|qw| title_words_result.iter().any(|tw| tw.contains(qw.as_str()) || qw.contains(tw.as_str())))
+                    .count();
+                let relevance = matching as f64 / title_words_query.len() as f64;
+                // At least 50% of the track title words must appear in the result
+                return relevance >= 0.5;
+            }
+        }
+    }
+
+    // Fallback: full query matching
     let query_words = normalize(query);
     let title_words = normalize(result_title);
 
@@ -1354,56 +1519,54 @@ fn title_is_relevant(query: &str, result_title: &str) -> bool {
         .count();
 
     let relevance = matching as f64 / query_words.len() as f64;
-    relevance >= 0.6 // at least 60% of query words must appear in the title
+    relevance >= 0.5
 }
 
 /// Check if a candidate duration is "in the ballpark" of the expected duration.
-/// Returns true if within 15% or 10 seconds (whichever is more lenient).
-fn duration_acceptable(expected_secs: f64, candidate_secs: f64) -> bool {
+/// `strict` mode (for album tracks) uses ±5 seconds; normal mode uses 15% or 10 seconds.
+fn duration_acceptable(expected_secs: f64, candidate_secs: f64, strict: bool) -> bool {
     if expected_secs <= 0.0 || candidate_secs <= 0.0 {
         return true; // Can't validate, allow it
     }
     let diff = (expected_secs - candidate_secs).abs();
-    let pct_threshold = expected_secs * 0.15;
-    diff <= pct_threshold.max(10.0)
+    if strict {
+        diff <= 5.0
+    } else {
+        let pct_threshold = expected_secs * 0.15;
+        diff <= pct_threshold.max(10.0)
+    }
 }
 
 /// Pick the best duration-matching result from a list of search results.
 /// Returns the URL of the best match, or None if no acceptable match found.
 /// When a search_query is provided, results with completely unrelated titles are rejected.
+/// `strict_duration` enables tighter duration matching (±5s) for album tracks.
+/// `exclude_urls` prevents selecting URLs already used by other tracks in the same album.
 fn pick_best_match(
     results: &[ytdlp::VideoInfo],
     expected_duration_secs: Option<f64>,
     search_query: Option<&str>,
+    strict_duration: bool,
+    exclude_urls: &HashSet<String>,
 ) -> Option<String> {
     if results.is_empty() {
         return None;
     }
-    let expected = match expected_duration_secs {
-        Some(d) if d > 0.0 => d,
-        _ => {
-            // No expected duration — return first result but only if it has a URL
-            // This is a last resort; callers should provide duration when possible
-            log::warn!("No expected duration for matching — accepting first result");
-            return results.iter().find_map(|r| r.webpage_url.clone());
-        }
-    };
 
-    // Find all results with acceptable duration, pick the closest
-    let mut best: Option<(&ytdlp::VideoInfo, f64)> = None;
+    let expected = expected_duration_secs.filter(|&d| d > 0.0);
+
+    // Score all candidates and pick the best one
+    let mut best: Option<(&ytdlp::VideoInfo, f64)> = None; // (result, score) — higher is better
     for result in results {
-        let candidate_dur = match result.duration {
-            Some(d) if d > 0.0 => d,
-            _ => continue, // skip results with unknown duration
-        };
-        if !duration_acceptable(expected, candidate_dur) {
-            log::info!(
-                "Skipping '{}' — duration {:.0}s vs expected {:.0}s (too different)",
-                result.title, candidate_dur, expected
-            );
-            continue;
+        // Skip URLs already used by other tracks in the same album
+        if let Some(ref url) = result.webpage_url {
+            if exclude_urls.contains(url) {
+                log::info!("Skipping '{}' — URL already used by another album track", result.title);
+                continue;
+            }
         }
-        // Check title relevance if we have a search query
+
+        // Title relevance check (always applied when we have a query)
         if let Some(query) = search_query {
             if !title_is_relevant(query, &result.title) {
                 log::info!(
@@ -1413,20 +1576,48 @@ fn pick_best_match(
                 continue;
             }
         }
-        let diff = (expected - candidate_dur).abs();
-        if best.is_none() || diff < best.unwrap().1 {
-            best = Some((result, diff));
+
+        // Duration scoring
+        let duration_score = if let Some(exp) = expected {
+            let candidate_dur = match result.duration {
+                Some(d) if d > 0.0 => d,
+                _ => {
+                    // No candidate duration — give a low score but don't skip
+                    0.3
+                }
+            };
+            if candidate_dur > 0.0 {
+                if !duration_acceptable(exp, candidate_dur, strict_duration) {
+                    log::info!(
+                        "Skipping '{}' — duration {:.0}s vs expected {:.0}s (too different)",
+                        result.title, candidate_dur, exp
+                    );
+                    continue;
+                }
+                // Score: 1.0 for exact match, decreasing with difference
+                let diff = (exp - candidate_dur).abs();
+                1.0 - (diff / exp).min(1.0)
+            } else {
+                0.3
+            }
+        } else {
+            // No expected duration — all candidates get equal duration score
+            0.5
+        };
+
+        if best.is_none() || duration_score > best.unwrap().1 {
+            best = Some((result, duration_score));
         }
     }
 
-    if let Some((result, diff)) = best {
+    if let Some((result, score)) = best {
         log::info!(
-            "Best match: '{}' — duration diff {:.0}s (expected {:.0}s)",
-            result.title, diff, expected
+            "Best match: '{}' — score {:.2} (expected duration: {:?}s)",
+            result.title, score, expected
         );
         result.webpage_url.clone()
     } else {
-        log::warn!("No search results had acceptable duration (expected {:.0}s)", expected);
+        log::warn!("No search results passed relevance/duration filters");
         None
     }
 }
@@ -1434,35 +1625,41 @@ fn pick_best_match(
 /// Build comprehensive search query variations for YouTube/SoundCloud fallback.
 /// Returns a list of yt-dlp search queries to try in order.
 /// When an ISRC is available, it's tried first on YouTube Music for precise matching.
-fn build_search_variations(query: &str, isrc: Option<&str>) -> Vec<String> {
+/// When an album name is available, album-aware queries are added for better accuracy.
+fn build_search_variations(query: &str, isrc: Option<&str>, album: Option<&str>) -> Vec<String> {
     let mut variations = Vec::new();
 
     // Clean the query: remove feat./ft., parentheses with remix/version info, etc.
     let clean_query = clean_search_query(query);
 
-    // 0. ISRC-based search on YouTube Music (most precise match possible)
+    // 0. ISRC-based search (most precise match possible)
     if let Some(isrc) = isrc {
         log::info!("ISRC available for search: {}", isrc);
-        variations.push(format!("ytmsearch5:{}", isrc));
+        variations.push(format!("ytsearch5:{}", isrc));
     }
 
-    // 1. YouTube Music search first (better music catalog alignment)
-    variations.push(format!("ytmsearch5:{}", query));
+    // 1. Album-aware search (better for finding correct album version)
+    if let Some(album_name) = album {
+        variations.push(format!("ytsearch5:{} {}", query, album_name));
+    }
 
-    // 2. Original query on YouTube (5 results for better matching)
+    // 2. Primary search: Artist - Title
     variations.push(format!("ytsearch5:{}", query));
 
-    // 3. Query with " - " replaced by space (Artist Title instead of Artist - Title)
-    if query.contains(" - ") {
-        variations.push(format!("ytmsearch5:{}", query.replace(" - ", " ")));
-    }
-
-    // 4. If we have "Artist - Title" format, try targeted variations only
+    // 3. If we have "Artist - Title" format, try title-focused variations
     if query.contains(" - ") {
         let parts: Vec<&str> = query.splitn(2, " - ").collect();
         if parts.len() == 2 {
             let artist = parts[0].trim();
             let title = parts[1].trim();
+
+            // Title + artist (reversed order — sometimes more effective)
+            variations.push(format!("ytsearch5:{} {}", title, artist));
+
+            // Just the title (useful for obscure tracks)
+            if title.split_whitespace().count() >= 2 {
+                variations.push(format!("ytsearch5:{}", title));
+            }
 
             // Artist + cleaned title (removes feat. etc)
             let clean_title = clean_search_query(title);
@@ -1473,6 +1670,11 @@ fn build_search_variations(query: &str, isrc: Option<&str>) -> Vec<String> {
             // Add "audio" suffix for official audio uploads
             variations.push(format!("ytsearch5:{} {} audio", artist, title));
         }
+    }
+
+    // 4. Query with " - " replaced by space
+    if query.contains(" - ") {
+        variations.push(format!("ytsearch5:{}", query.replace(" - ", " ")));
     }
 
     // 5. Cleaned query if different from original

@@ -80,7 +80,7 @@ pub async fn download_start(
                     Some(ref a) => format!("{} - {}", a, track_title),
                     None => track_title.clone(),
                 };
-                let yt_url = format!("ytsearch1:{}", search_query);
+                let yt_url = format!("ytsearch5:{}", search_query);
                 (yt_url, Some(track_title), track_artist)
             }
             None => {
@@ -101,6 +101,8 @@ pub async fn download_start(
             &parsed.platform,
             &fmt,
             &qual,
+            None,
+            None,
             None,
             None,
             None,
@@ -149,7 +151,7 @@ pub async fn download_start_batch(
                         Some(ref a) => format!("{} - {}", a, track_title),
                         None => track_title.clone(),
                     };
-                    let yt_url = format!("ytsearch1:{}", search_query);
+                    let yt_url = format!("ytsearch5:{}", search_query);
                     (yt_url, Some(track_title), track_artist)
                 }
                 None => {
@@ -171,6 +173,8 @@ pub async fn download_start_batch(
                 &parsed.platform,
                 &fmt,
                 &qual,
+                None,
+                None,
                 None,
                 None,
                 None,
@@ -210,7 +214,7 @@ pub async fn download_search_and_start(
     format: Option<String>,
     quality: Option<String>,
 ) -> Result<Download, String> {
-    let search_url = format!("ytsearch1:{}", query);
+    let search_url = format!("ytsearch5:{}", query);
     let (default_format, default_quality) = {
         let conn = db.lock().map_err(|e| e.to_string())?;
         let f = crate::db::settings::get_setting(&conn, "download_format")
@@ -239,6 +243,8 @@ pub async fn download_search_and_start(
             None,
             disc_number,
             track_number,
+            None,
+            None,
             None,
         )
         .map_err(|e| e.to_string())?
@@ -271,7 +277,7 @@ pub async fn download_search_and_start_batch(
     let mut downloads = Vec::new();
 
     for req in &queries {
-        let search_url = format!("ytsearch1:{}", req.query);
+        let search_url = format!("ytsearch5:{}", req.query);
         let download = {
             let conn = db.lock().map_err(|e| e.to_string())?;
             crate::db::downloads::create_download(
@@ -284,6 +290,8 @@ pub async fn download_search_and_start_batch(
                 &qual,
                 req.album_id,
                 req.artist_id,
+                None,
+                None,
                 None,
                 None,
                 None,
@@ -459,8 +467,8 @@ pub async fn download_artist_missing(
             "https://musicbrainz.org/ws/2/release/{}?inc=recordings+isrcs&fmt=json",
             release_id
         );
-        // (title, disc, track_num, duration_ms, isrc)
-        let tracks: Vec<(String, i64, i64, Option<i64>, Option<String>)> = match client.get(&release_url).send().await {
+        // (title, disc, track_num, duration_ms, isrc, recording_mbid)
+        let tracks: Vec<(String, i64, i64, Option<i64>, Option<String>, Option<String>)> = match client.get(&release_url).send().await {
             Ok(resp) => {
                 let json: serde_json::Value = resp.json().await.unwrap_or_default();
                 let mut tracks = Vec::new();
@@ -481,8 +489,11 @@ pub async fn download_artist_missing(
                                     .and_then(|arr| arr.first())
                                     .and_then(|v| v.as_str())
                                     .map(|s| s.to_string());
+                                // Recording MusicBrainz ID for direct URL lookup
+                                let recording_mbid = track["recording"]["id"].as_str()
+                                    .map(|s| s.to_string());
                                 if !title.is_empty() {
-                                    tracks.push((title, disc, num, duration_ms, isrc));
+                                    tracks.push((title, disc, num, duration_ms, isrc, recording_mbid));
                                 }
                             }
                         }
@@ -494,7 +505,7 @@ pub async fn download_artist_missing(
         };
 
         // Create an album in the DB for this release and queue downloads
-        let album_id = {
+        let (album_id, album_title) = {
             let conn = db.lock().map_err(|e| e.to_string())?;
             let album_title_from_rg: Option<String> = {
                 // Get the album title from the enriched discography
@@ -525,7 +536,7 @@ pub async fn download_artist_missing(
                 params![release_id, aid],
             );
             // Store enriched tracklist
-            let tracklist_json: Vec<serde_json::Value> = tracks.iter().map(|(title, disc, num, dur, _isrc)| {
+            let tracklist_json: Vec<serde_json::Value> = tracks.iter().map(|(title, disc, num, dur, _isrc, _mbid)| {
                 serde_json::json!({
                     "disc_number": disc,
                     "track_number": num,
@@ -538,13 +549,13 @@ pub async fn download_artist_missing(
                 "UPDATE albums SET enriched_tracklist = ?1, total_tracks = ?2 WHERE id = ?3",
                 params![tl_str, tracks.len() as i64, aid],
             );
-            aid
+            (aid, album_title)
         };
 
         // Queue downloads for each track using ytmsearch5 for better matching
-        for (title, disc, num, duration_ms, isrc) in &tracks {
+        for (title, disc, num, duration_ms, isrc, recording_mbid) in &tracks {
             let query = format!("{} - {}", artist_name, title);
-            let search_url = format!("ytmsearch5:{}", query);
+            let search_url = format!("ytsearch5:{}", query);
             let download = {
                 let conn = db.lock().map_err(|e| e.to_string())?;
                 crate::db::downloads::create_download(
@@ -561,6 +572,8 @@ pub async fn download_artist_missing(
                     Some(*disc),
                     Some(*num),
                     *duration_ms,
+                    Some(&album_title),
+                    recording_mbid.as_deref(),
                 )
                 .map_err(|e| e.to_string())?
             };

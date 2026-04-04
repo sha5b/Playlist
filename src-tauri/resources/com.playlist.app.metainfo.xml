@@ -3,7 +3,7 @@
   <id>com.playlist.app</id>
 
   <name>Playlist</name>
-  <summary>Own your music library</summary>
+  <summary>Liberate your music, own your data, support artists</summary>
 
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>MIT</project_license>
@@ -14,17 +14,19 @@
 
   <description>
     <p>
-      Playlist is a desktop music manager that gives you full control over your music library.
-      Download tracks from YouTube, SoundCloud, and Bandcamp via yt-dlp, organize your collection
-      with rich metadata from MusicBrainz and Last.fm, and play everything locally with no
-      subscriptions or lock-in.
+      Playlist is a desktop music manager that liberates your music from streaming platforms.
+      Download tracks from almost anywhere, discover missing albums and tracks for artists in
+      your library, sync your collection across devices, and play everything locally — no
+      subscriptions, no lock-in. Support artists directly by buying their music, not renting it.
     </p>
     <p>Features:</p>
     <ul>
-      <li>Download audio from YouTube, SoundCloud, Bandcamp, and more</li>
+      <li>Download tracks from YouTube, SoundCloud, Bandcamp, and hundreds more sources</li>
+      <li>Search for missing tracks in albums and discover albums for artists in your library</li>
+      <li>Sync your library across devices</li>
       <li>Automatic metadata enrichment from MusicBrainz and Last.fm</li>
       <li>Full local playback with queue, shuffle, and repeat</li>
-      <li>Playlist management and library organization</li>
+      <li>Playlist management, album views, and library organization</li>
       <li>Album art fetching and display</li>
       <li>System tray integration for background playback</li>
     </ul>
@@ -56,6 +58,11 @@
   </categories>
 
   <releases>
+    <release version="0.4.1" date="2026-04-04">
+      <description>
+        <p>New features and improvements.</p>
+      </description>
+    </release>
     <release version="0.3.1" date="2025-03-01">
       <description>
         <p>Bug fixes and platform compatibility improvements.</p>

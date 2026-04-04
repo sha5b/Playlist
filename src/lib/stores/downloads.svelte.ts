@@ -53,6 +53,11 @@ function handleEvent(data: DownloadEvent) {
 				target_album_id: null,
 				target_artist_id: null,
 				target_isrc: null,
+				target_disc_number: null,
+				target_track_number: null,
+				target_duration_ms: null,
+				target_album_name: null,
+				target_recording_mbid: null,
 			},
 			...downloads,
 		];

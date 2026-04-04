@@ -572,7 +572,7 @@
 		<div class="space-y-3">
 			<div class="flex justify-between text-sm">
 				<span class="text-muted-foreground">Version</span>
-				<span>0.3.1</span>
+				<span>0.4.1</span>
 			</div>
 			<div class="flex justify-between text-sm">
 				<span class="text-muted-foreground">Stack</span>

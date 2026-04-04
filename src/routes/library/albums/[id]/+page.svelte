@@ -148,13 +148,18 @@
 	);
 
 	const missingTracks = $derived.by(() => {
-		const existing = new Set(
+		const existingPositions = new Set(
 			tracks.map((t) => `${t.disc_number ?? 1}:${t.track_number ?? 0}`)
+		);
+		// Also match by title (normalized) so tracks downloaded before track_number was set are recognized
+		const existingTitles = new Set(
+			tracks.map((t) => t.title.toLowerCase().trim())
 		);
 		// Use saved enriched tracklist from DB (persisted across page reloads)
 		if (savedTracklist.length > 0) {
 			return savedTracklist
-				.filter((p) => !existing.has(`${p.disc_number}:${p.track_number}`))
+				.filter((p) => !existingPositions.has(`${p.disc_number}:${p.track_number}`) &&
+					(!p.title || !existingTitles.has(p.title.toLowerCase().trim())))
 				.map((p) => ({ track_number: p.track_number, disc_number: p.disc_number, title: p.title }));
 		}
 		// Fallback: generate from total_tracks count
@@ -163,7 +168,7 @@
 		const missing: { track_number: number; disc_number: number; title?: string }[] = [];
 		for (let d = 1; d <= totalDiscs; d++) {
 			for (let n = 1; n <= album.total_tracks; n++) {
-				if (!existing.has(`${d}:${n}`)) {
+				if (!existingPositions.has(`${d}:${n}`)) {
 					missing.push({ track_number: n, disc_number: d });
 				}
 			}

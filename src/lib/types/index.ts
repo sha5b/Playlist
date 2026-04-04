@@ -168,6 +168,11 @@ export interface Download {
 	target_album_id: number | null;
 	target_artist_id: number | null;
 	target_isrc: string | null;
+	target_disc_number: number | null;
+	target_track_number: number | null;
+	target_duration_ms: number | null;
+	target_album_name: string | null;
+	target_recording_mbid: string | null;
 }
 
 export interface UrlInfo {

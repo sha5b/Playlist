@@ -115,7 +115,7 @@ modules:
     sources:
       - type: git
         url: https://github.com/sha5b/Playlist.git
-        tag: v0.3.1
+        tag: v0.4.1
       # TODO: Generate these before Flathub submission:
       #   python3 flatpak-cargo-generator.py src-tauri/Cargo.lock -o cargo-sources.json
       #   flatpak-node-generator npm package-lock.json -o node-sources.json

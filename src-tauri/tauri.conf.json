@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Playlist",
-  "version": "0.3.1",
+  "version": "0.4.1",
   "identifier": "com.playlist.app",
   "build": {
     "frontendDist": "../build",
@@ -35,6 +35,12 @@
   "bundle": {
     "active": true,
     "targets": ["nsis", "rpm", "deb", "appimage", "dmg", "app"],
+    "publisher": "sha5b",
+    "copyright": "Copyright © 2025-2026 sha5b",
+    "category": "Music",
+    "shortDescription": "Liberate your music, own your data, support artists",
+    "longDescription": "Playlist is a desktop music manager that liberates your music from streaming platforms. Download tracks from almost anywhere, discover missing albums and tracks for artists in your library, sync your collection across devices, and play everything locally with rich metadata from MusicBrainz and Last.fm — no subscriptions, no lock-in. Support artists directly by buying their music, not renting it.",
+    "homepage": "https://github.com/sha5b/Playlist",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

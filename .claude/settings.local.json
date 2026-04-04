@@ -80,7 +80,8 @@
       "Read(//tmp/**)",
       "Bash(find /home/sha5b/Documents/GitHub/Playlist/src-tauri/src -name \"*.rs\" -exec grep -l \"save.*image\\\\|download.*image\\\\|fetch.*image\" {} \\\\;)",
       "WebFetch(domain:lrclib.net)",
-      "Bash(grep -A 5 \"function handleDownloadTrack\" /home/sha5b/Documents/GitHub/Playlist/src/routes/library/albums/[id]/+page.svelte)"
+      "Bash(grep -A 5 \"function handleDownloadTrack\" /home/sha5b/Documents/GitHub/Playlist/src/routes/library/albums/[id]/+page.svelte)",
+      "Bash(grep -E '\\\\.\\(md|txt|conf\\)$')"
     ]
   }
 }

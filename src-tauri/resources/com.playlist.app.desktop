@@ -1,11 +1,11 @@
 [Desktop Entry]
 Name=Playlist
-Comment=Liberate your music from streaming platforms
+Comment=Liberate your music, own your data, support artists
 GenericName=Music Manager
 Exec=playlist
 Icon=com.playlist.app
 Terminal=false
 Type=Application
 Categories=AudioVideo;Audio;Music;Player;
-Keywords=music;playlist;download;library;player;yt-dlp;
+Keywords=music;playlist;download;library;player;yt-dlp;sync;offline;
 StartupWMClass=com.playlist.app

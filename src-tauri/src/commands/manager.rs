@@ -25,8 +25,8 @@ fn map_entries(entries: &[VideoInfo], label: &str) -> Vec<EntryTuple> {
                         Some(a) => format!("{} - {}", a, best_title),
                         None => best_title.clone(),
                     };
-                    log::warn!("[{}] No webpage_url for '{}', falling back to search: ytsearch1:{}", label, best_title, query);
-                    format!("ytsearch1:{}", query)
+                    log::warn!("[{}] No webpage_url for '{}', falling back to search: ytsearch5:{}", label, best_title, query);
+                    format!("ytsearch5:{}", query)
                 });
             log::info!("[{}] Entry '{}' -> URL: {}", label, best_title, url);
             (url, Some(best_title), best_artist, e.duration, e.thumbnail.clone(), e.isrc.clone())
@@ -268,15 +268,15 @@ pub async fn manager_download_entry(
     let fmt = format.unwrap_or(default_format);
     let qual = quality.unwrap_or(default_quality);
 
-    // For Spotify URLs, convert to YouTube search (entry already has metadata)
+    // For Spotify URLs, convert to YouTube Music search (entry already has metadata)
     let final_url = if parsed.platform == "spotify" && entry.source_url.starts_with("http") {
-        log::info!("Converting Spotify entry to YouTube search: {}", entry.source_url);
+        log::info!("Converting Spotify entry to YouTube Music search: {}", entry.source_url);
         let search_query = match (&entry.artist, &entry.title) {
             (Some(a), Some(t)) => format!("{} - {}", a, t),
             (None, Some(t)) => t.clone(),
             _ => return Err("Entry missing title for YouTube search".to_string()),
         };
-        format!("ytsearch1:{}", search_query)
+        format!("ytsearch5:{}", search_query)
     } else {
         parsed.clean_url.clone()
     };
@@ -292,6 +292,8 @@ pub async fn manager_download_entry(
         None,
         None,
         entry.isrc.as_deref(),
+        None,
+        None,
         None,
         None,
         None,
@@ -364,6 +366,8 @@ pub async fn manager_download_new(
                 None,
                 None,
                 entry.isrc.as_deref(),
+                None,
+                None,
                 None,
                 None,
                 None,

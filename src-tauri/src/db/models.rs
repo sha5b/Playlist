@@ -144,6 +144,8 @@ pub struct Download {
     pub target_disc_number: Option<i64>,
     pub target_track_number: Option<i64>,
     pub target_duration_ms: Option<i64>,
+    pub target_album_name: Option<String>,
+    pub target_recording_mbid: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

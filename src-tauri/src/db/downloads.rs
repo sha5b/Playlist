@@ -26,12 +26,15 @@ fn row_to_download(row: &rusqlite::Row) -> rusqlite::Result<Download> {
         target_disc_number: row.get(19)?,
         target_track_number: row.get(20)?,
         target_duration_ms: row.get(21)?,
+        target_album_name: row.get(22)?,
+        target_recording_mbid: row.get(23)?,
     })
 }
 
 const SELECT_COLS: &str = "id, url, title, artist, platform, status, progress, error_message,
     file_path, track_id, playlist_id, format, quality, created_at, started_at, completed_at,
-    target_album_id, target_artist_id, target_isrc, target_disc_number, target_track_number, target_duration_ms";
+    target_album_id, target_artist_id, target_isrc, target_disc_number, target_track_number, target_duration_ms,
+    target_album_name, target_recording_mbid";
 
 pub fn create_download(
     conn: &Connection,
@@ -47,11 +50,13 @@ pub fn create_download(
     target_disc_number: Option<i64>,
     target_track_number: Option<i64>,
     target_duration_ms: Option<i64>,
+    target_album_name: Option<&str>,
+    target_recording_mbid: Option<&str>,
 ) -> Result<Download, rusqlite::Error> {
     conn.execute(
-        "INSERT INTO downloads (url, title, artist, platform, format, quality, target_album_id, target_artist_id, target_isrc, target_disc_number, target_track_number, target_duration_ms)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
-        params![url, title, artist, platform, format, quality, target_album_id, target_artist_id, target_isrc, target_disc_number, target_track_number, target_duration_ms],
+        "INSERT INTO downloads (url, title, artist, platform, format, quality, target_album_id, target_artist_id, target_isrc, target_disc_number, target_track_number, target_duration_ms, target_album_name, target_recording_mbid)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+        params![url, title, artist, platform, format, quality, target_album_id, target_artist_id, target_isrc, target_disc_number, target_track_number, target_duration_ms, target_album_name, target_recording_mbid],
     )?;
     let id = conn.last_insert_rowid();
     get_download(conn, id)?.ok_or(rusqlite::Error::QueryReturnedNoRows)
