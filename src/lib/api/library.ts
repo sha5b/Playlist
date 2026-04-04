@@ -82,6 +82,12 @@ export async function deleteTrack(id: number, deleteFile = false): Promise<void>
 	return result;
 }
 
+export async function deleteAlbumTracks(albumId: number): Promise<number> {
+	const count = await invoke<number>('library_delete_album_tracks', { albumId });
+	invalidateCache();
+	return count;
+}
+
 export async function resetLibrary(deleteFiles = true): Promise<void> {
 	const result = await invoke<void>('library_reset', { deleteFiles });
 	invalidateCache();

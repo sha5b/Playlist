@@ -208,7 +208,53 @@ const MIGRATION_012: &str = "
 ALTER TABLE downloads ADD COLUMN target_isrc TEXT;
 ";
 
-const MIGRATIONS: &[&str] = &[MIGRATION_001, MIGRATION_002, MIGRATION_003, MIGRATION_004, MIGRATION_005, MIGRATION_006, MIGRATION_007, MIGRATION_008, MIGRATION_009, MIGRATION_010, MIGRATION_011, MIGRATION_012];
+const MIGRATION_013: &str = "
+CREATE TABLE IF NOT EXISTS devices (
+    id              INTEGER PRIMARY KEY,
+    device_uid      TEXT NOT NULL UNIQUE,
+    name            TEXT NOT NULL,
+    device_type     TEXT NOT NULL DEFAULT 'usb_storage',
+    mount_path      TEXT,
+    capacity_bytes  INTEGER,
+    music_dir       TEXT DEFAULT 'Music',
+    output_format   TEXT DEFAULT 'original',
+    output_bitrate  TEXT DEFAULT '320',
+    generate_m3u    INTEGER DEFAULT 1,
+    first_seen_at   TEXT NOT NULL DEFAULT (datetime('now')),
+    last_seen_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS device_playlist_sync (
+    device_id   INTEGER NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+    playlist_id INTEGER NOT NULL REFERENCES playlists(id) ON DELETE CASCADE,
+    enabled     INTEGER NOT NULL DEFAULT 1,
+    last_synced_at TEXT,
+    PRIMARY KEY (device_id, playlist_id)
+);
+
+CREATE TABLE IF NOT EXISTS device_track_sync (
+    device_id   INTEGER NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+    track_id    INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
+    playlist_id INTEGER REFERENCES playlists(id) ON DELETE SET NULL,
+    file_path_on_device TEXT NOT NULL,
+    format      TEXT NOT NULL,
+    synced_at   TEXT NOT NULL DEFAULT (datetime('now')),
+    source_hash TEXT,
+    PRIMARY KEY (device_id, track_id)
+);
+CREATE INDEX IF NOT EXISTS idx_dts_device ON device_track_sync(device_id);
+";
+
+const MIGRATION_014: &str = "
+ALTER TABLE downloads ADD COLUMN target_disc_number INTEGER;
+ALTER TABLE downloads ADD COLUMN target_track_number INTEGER;
+";
+
+const MIGRATION_015: &str = "
+ALTER TABLE downloads ADD COLUMN target_duration_ms INTEGER;
+";
+
+const MIGRATIONS: &[&str] = &[MIGRATION_001, MIGRATION_002, MIGRATION_003, MIGRATION_004, MIGRATION_005, MIGRATION_006, MIGRATION_007, MIGRATION_008, MIGRATION_009, MIGRATION_010, MIGRATION_011, MIGRATION_012, MIGRATION_013, MIGRATION_014, MIGRATION_015];
 
 pub fn run(conn: &Connection) -> Result<(), Box<dyn std::error::Error>> {
     conn.execute(

@@ -98,6 +98,45 @@ struct MbUrl {
     resource: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+struct RecordingArtistRels {
+    relations: Option<Vec<MbArtistRelation>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct MbArtistRelation {
+    #[serde(rename = "type")]
+    relation_type: Option<String>,
+    artist: Option<MbRelArtist>,
+}
+
+#[derive(Debug, Deserialize)]
+struct MbRelArtist {
+    name: Option<String>,
+}
+
+/// Look up a recording's artist relations to find the composer.
+async fn lookup_composer(recording_mbid: &str) -> Option<String> {
+    tokio::time::sleep(std::time::Duration::from_millis(MB_RATE_LIMIT_MS)).await;
+
+    let url = format!(
+        "{}/recording/{}?inc=artist-rels&fmt=json",
+        MB_BASE, recording_mbid
+    );
+    let resp = client().get(&url).send().await.ok()?;
+    let detail: RecordingArtistRels = resp.json().await.ok()?;
+
+    let relations = detail.relations?;
+    for rel in &relations {
+        if rel.relation_type.as_deref() == Some("composer") {
+            if let Some(artist) = &rel.artist {
+                return artist.name.clone();
+            }
+        }
+    }
+    None
+}
+
 /// Look up a recording's URL relations to find a confirmed music video link.
 async fn lookup_music_video_url(recording_mbid: &str) -> Option<String> {
     // Rate limit: 1 req/sec
@@ -268,6 +307,8 @@ pub struct TrackEnrichment {
     pub artist_website_url: Option<String>,
     /// Album purchase URL from MusicBrainz URL relations
     pub album_purchase_url: Option<String>,
+    /// Composer name from MusicBrainz artist relations
+    pub composer: Option<String>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -366,6 +407,9 @@ pub async fn enrich_track(title: &str, artist: Option<&str>) -> Result<TrackEnri
 
     // Check for confirmed music video via MusicBrainz URL relations
     enrichment.music_video_url = lookup_music_video_url(&hit.id).await;
+
+    // Look up composer from artist relations
+    enrichment.composer = lookup_composer(&hit.id).await;
 
     // Look up artist website if we have an artist MBID
     if let Some(ref artist_mbid) = enrichment.artist_musicbrainz_id {

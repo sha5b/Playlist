@@ -44,11 +44,14 @@ export async function searchAndDownload(
 	format?: string,
 	quality?: string,
 	albumId?: number,
-	artistId?: number
+	artistId?: number,
+	discNumber?: number,
+	trackNumber?: number
 ): Promise<Download> {
 	return invoke('download_search_and_start', {
 		query, title, artist, format, quality,
 		album_id: albumId, artist_id: artistId,
+		disc_number: discNumber, track_number: trackNumber,
 	});
 }
 

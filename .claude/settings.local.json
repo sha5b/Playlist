@@ -77,7 +77,10 @@
       "Bash(grep -n \"^\\\\s*P\\\\s*$\" /home/sha5b/Documents/GitHub/Playlist/src/lib/components/layout/Titlebar.svelte)",
       "Bash([ -f \"src-tauri/$file\" ])",
       "Bash([ -f \"src-tauri/icons/icon.ico\" ])",
-      "Read(//tmp/**)"
+      "Read(//tmp/**)",
+      "Bash(find /home/sha5b/Documents/GitHub/Playlist/src-tauri/src -name \"*.rs\" -exec grep -l \"save.*image\\\\|download.*image\\\\|fetch.*image\" {} \\\\;)",
+      "WebFetch(domain:lrclib.net)",
+      "Bash(grep -A 5 \"function handleDownloadTrack\" /home/sha5b/Documents/GitHub/Playlist/src/routes/library/albums/[id]/+page.svelte)"
     ]
   }
 }

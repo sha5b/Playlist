@@ -1,5 +1,6 @@
 pub mod albums;
 pub mod artists;
+pub mod devices;
 pub mod downloads;
 pub mod migrations;
 pub mod models;

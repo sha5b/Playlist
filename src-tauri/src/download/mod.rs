@@ -455,58 +455,128 @@ async fn run_download(
 
     // Try yt-dlp direct download (fast for YouTube/SoundCloud/Bandcamp URLs, skipped if search URL on DRM platform)
     let skip_ytdlp_initial = is_drm_platform && is_search_url;
+    // Album track downloads have target_duration_ms — use smart matching instead of blind first-result
+    let has_target_duration = download.target_duration_ms.is_some();
     let ytdlp_success = if !skip_ytdlp_initial {
-        // Only fetch metadata separately for search URLs (need it for duration matching later).
-        // For direct URLs, skip the extra yt-dlp call — download immediately for speed.
-        if is_search_url {
-            ytdlp_info = match ytdlp::get_info(
+        if is_search_url && has_target_duration {
+            // Smart search: fetch multiple results and pick the best match by duration/title
+            let expected_secs = download.target_duration_ms.unwrap() as f64 / 1000.0;
+            let search_query = match (&download.artist, &download.title) {
+                (Some(a), Some(t)) => format!("{} - {}", a, t),
+                (_, Some(t)) => t.clone(),
+                _ => download.url.trim_start_matches("ytmsearch5:").trim_start_matches("ytsearch5:").to_string(),
+            };
+            let search_variations = build_search_variations(&search_query, download.target_isrc.as_deref());
+
+            let mut best_url: Option<String> = None;
+            for variation in &search_variations {
+                match ytdlp::get_search_results(
+                    &ytdlp_binary,
+                    ffmpeg_dir.as_deref(),
+                    variation,
+                    cookies_from_browser.as_deref(),
+                ).await {
+                    Ok(results) if !results.is_empty() => {
+                        if let Some(url) = pick_best_match(&results, Some(expected_secs), Some(&search_query)) {
+                            log::info!("Album track smart match found for '{}': {}", search_query, url);
+                            best_url = Some(url);
+                            break;
+                        }
+                    }
+                    Ok(_) => {
+                        log::warn!("Search variation '{}' returned no results", variation);
+                    }
+                    Err(e) => {
+                        log::warn!("Search variation '{}' failed: {}", variation, e);
+                    }
+                }
+            }
+
+            if let Some(ref url) = best_url {
+                let app_handle_progress = app_handle.clone();
+                let dl_id = download_id;
+                let result = ytdlp::download_audio(
+                    &ytdlp_binary,
+                    ffmpeg_dir.as_deref(),
+                    url,
+                    &download_dir,
+                    &download.format,
+                    &download.quality,
+                    &file_stem,
+                    cookies_from_browser.as_deref(),
+                    move |progress| {
+                        emit_event(&app_handle_progress, dl_id, "downloading", progress.percent, progress.speed.clone(), progress.eta.clone(), None, None);
+                    },
+                ).await;
+                match result {
+                    Ok(file_path) => {
+                        handle_download_success(&db, &app_handle, download_id, &file_path, &None).await;
+                        return;
+                    }
+                    Err(e) => {
+                        log::warn!("[download] id={} smart match download FAILED: {}", download_id, e);
+                        errors.push(format!("smart-match: {}", e));
+                        failed_urls.insert(url.clone());
+                        false
+                    }
+                }
+            } else {
+                log::warn!("[download] id={} no smart match found for '{}'", download_id, search_query);
+                errors.push("no matching result found by duration/title".to_string());
+                false
+            }
+        } else {
+            // Original path: search URLs without duration or direct URLs
+            if is_search_url {
+                ytdlp_info = match ytdlp::get_info(
+                    &ytdlp_binary,
+                    ffmpeg_dir.as_deref(),
+                    &download.url,
+                    cookies_from_browser.as_deref(),
+                ).await {
+                    Ok(info) => {
+                        let best_title = info.track.as_deref().unwrap_or(&info.title);
+                        let best_artist = info.artist.as_deref().or(info.uploader.as_deref());
+                        if let Ok(conn) = db.lock() {
+                            let _ = crate::db::downloads::update_download_title(&conn, download_id, best_title, best_artist);
+                        }
+                        emit_event(&app_handle, download_id, "downloading", 0.0, None, None, None, Some(best_title.to_string()));
+                        Some(info)
+                    }
+                    Err(e) => {
+                        log::warn!("Could not fetch metadata for download {}: {}", download_id, e);
+                        None
+                    }
+                };
+            }
+
+            let app_handle_progress = app_handle.clone();
+            let dl_id = download_id;
+            let result = ytdlp::download_audio(
                 &ytdlp_binary,
                 ffmpeg_dir.as_deref(),
                 &download.url,
+                &download_dir,
+                &download.format,
+                &download.quality,
+                &file_stem,
                 cookies_from_browser.as_deref(),
-            ).await {
-                Ok(info) => {
-                    let best_title = info.track.as_deref().unwrap_or(&info.title);
-                    let best_artist = info.artist.as_deref().or(info.uploader.as_deref());
-                    if let Ok(conn) = db.lock() {
-                        let _ = crate::db::downloads::update_download_title(&conn, download_id, best_title, best_artist);
-                    }
-                    emit_event(&app_handle, download_id, "downloading", 0.0, None, None, None, Some(best_title.to_string()));
-                    Some(info)
+                move |progress| {
+                    emit_event(&app_handle_progress, dl_id, "downloading", progress.percent, progress.speed.clone(), progress.eta.clone(), None, None);
+                },
+            ).await;
+
+            match result {
+                Ok(file_path) => {
+                    handle_download_success(&db, &app_handle, download_id, &file_path, &ytdlp_info).await;
+                    return;
                 }
                 Err(e) => {
-                    log::warn!("Could not fetch metadata for download {}: {}", download_id, e);
-                    None
+                    log::warn!("[download] id={} yt-dlp direct download FAILED: {}", download_id, e);
+                    errors.push(format!("yt-dlp: {}", e));
+                    failed_urls.insert(download.url.clone());
+                    false
                 }
-            };
-        }
-
-        let app_handle_progress = app_handle.clone();
-        let dl_id = download_id;
-        let result = ytdlp::download_audio(
-            &ytdlp_binary,
-            ffmpeg_dir.as_deref(),
-            &download.url,
-            &download_dir,
-            &download.format,
-            &download.quality,
-            &file_stem,
-            cookies_from_browser.as_deref(),
-            move |progress| {
-                emit_event(&app_handle_progress, dl_id, "downloading", progress.percent, progress.speed.clone(), progress.eta.clone(), None, None);
-            },
-        ).await;
-
-        match result {
-            Ok(file_path) => {
-                handle_download_success(&db, &app_handle, download_id, &file_path, &ytdlp_info).await;
-                return;
-            }
-            Err(e) => {
-                log::warn!("[download] id={} yt-dlp direct download FAILED: {}", download_id, e);
-                errors.push(format!("yt-dlp: {}", e));
-                failed_urls.insert(download.url.clone());
-                false
             }
         }
     } else {
@@ -675,17 +745,19 @@ async fn run_download(
                 }
 
                 // Get expected duration and ISRC for search matching (used by YouTube + SoundCloud)
-                let mut expected_duration_secs = ytdlp_info.as_ref().and_then(|i| i.duration).or_else(|| {
-                    if let Ok(conn) = db.lock() {
-                        conn.query_row(
-                            "SELECT e.duration_seconds FROM monitored_playlist_entries e WHERE e.download_id = ?1",
-                            rusqlite::params![download_id],
-                            |row| row.get::<_, Option<f64>>(0),
-                        ).ok().flatten()
-                    } else {
-                        None
-                    }
-                });
+                let mut expected_duration_secs = ytdlp_info.as_ref().and_then(|i| i.duration)
+                    .or_else(|| download.target_duration_ms.map(|ms| ms as f64 / 1000.0))
+                    .or_else(|| {
+                        if let Ok(conn) = db.lock() {
+                            conn.query_row(
+                                "SELECT e.duration_seconds FROM monitored_playlist_entries e WHERE e.download_id = ?1",
+                                rusqlite::params![download_id],
+                                |row| row.get::<_, Option<f64>>(0),
+                            ).ok().flatten()
+                        } else {
+                            None
+                        }
+                    });
 
                 // Get ISRC for precise matching (from yt-dlp info, download record, or monitored entry)
                 let mut isrc = ytdlp_info.as_ref().and_then(|i| i.isrc.clone())
@@ -895,7 +967,7 @@ async fn handle_download_success(
     let dl_meta = {
         let dl_row = if let Ok(conn) = db.lock() {
             conn.query_row(
-                "SELECT title, artist, url, target_album_id, target_artist_id, target_isrc FROM downloads WHERE id = ?1",
+                "SELECT title, artist, url, target_album_id, target_artist_id, target_isrc, target_disc_number, target_track_number FROM downloads WHERE id = ?1",
                 rusqlite::params![download_id],
                 |row| Ok((
                     row.get::<_, Option<String>>(0)?,
@@ -904,14 +976,16 @@ async fn handle_download_success(
                     row.get::<_, Option<i64>>(3)?,
                     row.get::<_, Option<i64>>(4)?,
                     row.get::<_, Option<String>>(5)?,
+                    row.get::<_, Option<i64>>(6)?,
+                    row.get::<_, Option<i64>>(7)?,
                 )),
             ).ok()
         } else {
             None
         };
-        let (title, artist, source_url, target_album_id, target_artist_id, target_isrc) = match dl_row {
-            Some((t, a, u, alb, art, isrc)) => (t, a, Some(u), alb, art, isrc),
-            None => (None, None, None, None, None, None),
+        let (title, artist, source_url, target_album_id, target_artist_id, target_isrc, target_disc_number, target_track_number) = match dl_row {
+            Some((t, a, u, alb, art, isrc, disc, track)) => (t, a, Some(u), alb, art, isrc, disc, track),
+            None => (None, None, None, None, None, None, None, None),
         };
         DownloadMeta {
             title,
@@ -930,6 +1004,8 @@ async fn handle_download_success(
             target_album_id,
             target_artist_id,
             isrc: ytdlp_info.as_ref().and_then(|i| i.isrc.clone()).or(target_isrc),
+            target_disc_number,
+            target_track_number,
         }
     };
     let track_id = import_downloaded_file(db, app_handle, file_path, &dl_meta).await;
@@ -1016,6 +1092,8 @@ struct DownloadMeta {
     target_album_id: Option<i64>,
     target_artist_id: Option<i64>,
     isrc: Option<String>,
+    target_disc_number: Option<i64>,
+    target_track_number: Option<i64>,
 }
 
 async fn import_downloaded_file(
@@ -1117,8 +1195,8 @@ async fn import_downloaded_file(
             album_id,
             tag_data.album_artist,
             tag_data.duration_ms.map(|d| d as i64),
-            tag_data.track_number.map(|t| t as i64),
-            tag_data.disc_number.map(|d| d as i64),
+            tag_data.track_number.map(|t| t as i64).or(dl_meta.target_track_number),
+            tag_data.disc_number.map(|d| d as i64).or(dl_meta.target_disc_number),
             genre,
             year,
             file_path,
@@ -1276,7 +1354,7 @@ fn title_is_relevant(query: &str, result_title: &str) -> bool {
         .count();
 
     let relevance = matching as f64 / query_words.len() as f64;
-    relevance >= 0.3 // at least 30% of query words must appear in the title
+    relevance >= 0.6 // at least 60% of query words must appear in the title
 }
 
 /// Check if a candidate duration is "in the ballpark" of the expected duration.
@@ -1365,50 +1443,41 @@ fn build_search_variations(query: &str, isrc: Option<&str>) -> Vec<String> {
     // 0. ISRC-based search on YouTube Music (most precise match possible)
     if let Some(isrc) = isrc {
         log::info!("ISRC available for search: {}", isrc);
-        variations.push(format!("ytmsearch1:{}", isrc));
+        variations.push(format!("ytmsearch5:{}", isrc));
     }
 
     // 1. YouTube Music search first (better music catalog alignment)
-    variations.push(format!("ytmsearch1:{}", query));
+    variations.push(format!("ytmsearch5:{}", query));
 
-    // 2. Original query on YouTube
-    variations.push(format!("ytsearch1:{}", query));
+    // 2. Original query on YouTube (5 results for better matching)
+    variations.push(format!("ytsearch5:{}", query));
 
     // 3. Query with " - " replaced by space (Artist Title instead of Artist - Title)
     if query.contains(" - ") {
-        variations.push(format!("ytmsearch1:{}", query.replace(" - ", " ")));
+        variations.push(format!("ytmsearch5:{}", query.replace(" - ", " ")));
     }
 
-    // 4. If we have "Artist - Title" format, try variations
+    // 4. If we have "Artist - Title" format, try targeted variations only
     if query.contains(" - ") {
         let parts: Vec<&str> = query.splitn(2, " - ").collect();
         if parts.len() == 2 {
             let artist = parts[0].trim();
             let title = parts[1].trim();
 
-            // Title Artist (reversed)
-            variations.push(format!("ytsearch1:{} {}", title, artist));
-
-            // Title only (for covers/remixes that might not have original artist)
-            variations.push(format!("ytsearch1:{}", title));
-
-            // Artist only + cleaned title (removes feat. etc)
+            // Artist + cleaned title (removes feat. etc)
             let clean_title = clean_search_query(title);
             if clean_title != title {
-                variations.push(format!("ytsearch1:{} {}", artist, clean_title));
+                variations.push(format!("ytsearch5:{} {}", artist, clean_title));
             }
 
             // Add "audio" suffix for official audio uploads
-            variations.push(format!("ytsearch1:{} {} audio", artist, title));
-
-            // Add "lyrics" suffix (lyric videos are common)
-            variations.push(format!("ytsearch1:{} {} lyrics", artist, title));
+            variations.push(format!("ytsearch5:{} {} audio", artist, title));
         }
     }
 
     // 5. Cleaned query if different from original
     if clean_query != query {
-        variations.push(format!("ytsearch1:{}", clean_query));
+        variations.push(format!("ytsearch5:{}", clean_query));
     }
 
     // Remove duplicates while preserving order

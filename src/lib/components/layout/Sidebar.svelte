@@ -3,7 +3,7 @@
 	import { Separator } from '$lib/components/ui/separator';
 	import { Button } from '$lib/components/ui/button';
 	import * as Tooltip from '$lib/components/ui/tooltip';
-	import { Home, Music, Disc, Users, ListMusic, Settings, PanelLeftClose, PanelLeft, LayoutDashboard, Download, AudioLines, Sparkles } from 'lucide-svelte';
+	import { Home, Music, Disc, Users, ListMusic, Settings, PanelLeftClose, PanelLeft, LayoutDashboard, Download, AudioLines, Sparkles, Smartphone } from 'lucide-svelte';
 	import { ui } from '$lib/stores/ui.svelte';
 	import { downloadStore } from '$lib/stores/downloads.svelte';
 	import { metadataScanStore } from '$lib/stores/metadataScan.svelte';
@@ -12,6 +12,7 @@
 		{ href: '/', label: 'Home', icon: Home },
 		{ href: '/playing', label: 'Playing', icon: AudioLines },
 		{ href: '/manager', label: 'Manager', icon: LayoutDashboard },
+		{ href: '/devices', label: 'Devices', icon: Smartphone },
 	];
 
 	const libraryItems = [

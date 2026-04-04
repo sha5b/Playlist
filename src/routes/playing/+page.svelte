@@ -19,6 +19,7 @@
 	let videoPausedAudio = $state(false);
 	let videoPlaying = $state(false);
 	let videoElement = $state<HTMLVideoElement | null>(null);
+	let videoPhaseActive = $state(false);
 
 	const hasVideo = $derived(!!fullTrack?.music_video_path);
 	const hasLyrics = $derived(!!fullTrack?.lyrics);
@@ -26,7 +27,7 @@
 	// The preferred mode persists across tracks. When a track has the content
 	// (lyrics/video), it shows that mode; otherwise falls back to artwork.
 	const displayMode = $derived.by(() => {
-		if (preferredMode === 'video' && hasVideo) return 'video';
+		if (preferredMode === 'video' && hasVideo && videoPhaseActive) return 'video';
 		if (preferredMode === 'lyrics' && hasLyrics) return 'lyrics';
 		return 'artwork';
 	});
@@ -34,6 +35,7 @@
 	$effect(() => {
 		const id = player.currentTrack?.id;
 		if (id) {
+			videoPhaseActive = true;
 			getTrack(id).then(t => { fullTrack = t; }).catch(e => { console.error('Failed to load track details:', e); fullTrack = null; });
 		} else {
 			fullTrack = null;
@@ -76,8 +78,8 @@
 
 	function handleVideoEnded() {
 		videoPlaying = false;
-		videoPausedAudio = false;
-		player.next();
+		videoPhaseActive = false;
+		// videoPausedAudio stays true → the $effect resumes audio
 	}
 
 	const effectivelyPlaying = $derived(

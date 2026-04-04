@@ -318,6 +318,28 @@ pub fn get_entry(conn: &Connection, entry_id: i64) -> Result<Option<MonitoredEnt
     conn.query_row(&sql, params![entry_id], entry_from_row).optional()
 }
 
+/// Update an entry's thumbnail to a local file path
+pub fn update_entry_thumbnail(conn: &Connection, entry_id: i64, local_path: &str) -> Result<(), rusqlite::Error> {
+    conn.execute(
+        "UPDATE monitored_playlist_entries SET thumbnail = ?1 WHERE id = ?2",
+        params![local_path, entry_id],
+    )?;
+    Ok(())
+}
+
+/// Get entries with external (non-local) thumbnail URLs for a playlist
+pub fn get_entries_with_remote_thumbnails(conn: &Connection, playlist_id: i64) -> Result<Vec<(i64, String)>, rusqlite::Error> {
+    let mut stmt = conn.prepare(
+        "SELECT id, thumbnail FROM monitored_playlist_entries
+         WHERE playlist_id = ?1 AND thumbnail IS NOT NULL
+         AND thumbnail NOT LIKE '/%' AND thumbnail NOT LIKE 'asset://%'",
+    )?;
+    let rows = stmt.query_map(params![playlist_id], |row| {
+        Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+    })?;
+    rows.collect()
+}
+
 trait OptionalExt<T> {
     fn optional(self) -> Result<Option<T>, rusqlite::Error>;
 }

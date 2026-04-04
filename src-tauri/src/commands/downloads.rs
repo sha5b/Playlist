@@ -104,6 +104,9 @@ pub async fn download_start(
             None,
             None,
             None,
+            None,
+            None,
+            None,
         )
         .map_err(|e| e.to_string())?
     };
@@ -171,6 +174,9 @@ pub async fn download_start_batch(
                 None,
                 None,
                 None,
+                None,
+                None,
+                None,
             )
             .map_err(|e| e.to_string())?
         };
@@ -199,6 +205,8 @@ pub async fn download_search_and_start(
     artist: Option<String>,
     album_id: Option<i64>,
     artist_id: Option<i64>,
+    disc_number: Option<i64>,
+    track_number: Option<i64>,
     format: Option<String>,
     quality: Option<String>,
 ) -> Result<Download, String> {
@@ -228,6 +236,9 @@ pub async fn download_search_and_start(
             &qual,
             album_id,
             artist_id,
+            None,
+            disc_number,
+            track_number,
             None,
         )
         .map_err(|e| e.to_string())?
@@ -273,6 +284,9 @@ pub async fn download_search_and_start_batch(
                 &qual,
                 req.album_id,
                 req.artist_id,
+                None,
+                None,
+                None,
                 None,
             )
             .map_err(|e| e.to_string())?
@@ -440,12 +454,13 @@ pub async fn download_artist_missing(
         // Rate limit
         tokio::time::sleep(std::time::Duration::from_millis(crate::metadata::musicbrainz::MB_RATE_LIMIT_MS)).await;
 
-        // Fetch tracklist from the release
+        // Fetch tracklist from the release (include ISRCs for precise matching)
         let release_url = format!(
-            "https://musicbrainz.org/ws/2/release/{}?inc=recordings&fmt=json",
+            "https://musicbrainz.org/ws/2/release/{}?inc=recordings+isrcs&fmt=json",
             release_id
         );
-        let tracks: Vec<(String, i64, i64)> = match client.get(&release_url).send().await {
+        // (title, disc, track_num, duration_ms, isrc)
+        let tracks: Vec<(String, i64, i64, Option<i64>, Option<String>)> = match client.get(&release_url).send().await {
             Ok(resp) => {
                 let json: serde_json::Value = resp.json().await.unwrap_or_default();
                 let mut tracks = Vec::new();
@@ -458,8 +473,16 @@ pub async fn download_artist_missing(
                                 let num = track["number"].as_str()
                                     .and_then(|n| n.parse::<i64>().ok())
                                     .unwrap_or(0);
+                                // Duration from recording.length (milliseconds)
+                                let duration_ms = track["recording"]["length"].as_i64()
+                                    .or_else(|| track["length"].as_i64());
+                                // First ISRC from the recording
+                                let isrc = track["recording"]["isrcs"].as_array()
+                                    .and_then(|arr| arr.first())
+                                    .and_then(|v| v.as_str())
+                                    .map(|s| s.to_string());
                                 if !title.is_empty() {
-                                    tracks.push((title, disc, num));
+                                    tracks.push((title, disc, num, duration_ms, isrc));
                                 }
                             }
                         }
@@ -502,12 +525,12 @@ pub async fn download_artist_missing(
                 params![release_id, aid],
             );
             // Store enriched tracklist
-            let tracklist_json: Vec<serde_json::Value> = tracks.iter().map(|(title, disc, num)| {
+            let tracklist_json: Vec<serde_json::Value> = tracks.iter().map(|(title, disc, num, dur, _isrc)| {
                 serde_json::json!({
                     "disc_number": disc,
                     "track_number": num,
                     "title": title,
-                    "duration_ms": null,
+                    "duration_ms": dur,
                 })
             }).collect();
             let tl_str = serde_json::to_string(&tracklist_json).unwrap_or_default();
@@ -518,10 +541,10 @@ pub async fn download_artist_missing(
             aid
         };
 
-        // Queue downloads for each track
-        for (title, _disc, _num) in &tracks {
+        // Queue downloads for each track using ytmsearch5 for better matching
+        for (title, disc, num, duration_ms, isrc) in &tracks {
             let query = format!("{} - {}", artist_name, title);
-            let search_url = format!("ytsearch1:{}", query);
+            let search_url = format!("ytmsearch5:{}", query);
             let download = {
                 let conn = db.lock().map_err(|e| e.to_string())?;
                 crate::db::downloads::create_download(
@@ -534,7 +557,10 @@ pub async fn download_artist_missing(
                     &default_quality,
                     Some(album_id),
                     Some(artist_id),
-                    None,
+                    isrc.as_deref(),
+                    Some(*disc),
+                    Some(*num),
+                    *duration_ms,
                 )
                 .map_err(|e| e.to_string())?
             };

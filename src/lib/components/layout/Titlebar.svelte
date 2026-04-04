@@ -30,7 +30,7 @@
 	}
 
 	async function close() {
-		await appWindow.hide();
+		await appWindow.close();
 	}
 </script>
 

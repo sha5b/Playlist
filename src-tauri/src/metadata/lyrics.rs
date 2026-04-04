@@ -18,8 +18,22 @@ struct LrclibResponse {
     plain_lyrics: Option<String>,
 }
 
-/// Search LRCLIB for lyrics. Returns (synced_lyrics, plain_lyrics) — prefer synced if available.
+/// Search LRCLIB for lyrics. Tries exact match first, then fuzzy search.
 pub async fn fetch_lyrics(
+    title: &str,
+    artist: &str,
+    duration_secs: Option<f64>,
+) -> Result<String, String> {
+    // Try exact match first
+    if let Ok(lyrics) = fetch_exact(title, artist, duration_secs).await {
+        return Ok(lyrics);
+    }
+
+    // Fall back to fuzzy search
+    fetch_search(title, artist).await
+}
+
+async fn fetch_exact(
     title: &str,
     artist: &str,
     duration_secs: Option<f64>,
@@ -49,7 +63,39 @@ pub async fn fetch_lyrics(
         .await
         .map_err(|e| format!("Failed to parse LRCLIB response: {}", e))?;
 
-    // Prefer synced lyrics (LRC format), fall back to plain
+    extract_lyrics(data)
+}
+
+async fn fetch_search(title: &str, artist: &str) -> Result<String, String> {
+    let query = format!("{} {}", artist, title);
+    let url = format!("{}/search?q={}", LRCLIB_BASE, urlencoding(&query));
+
+    let resp = client()
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("LRCLIB search failed: {}", e))?;
+
+    if !resp.status().is_success() {
+        return Err("No lyrics found".to_string());
+    }
+
+    let results: Vec<LrclibResponse> = resp
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse LRCLIB search response: {}", e))?;
+
+    // Pick the first result that has lyrics, preferring synced
+    for result in results {
+        if let Ok(lyrics) = extract_lyrics(result) {
+            return Ok(lyrics);
+        }
+    }
+
+    Err("No lyrics found".to_string())
+}
+
+fn extract_lyrics(data: LrclibResponse) -> Result<String, String> {
     data.synced_lyrics
         .or(data.plain_lyrics)
         .filter(|s| !s.is_empty())

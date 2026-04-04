@@ -1,4 +1,5 @@
 pub mod player;
+pub mod devices;
 mod library;
 mod downloads;
 mod manager;

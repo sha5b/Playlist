@@ -1,6 +1,7 @@
 mod audio;
 mod commands;
 mod db;
+mod devices;
 mod download;
 mod error;
 mod metadata;
@@ -109,6 +110,10 @@ pub fn run() {
             let dl_manager = Arc::new(download::DownloadManager::new(dl_db, app.handle().clone()));
             dl_manager.resume_interrupted();
             app.manage(dl_manager);
+
+            // Initialize device manager for USB device sync
+            let device_manager = Arc::new(devices::DeviceManager::new(app.handle().clone()));
+            app.manage(device_manager);
 
             // System tray with playback controls
             let show = MenuItemBuilder::with_id("show", "Show Playlist").build(app)?;
@@ -235,6 +240,7 @@ pub fn run() {
             commands::library_get_genres,
             commands::library_get_tracks_by_genre,
             commands::library_delete_track,
+            commands::library_delete_album_tracks,
             commands::library_reset,
             // Albums
             commands::library_get_albums,
@@ -338,6 +344,16 @@ pub fn run() {
             commands::library_get_artist_missing_albums,
             commands::download_artist_missing,
             commands::download_music_video,
+            // Devices
+            commands::devices::devices_scan,
+            commands::devices::devices_get_all,
+            commands::devices::devices_get_detail,
+            commands::devices::devices_configure,
+            commands::devices::devices_add_playlist,
+            commands::devices::devices_remove_playlist,
+            commands::devices::devices_sync,
+            commands::devices::devices_cancel_sync,
+            commands::devices::devices_clear_history,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

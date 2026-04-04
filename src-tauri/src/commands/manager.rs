@@ -133,6 +133,16 @@ pub async fn manager_add_playlist(
             .map_err(|e| e.to_string())?;
     }
 
+    // Spawn async task to download thumbnails in the background
+    {
+        let db_clone = db.inner().clone();
+        let app_clone = app_handle.clone();
+        let playlist_id = playlist.id;
+        tokio::spawn(async move {
+            download_playlist_thumbnails(&db_clone, &app_clone, playlist_id).await;
+        });
+    }
+
     // Return the full monitored playlist with counts
     let conn = db.lock().map_err(|e| e.to_string())?;
     let playlists = crate::db::monitored::get_monitored_playlists(&conn)
@@ -200,6 +210,15 @@ pub async fn manager_sync_playlist(
         crate::db::monitored::upsert_entries(&conn, playlist_id, &entry_data)
             .map_err(|e| e.to_string())?
     };
+
+    // Spawn async task to download thumbnails in the background
+    {
+        let db_clone = db.inner().clone();
+        let app_clone = app_handle.clone();
+        tokio::spawn(async move {
+            download_playlist_thumbnails(&db_clone, &app_clone, playlist_id).await;
+        });
+    }
 
     Ok(SyncResult {
         playlist_id,
@@ -273,6 +292,9 @@ pub async fn manager_download_entry(
         None,
         None,
         entry.isrc.as_deref(),
+        None,
+        None,
+        None,
     )
     .map_err(|e| e.to_string())?;
 
@@ -342,6 +364,9 @@ pub async fn manager_download_new(
                 None,
                 None,
                 entry.isrc.as_deref(),
+                None,
+                None,
+                None,
             )
             .map_err(|e| e.to_string())?;
 
@@ -479,4 +504,77 @@ pub async fn manager_remove_playlist(
     let conn = db.lock().map_err(|e| e.to_string())?;
     crate::db::monitored::delete_monitored_playlist(&conn, playlist_id)
         .map_err(|e| e.to_string())
+}
+
+/// Download thumbnails for playlist entries and set the playlist cover.
+/// Runs in the background — errors are logged, not propagated.
+async fn download_playlist_thumbnails(
+    db: &Arc<crate::db::DbPool>,
+    app_handle: &tauri::AppHandle,
+    playlist_id: i64,
+) {
+    use tauri::{Manager, Emitter};
+
+    let thumbnails_dir = match app_handle.path().app_data_dir() {
+        Ok(dir) => dir.join("thumbnails"),
+        Err(_) => return,
+    };
+    if let Err(e) = std::fs::create_dir_all(&thumbnails_dir) {
+        log::warn!("Failed to create thumbnails dir: {}", e);
+        return;
+    }
+
+    // Get entries with remote thumbnail URLs
+    let entries = match db.lock() {
+        Ok(conn) => crate::db::monitored::get_entries_with_remote_thumbnails(&conn, playlist_id).unwrap_or_default(),
+        Err(_) => return,
+    };
+
+    let mut first_local_path: Option<String> = None;
+
+    for (entry_id, thumb_url) in &entries {
+        let bytes = match crate::metadata::lastfm::download_image(thumb_url).await {
+            Some(b) => b,
+            None => {
+                log::warn!("Failed to download thumbnail for entry {}", entry_id);
+                continue;
+            }
+        };
+
+        // Determine extension from URL or default to jpg
+        let ext = if thumb_url.contains(".png") { "png" }
+            else if thumb_url.contains(".webp") { "webp" }
+            else { "jpg" };
+
+        let filename = format!("entry_{}_{}.{}", playlist_id, entry_id, ext);
+        let local_path = thumbnails_dir.join(&filename);
+
+        if let Err(e) = std::fs::write(&local_path, &bytes) {
+            log::warn!("Failed to write thumbnail {}: {}", filename, e);
+            continue;
+        }
+
+        let path_str = local_path.to_string_lossy().to_string();
+
+        if first_local_path.is_none() {
+            first_local_path = Some(path_str.clone());
+        }
+
+        if let Ok(conn) = db.lock() {
+            let _ = crate::db::monitored::update_entry_thumbnail(&conn, *entry_id, &path_str);
+        }
+    }
+
+    // Use first entry's thumbnail as the playlist cover if none is set
+    if let Some(cover_path) = first_local_path {
+        if let Ok(conn) = db.lock() {
+            let _ = conn.execute(
+                "UPDATE playlists SET cover_art_path = ?1 WHERE id = ?2 AND cover_art_path IS NULL",
+                rusqlite::params![cover_path, playlist_id],
+            );
+        }
+    }
+
+    // Notify frontend that thumbnails are ready
+    let _ = app_handle.emit("manager-thumbnails-ready", serde_json::json!({ "playlist_id": playlist_id }));
 }

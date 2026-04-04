@@ -258,6 +258,60 @@ export interface ManagerEntryEvent {
 	status: string;
 }
 
+// --- Device Sync Types ---
+
+export interface ScannedDevice {
+	device_uid: string;
+	name: string;
+	mount_path: string;
+	capacity_bytes: number | null;
+	free_bytes: number | null;
+	vendor: string | null;
+	model: string | null;
+	is_known: boolean;
+	device_id: number | null;
+}
+
+export interface Device {
+	id: number;
+	device_uid: string;
+	name: string;
+	device_type: string;
+	mount_path: string | null;
+	capacity_bytes: number | null;
+	music_dir: string;
+	output_format: string;
+	output_bitrate: string;
+	generate_m3u: boolean;
+	first_seen_at: string;
+	last_seen_at: string;
+}
+
+export interface DevicePlaylistLink {
+	playlist_id: number;
+	playlist_name: string;
+	enabled: boolean;
+	last_synced_at: string | null;
+	total_tracks: number;
+	synced_tracks: number;
+}
+
+export interface DeviceDetail {
+	device: Device;
+	playlists: DevicePlaylistLink[];
+	synced_track_count: number;
+}
+
+export interface DeviceSyncProgress {
+	device_id: number;
+	playlist_id: number;
+	current: number;
+	total: number;
+	track_title: string;
+	status: 'copying' | 'converting' | 'generating_playlist' | 'done' | 'error' | 'cancelled';
+	error: string | null;
+}
+
 // --- Metadata Enrichment Types ---
 
 export interface EnrichResult {

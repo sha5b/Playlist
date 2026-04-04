@@ -1,13 +1,13 @@
 <script lang="ts">
 	import { page } from '$app/state';
-	import { getAlbum, getAlbumTracks, enrichAlbum } from '$lib/api/library';
+	import { getAlbum, getAlbumTracks, enrichAlbum, deleteAlbumTracks } from '$lib/api/library';
 	import { searchAndDownload, searchAndDownloadBatch } from '$lib/api/downloads';
 	import type { SearchDownloadRequest } from '$lib/api/downloads';
 	import TrackTable from '$lib/components/library/TrackTable.svelte';
 	import { Button } from '$lib/components/ui/button';
 	import { player } from '$lib/stores/player.svelte';
 	import { formatDurationLong, assetUrl, shuffleArray } from '$lib/utils/format';
-	import { ArrowLeft, Disc, Play, Shuffle, Loader2, Sparkles, Download } from 'lucide-svelte';
+	import { ArrowLeft, Disc, Play, Shuffle, Loader2, Sparkles, Download, Trash2 } from 'lucide-svelte';
 	import { toast } from 'svelte-sonner';
 	import { listen } from '@tauri-apps/api/event';
 	import { onMount } from 'svelte';
@@ -18,6 +18,7 @@
 	let loading = $state(true);
 	let enriching = $state(false);
 	let downloadingMissing = $state(false);
+	let deletingTracks = $state(false);
 
 	const albumId = $derived(Number(page.params.id));
 
@@ -114,9 +115,23 @@
 		}
 		const artistName = album.artist_name ?? album.album_artist ?? 'Unknown Artist';
 		const query = `${artistName} - ${placeholder.title}`;
-		searchAndDownload(query, placeholder.title, artistName, undefined, undefined, album.id, album.artist_id ?? undefined)
+		searchAndDownload(query, placeholder.title, artistName, undefined, undefined, album.id, album.artist_id ?? undefined, placeholder.disc_number, placeholder.track_number)
 			.then(() => toast.success(`Queued: ${placeholder.title}`))
 			.catch((e) => toast.error(`Failed: ${e}`));
+	}
+
+	async function handleDeleteAlbumTracks() {
+		if (!album || tracks.length === 0 || deletingTracks) return;
+		deletingTracks = true;
+		try {
+			const count = await deleteAlbumTracks(album.id);
+			toast.success(`Deleted ${count} track${count !== 1 ? 's' : ''} — placeholders kept for re-download`);
+			await load(album.id);
+		} catch (e) {
+			toast.error(`Failed to delete tracks: ${e}`);
+		} finally {
+			deletingTracks = false;
+		}
 	}
 
 	// Auto-refresh tracks when downloads complete (so placeholders disappear)
@@ -224,6 +239,16 @@
 								<Download class="size-4" />
 							{/if}
 							Download {missingTracks.length} Missing
+						</Button>
+					{/if}
+					{#if tracks.length > 0}
+						<Button variant="destructive" onclick={handleDeleteAlbumTracks} disabled={deletingTracks}>
+							{#if deletingTracks}
+								<Loader2 class="size-4 animate-spin" />
+							{:else}
+								<Trash2 class="size-4" />
+							{/if}
+							Delete Tracks
 						</Button>
 					{/if}
 				</div>

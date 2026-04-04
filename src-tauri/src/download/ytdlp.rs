@@ -119,6 +119,58 @@ pub async fn get_info(
     Ok(video_info_from_json(&json))
 }
 
+/// Like get_info but returns ALL results from a search URL (e.g. ytmsearch5:query).
+/// Does NOT use --flat-playlist so that full metadata (duration, title, URL) is extracted.
+pub async fn get_search_results(
+    binary: &str,
+    ffmpeg_dir: Option<&str>,
+    url: &str,
+    cookies_from_browser: Option<&str>,
+) -> Result<Vec<VideoInfo>, String> {
+    let mut cmd = Command::new(binary);
+    low_priority(&mut cmd);
+    cmd.args([
+        "--dump-json",
+        "--no-download",
+        "--no-warnings",
+        "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
+        "--extractor-retries", "3",
+    ]);
+    if let Some(dir) = ffmpeg_dir {
+        cmd.args(["--ffmpeg-location", dir]);
+    }
+    if let Some(browser) = cookies_from_browser {
+        if !browser.is_empty() {
+            cmd.args(["--cookies-from-browser", browser]);
+        }
+    }
+    cmd.arg(url);
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+
+    let output = cmd
+        .output()
+        .await
+        .map_err(|e| format!("Failed to run yt-dlp: {}", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("yt-dlp error: {}", stderr.trim()));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut results = Vec::new();
+    for line in stdout.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        if let Ok(json) = serde_json::from_str::<serde_json::Value>(line) {
+            results.push(video_info_from_json(&json));
+        }
+    }
+    Ok(results)
+}
+
 fn video_info_from_json(json: &serde_json::Value) -> VideoInfo {
     VideoInfo {
         title: json["title"].as_str().unwrap_or("Unknown").to_string(),

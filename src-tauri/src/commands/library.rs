@@ -87,6 +87,71 @@ pub fn library_delete_track(
     Ok(())
 }
 
+/// Delete all tracks in an album (and their files) but keep the album + enriched tracklist
+/// so greyed-out placeholders remain for re-downloading.
+#[tauri::command]
+pub fn library_delete_album_tracks(
+    db: State<'_, Arc<DbPool>>,
+    app_handle: tauri::AppHandle,
+    album_id: i64,
+) -> Result<i64, String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+
+    // Collect file paths to delete from disk
+    let file_paths: Vec<String> = {
+        let mut stmt = conn
+            .prepare("SELECT file_path FROM tracks WHERE album_id = ?1 AND file_path IS NOT NULL")
+            .map_err(|e| e.to_string())?;
+        let paths: Vec<String> = stmt.query_map(params![album_id], |row| {
+                row.get::<_, String>(0)
+            })
+            .map_err(|e| e.to_string())?
+            .filter_map(|r| r.ok())
+            .collect();
+        paths
+    };
+
+    // Delete files from disk (non-fatal if missing)
+    for path in &file_paths {
+        if let Err(e) = std::fs::remove_file(path) {
+            log::warn!("Failed to delete track file {}: {}", path, e);
+        }
+    }
+
+    // Bulk delete from DB — FTS, playlist_tracks, then tracks
+    let track_ids: Vec<i64> = {
+        let mut stmt = conn
+            .prepare("SELECT id FROM tracks WHERE album_id = ?1")
+            .map_err(|e| e.to_string())?;
+        let ids: Vec<i64> = stmt.query_map(params![album_id], |row| row.get::<_, i64>(0))
+            .map_err(|e| e.to_string())?
+            .filter_map(|r| r.ok())
+            .collect();
+        ids
+    };
+
+    let count = track_ids.len() as i64;
+    if count == 0 {
+        return Ok(0);
+    }
+
+    // Build comma-separated ID list for IN clause
+    let id_list: String = track_ids.iter().map(|id| id.to_string()).collect::<Vec<_>>().join(",");
+
+    conn.execute_batch(&format!(
+        "DELETE FROM playlist_tracks WHERE track_id IN ({ids});
+         DELETE FROM tracks WHERE id IN ({ids});",
+        ids = id_list
+    )).map_err(|e| e.to_string())?;
+
+    log::info!("Deleted {} tracks from album {}", count, album_id);
+
+    // Notify frontend
+    let _ = app_handle.emit("library-updated", ());
+
+    Ok(count)
+}
+
 fn cleanup_download_files(conn: &rusqlite::Connection, app_handle: &tauri::AppHandle) {
     let download_dir = {
         let dir = crate::db::settings::get_setting(conn, "download_dir").ok().flatten();

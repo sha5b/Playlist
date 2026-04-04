@@ -74,6 +74,19 @@ pub async fn enrich_track(
     update_if_missing!("description", enrichment.description);
     update_if_missing!("label", enrichment.label);
     update_if_missing!("language", enrichment.language);
+    update_if_missing!("composer", enrichment.composer);
+
+    // Populate track year from release_date if missing
+    if let Some(ref rd) = enrichment.release_date {
+        if rd.len() >= 4 {
+            if let Ok(year) = rd[..4].parse::<i64>() {
+                let _ = conn.execute(
+                    "UPDATE tracks SET year = ?1 WHERE id = ?2 AND year IS NULL",
+                    rusqlite::params![year, track_id],
+                );
+            }
+        }
+    }
 
     // Merge MusicBrainz tags with existing tags
     if let Some(ref new_tags) = enrichment.tags {

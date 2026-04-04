@@ -130,8 +130,20 @@
 			unlistenEntry = fn;
 		});
 
+		let unlistenThumbs: (() => void) | null = null;
+		listen<{ playlist_id: number }>('manager-thumbnails-ready', (event) => {
+			// Reload entries to get local thumbnail paths
+			if (selectedPlaylistId === event.payload.playlist_id) {
+				loadEntries(event.payload.playlist_id);
+			}
+			loadPlaylists();
+		}).then((fn) => {
+			unlistenThumbs = fn;
+		});
+
 		return () => {
 			unlistenEntry?.();
+			unlistenThumbs?.();
 		};
 	});
 
@@ -518,6 +530,7 @@
 			default: return 'text-muted-foreground';
 		}
 	}
+
 </script>
 
 <div class="flex-1 min-h-0 overflow-y-auto space-y-6">
@@ -745,6 +758,16 @@
 													<XCircle class="size-4 text-destructive" />
 												{:else if entry.status === 'skipped'}
 													<SkipForward class="size-3.5 text-muted-foreground/50" />
+												{/if}
+											</div>
+											<!-- Thumbnail -->
+											<div class="w-9 h-9 rounded overflow-hidden flex-shrink-0 ml-2 bg-muted/30">
+												{#if entry.thumbnail}
+													<img
+														src={entry.thumbnail.startsWith('/') ? assetUrl(entry.thumbnail) : entry.thumbnail}
+														alt=""
+														class="w-full h-full object-cover"
+													/>
 												{/if}
 											</div>
 											<!-- Title & artist -->
@@ -1483,6 +1506,7 @@
 					{/if}
 				{/if}
 			</Tabs.Content>
+
 		</Tabs.Root>
 	{/if}
 </div>
