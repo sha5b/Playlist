@@ -64,11 +64,10 @@
     </release>
   </releases>
 
-  <!-- TODO: Add screenshots before Flathub submission -->
-  <!-- <screenshots>
+  <screenshots>
     <screenshot type="default">
-      <image>https://raw.githubusercontent.com/sha5b/Playlist/main/docs/screenshots/main.png</image>
+      <image>https://raw.githubusercontent.com/sha5b/Playlist/main/docs/screenshot/main.png</image>
       <caption>Main library view</caption>
     </screenshot>
-  </screenshots> -->
+  </screenshots>
 </component>

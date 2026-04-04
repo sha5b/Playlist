@@ -146,6 +146,7 @@ pub fn run() {
             // disappears on Linux (libappindicator destroys it on drop).
             let tray = TrayIconBuilder::new()
                 .icon(tray_icon)
+                .icon_as_template(true)
                 .menu(&tray_menu)
                 .show_menu_on_left_click(false)
                 .tooltip("Playlist")
