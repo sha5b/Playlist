@@ -6,7 +6,16 @@
   "permissions": [
     "core:default",
     "fs:default",
-    "fs:allow-read-file",
+    {
+      "identifier": "fs:allow-read-file",
+      "allow": [
+        { "path": "$APPDATA/**" },
+        { "path": "$APPDATA/covers/**" },
+        { "path": "$APPDATA/downloads/**" },
+        { "path": "$APPDATA/music_videos/**" },
+        { "path": "**" }
+      ]
+    },
     "fs:allow-write-file",
     "fs:allow-exists",
     "fs:allow-mkdir",

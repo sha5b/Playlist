@@ -44,14 +44,18 @@ pub async fn download_start(
     quality: Option<String>,
 ) -> Result<Download, String> {
     let parsed = crate::download::url_parser::parse_url(&url);
-    let default_format = {
+    let (default_format, default_quality) = {
         let conn = db.lock().map_err(|e| e.to_string())?;
-        crate::db::settings::get_setting(&conn, "download_format")
+        let f = crate::db::settings::get_setting(&conn, "download_format")
             .ok().flatten()
-            .unwrap_or_else(|| "mp3".to_string())
+            .unwrap_or_else(|| "mp3".to_string());
+        let q = crate::db::settings::get_setting(&conn, "download_quality")
+            .ok().flatten()
+            .unwrap_or_else(|| "best".to_string());
+        (f, q)
     };
     let fmt = format.unwrap_or(default_format);
-    let qual = quality.unwrap_or_else(|| "best".to_string());
+    let qual = quality.unwrap_or(default_quality);
 
     // For Spotify URLs, fetch metadata and convert to YouTube search
     let (final_url, title, artist) = if parsed.platform == "spotify" {
@@ -102,14 +106,18 @@ pub async fn download_start_batch(
     format: Option<String>,
     quality: Option<String>,
 ) -> Result<Vec<Download>, String> {
-    let default_format = {
+    let (default_format, default_quality) = {
         let conn = db.lock().map_err(|e| e.to_string())?;
-        crate::db::settings::get_setting(&conn, "download_format")
+        let f = crate::db::settings::get_setting(&conn, "download_format")
             .ok().flatten()
-            .unwrap_or_else(|| "mp3".to_string())
+            .unwrap_or_else(|| "mp3".to_string());
+        let q = crate::db::settings::get_setting(&conn, "download_quality")
+            .ok().flatten()
+            .unwrap_or_else(|| "best".to_string());
+        (f, q)
     };
     let fmt = format.unwrap_or(default_format);
-    let qual = quality.unwrap_or_else(|| "best".to_string());
+    let qual = quality.unwrap_or(default_quality);
     let mut downloads = Vec::new();
 
     for url in &urls {
@@ -181,14 +189,18 @@ pub async fn download_search_and_start(
     quality: Option<String>,
 ) -> Result<Download, String> {
     let search_url = format!("ytsearch1:{}", query);
-    let default_format = {
+    let (default_format, default_quality) = {
         let conn = db.lock().map_err(|e| e.to_string())?;
-        crate::db::settings::get_setting(&conn, "download_format")
+        let f = crate::db::settings::get_setting(&conn, "download_format")
             .ok().flatten()
-            .unwrap_or_else(|| "mp3".to_string())
+            .unwrap_or_else(|| "mp3".to_string());
+        let q = crate::db::settings::get_setting(&conn, "download_quality")
+            .ok().flatten()
+            .unwrap_or_else(|| "best".to_string());
+        (f, q)
     };
     let fmt = format.unwrap_or(default_format);
-    let qual = quality.unwrap_or_else(|| "best".to_string());
+    let qual = quality.unwrap_or(default_quality);
 
     let download = {
         let conn = db.lock().map_err(|e| e.to_string())?;
@@ -219,14 +231,18 @@ pub async fn download_search_and_start_batch(
     format: Option<String>,
     quality: Option<String>,
 ) -> Result<Vec<Download>, String> {
-    let default_format = {
+    let (default_format, default_quality) = {
         let conn = db.lock().map_err(|e| e.to_string())?;
-        crate::db::settings::get_setting(&conn, "download_format")
+        let f = crate::db::settings::get_setting(&conn, "download_format")
             .ok().flatten()
-            .unwrap_or_else(|| "mp3".to_string())
+            .unwrap_or_else(|| "mp3".to_string());
+        let q = crate::db::settings::get_setting(&conn, "download_quality")
+            .ok().flatten()
+            .unwrap_or_else(|| "best".to_string());
+        (f, q)
     };
     let fmt = format.unwrap_or(default_format);
-    let qual = quality.unwrap_or_else(|| "best".to_string());
+    let qual = quality.unwrap_or(default_quality);
     let mut downloads = Vec::new();
 
     for req in &queries {
@@ -365,11 +381,15 @@ pub async fn download_artist_missing(
         ).map_err(|e| e.to_string())?
     };
 
-    let default_format = {
+    let (default_format, default_quality) = {
         let conn = db.lock().map_err(|e| e.to_string())?;
-        crate::db::settings::get_setting(&conn, "download_format")
+        let f = crate::db::settings::get_setting(&conn, "download_format")
             .ok().flatten()
-            .unwrap_or_else(|| "mp3".to_string())
+            .unwrap_or_else(|| "mp3".to_string());
+        let q = crate::db::settings::get_setting(&conn, "download_quality")
+            .ok().flatten()
+            .unwrap_or_else(|| "best".to_string());
+        (f, q)
     };
 
     let mut all_downloads = Vec::new();
@@ -497,7 +517,7 @@ pub async fn download_artist_missing(
                     Some(&artist_name),
                     "youtube_search",
                     &default_format,
-                    "best",
+                    &default_quality,
                     Some(album_id),
                     Some(artist_id),
                     None,

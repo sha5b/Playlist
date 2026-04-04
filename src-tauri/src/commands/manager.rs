@@ -269,8 +269,11 @@ pub async fn manager_download_entry(
     let default_format = crate::db::settings::get_setting(&conn, "download_format")
         .ok().flatten()
         .unwrap_or_else(|| "mp3".to_string());
+    let default_quality = crate::db::settings::get_setting(&conn, "download_quality")
+        .ok().flatten()
+        .unwrap_or_else(|| "best".to_string());
     let fmt = format.unwrap_or(default_format);
-    let qual = quality.unwrap_or_else(|| "best".to_string());
+    let qual = quality.unwrap_or(default_quality);
 
     // For Spotify URLs, convert to YouTube search (entry already has metadata)
     let final_url = if parsed.platform == "spotify" && entry.source_url.starts_with("http") {
@@ -335,8 +338,11 @@ pub async fn manager_download_new(
     let default_format = crate::db::settings::get_setting(&conn, "download_format")
         .ok().flatten()
         .unwrap_or_else(|| "mp3".to_string());
+    let default_quality = crate::db::settings::get_setting(&conn, "download_quality")
+        .ok().flatten()
+        .unwrap_or_else(|| "best".to_string());
     let fmt = format.unwrap_or(default_format);
-    let qual = quality.unwrap_or_else(|| "best".to_string());
+    let qual = quality.unwrap_or(default_quality);
 
     // Use a transaction for bulk inserts (fast even for thousands of entries)
     conn.execute_batch("BEGIN IMMEDIATE").map_err(|e| e.to_string())?;

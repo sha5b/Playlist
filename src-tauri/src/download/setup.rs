@@ -54,12 +54,24 @@ pub fn resolve_ytdlp(bin_dir: &Path) -> Option<String> {
     None
 }
 
-/// Resolve ffmpeg directory (for --ffmpeg-location): local bin first
+/// Resolve ffmpeg directory (for --ffmpeg-location): local bin first, then PATH
 pub fn resolve_ffmpeg_dir(bin_dir: &Path) -> Option<String> {
     let local = get_ffmpeg_path(bin_dir);
     if local.exists() {
+        log::info!("ffmpeg resolved from local bin dir: {:?}", bin_dir);
         return Some(bin_dir.to_string_lossy().to_string());
     }
+    // Fall back to system ffmpeg on PATH
+    if let Ok(output) = std::process::Command::new("which").arg("ffmpeg").output() {
+        if output.status.success() {
+            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if let Some(parent) = Path::new(&path).parent() {
+                log::info!("ffmpeg resolved from system PATH: {} (dir: {:?})", path, parent);
+                return Some(parent.to_string_lossy().to_string());
+            }
+        }
+    }
+    log::warn!("ffmpeg not found in local bin dir or system PATH");
     None
 }
 
@@ -79,11 +91,9 @@ pub async fn check_deps(bin_dir: &Path) -> DepsStatus {
         }
     };
 
-    // Check ffmpeg: only the local bundled binary counts.
-    // We must always ship our own ffmpeg so yt-dlp can find it via --ffmpeg-location.
-    let ffmpeg_local = get_ffmpeg_path(bin_dir);
-    let (ffmpeg_available, ffmpeg_path) = if ffmpeg_local.exists() {
-        (true, Some(bin_dir.to_string_lossy().to_string()))
+    // Check ffmpeg: local bundled binary first, then system PATH
+    let (ffmpeg_available, ffmpeg_path) = if let Some(dir) = resolve_ffmpeg_dir(bin_dir) {
+        (true, Some(dir))
     } else {
         (false, None)
     };
@@ -171,12 +181,125 @@ pub async fn ensure_deps(bin_dir: &Path, app_handle: &tauri::AppHandle) -> Resul
             emit_progress(app_handle, "ffmpeg", "ready", 100.0, "ffmpeg ready");
         }
 
-        #[cfg(not(windows))]
+        #[cfg(target_os = "macos")]
         {
-            return Err(
-                "ffmpeg not found. Install it with: brew install ffmpeg (macOS) or sudo apt install ffmpeg (Linux)"
-                    .to_string(),
+            emit_progress(
+                app_handle,
+                "ffmpeg",
+                "installing",
+                0.0,
+                "Installing ffmpeg via Homebrew...",
             );
+
+            // Check if brew is installed, if not install it
+            let brew_exists = std::process::Command::new("which")
+                .arg("brew")
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false);
+
+            if !brew_exists {
+                emit_progress(
+                    app_handle,
+                    "ffmpeg",
+                    "installing",
+                    0.0,
+                    "Installing Homebrew...",
+                );
+
+                let brew_install = tokio::process::Command::new("bash")
+                    .arg("-c")
+                    .arg("NONINTERACTIVE=1 /bin/bash -c \"$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)\"")
+                    .output()
+                    .await
+                    .map_err(|e| format!("Failed to install Homebrew: {}", e))?;
+
+                if !brew_install.status.success() {
+                    let stderr = String::from_utf8_lossy(&brew_install.stderr);
+                    return Err(format!("Homebrew installation failed: {}", stderr));
+                }
+            }
+
+            emit_progress(
+                app_handle,
+                "ffmpeg",
+                "installing",
+                30.0,
+                "Installing ffmpeg via Homebrew (this may take a few minutes)...",
+            );
+
+            let brew_path = if Path::new("/opt/homebrew/bin/brew").exists() {
+                "/opt/homebrew/bin/brew"
+            } else if Path::new("/usr/local/bin/brew").exists() {
+                "/usr/local/bin/brew"
+            } else {
+                "brew"
+            };
+
+            let install = tokio::process::Command::new(brew_path)
+                .args(["install", "ffmpeg"])
+                .output()
+                .await
+                .map_err(|e| format!("Failed to run brew install ffmpeg: {}", e))?;
+
+            if !install.status.success() {
+                let stderr = String::from_utf8_lossy(&install.stderr);
+                return Err(format!("brew install ffmpeg failed: {}", stderr));
+            }
+
+            // Verify it's now on PATH
+            if resolve_ffmpeg_dir(bin_dir).is_none() {
+                return Err("ffmpeg was installed but could not be found on PATH".to_string());
+            }
+
+            emit_progress(app_handle, "ffmpeg", "ready", 100.0, "ffmpeg ready");
+        }
+
+        #[cfg(all(target_os = "linux", not(target_os = "macos")))]
+        {
+            emit_progress(
+                app_handle,
+                "ffmpeg",
+                "installing",
+                0.0,
+                "Installing ffmpeg...",
+            );
+
+            // Try common Linux package managers
+            let result = if Path::new("/usr/bin/dnf").exists() {
+                tokio::process::Command::new("pkexec")
+                    .args(["dnf", "install", "-y", "ffmpeg-free"])
+                    .output()
+                    .await
+            } else if Path::new("/usr/bin/apt-get").exists() {
+                tokio::process::Command::new("pkexec")
+                    .args(["apt-get", "install", "-y", "ffmpeg"])
+                    .output()
+                    .await
+            } else if Path::new("/usr/bin/pacman").exists() {
+                tokio::process::Command::new("pkexec")
+                    .args(["pacman", "-S", "--noconfirm", "ffmpeg"])
+                    .output()
+                    .await
+            } else {
+                return Err("ffmpeg not found. Please install it with your package manager (e.g. dnf install ffmpeg-free, apt install ffmpeg, pacman -S ffmpeg)".to_string());
+            };
+
+            match result {
+                Ok(output) if output.status.success() => {
+                    if resolve_ffmpeg_dir(bin_dir).is_none() {
+                        return Err("ffmpeg was installed but could not be found on PATH".to_string());
+                    }
+                    emit_progress(app_handle, "ffmpeg", "ready", 100.0, "ffmpeg ready");
+                }
+                Ok(output) => {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    return Err(format!("ffmpeg installation failed: {}", stderr));
+                }
+                Err(e) => {
+                    return Err(format!("Failed to run package manager: {}", e));
+                }
+            }
         }
     }
 

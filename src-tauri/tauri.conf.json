@@ -28,7 +28,7 @@
       "csp": null,
       "assetProtocol": {
         "enable": true,
-        "scope": ["**"]
+        "scope": ["**", "$APPDATA/**", "$APPDATA/covers/**", "$APPDATA/downloads/**", "$APPDATA/music_videos/**"]
       }
     }
   },

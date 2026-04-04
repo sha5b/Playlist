@@ -19,15 +19,15 @@ pub fn set_setting(conn: &Connection, key: &str, value: &str) -> Result<(), rusq
     Ok(())
 }
 
-/// Get the cookies-from-browser setting, defaulting to "chrome" to avoid bot detection.
+/// Get the cookies-from-browser setting.
+/// Returns only the user's explicit choice from settings, or None.
+/// No auto-detection — users must explicitly set their browser in settings
+/// to avoid issues like Firefox cookies breaking YouTube downloads.
 pub fn get_cookies_browser(conn: &Connection) -> Option<String> {
-    Some(
-        get_setting(conn, "cookies_from_browser")
-            .ok()
-            .flatten()
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| "chrome".to_string()),
-    )
+    get_setting(conn, "cookies_from_browser")
+        .ok()
+        .flatten()
+        .filter(|s| !s.is_empty() && s != "none")
 }
 
 pub fn get_all_settings(conn: &Connection) -> Result<Vec<(String, String)>, rusqlite::Error> {

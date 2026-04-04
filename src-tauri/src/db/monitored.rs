@@ -129,8 +129,10 @@ pub fn upsert_entries(
     log::info!("upsert_entries called for playlist_id: {} with {} entries", playlist_id, entries.len());
     let mut new_count = 0i64;
 
-    // Batch all upserts in a single transaction for dramatically faster writes
-    conn.execute_batch("BEGIN")?;
+    // Batch all upserts in a single transaction for dramatically faster writes.
+    // Use SAVEPOINT instead of BEGIN to avoid "cannot start a transaction within a transaction"
+    // errors when SQLite already has an implicit or explicit transaction open.
+    conn.execute_batch("SAVEPOINT upsert_entries")?;
 
     // Fix stale ytsearch URLs: if we now have a direct URL for an entry that was
     // previously stored with a search query, update the source_url in-place so the
@@ -204,7 +206,7 @@ pub fn upsert_entries(
         params![playlist_id, total_count],
     )?;
 
-    conn.execute_batch("COMMIT")?;
+    conn.execute_batch("RELEASE SAVEPOINT upsert_entries")?;
 
     log::info!("upsert_entries completed: new={}, total={} for playlist_id={}", new_count, total_count, playlist_id);
     Ok((new_count, total_count))

@@ -173,6 +173,7 @@ impl DownloadManager {
         let download_dir = self.get_download_dir();
         let ytdlp_binary = self.resolve_ytdlp();
         let ffmpeg_dir = self.resolve_ffmpeg_dir();
+        log::info!("[download] id={} ffmpeg_dir={:?} ytdlp={}", download_id, ffmpeg_dir, ytdlp_binary);
         let cookies_from_browser = self.get_cookies_from_browser();
         let semaphore = self.concurrency.clone();
         let sources = self.sources.clone();

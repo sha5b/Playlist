@@ -1,0 +1,39 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls /home/sha5b/Documents/GitHub/Playlist/script*/)",
+      "Bash(ls /home/sha5b/Documents/GitHub/Playlist/scripts*/)",
+      "Bash(bash scripts/setup.sh)",
+      "Read(//home/sha5b/**)",
+      "Bash(npm --version)",
+      "Bash(rustc --version)",
+      "Bash(command -v node)",
+      "Bash(command -v rustc)",
+      "Bash(command -v npm)",
+      "Bash(sudo dnf:*)",
+      "Bash(chmod +x /home/sha5b/Documents/GitHub/Playlist/scripts/setup-fedora-flatpak.sh)",
+      "Bash(bash /home/sha5b/Documents/GitHub/Playlist/scripts/setup.sh)",
+      "Bash(rpm -q webkit2gtk4.1-devel gtk3-devel libayatana-appindicator-gtk3-devel librsvg2-devel patchelf alsa-lib-devel openssl-devel)",
+      "Bash(npm install:*)",
+      "Bash(cargo check:*)",
+      "Bash(yt-dlp --version)",
+      "Bash(~/.local/share/com.playlist.app/bin/yt-dlp --version)",
+      "Bash(~/.local/share/com.playlist.app/bin/yt-dlp --extractor-args \"youtube:player_client=android_vr,web\" --list-formats \"https://www.youtube.com/watch?v=eApXuej38f8\")",
+      "Bash(~/.local/share/com.playlist.app/bin/yt-dlp --extract-audio --audio-format mp3 --audio-quality 0 --extractor-args \"youtube:player_client=android_vr,web\" --force-ipv4 \"https://www.youtube.com/watch?v=eApXuej38f8\" -o \"/tmp/test_dl.%\\(ext\\)s\")",
+      "Bash(~/.local/share/com.playlist.app/bin/yt-dlp --extract-audio --audio-format mp3 --audio-quality 0 --extractor-args \"youtube:player_client=android_vr,web\" --force-ipv4 \"https://www.youtube.com/watch?v=k5YaICPFKzg\" -o \"/tmp/test_dl2.%\\(ext\\)s\")",
+      "Bash(~/.local/share/com.playlist.app/bin/yt-dlp --extract-audio --audio-format mp3 --audio-quality 0 --force-ipv4 \"https://www.youtube.com/watch?v=k5YaICPFKzg\" -o \"/tmp/test_dl3.%\\(ext\\)s\")",
+      "Bash(~/.local/share/com.playlist.app/bin/yt-dlp --extract-audio --audio-format mp3 --audio-quality 0 --ffmpeg-location /usr/bin --force-ipv4 --extractor-args \"youtube:player_client=android_vr,web\" \"https://www.youtube.com/watch?v=fK7LZbLsNMk\" -o \"/tmp/test_dl4.%\\(ext\\)s\")",
+      "Bash(~/.local/share/com.playlist.app/bin/yt-dlp --extract-audio --audio-format mp3 --audio-quality 0 --ffmpeg-location /usr/bin --force-ipv4 --extractor-args \"youtube:player_client=android_vr,web\" \"https://www.youtube.com/watch?v=_ByU86-F304\" -o \"/tmp/test_byU.%\\(ext\\)s\")",
+      "Bash(~/.local/share/com.playlist.app/bin/yt-dlp --extract-audio --audio-format mp3 --audio-quality 0 --embed-metadata --embed-thumbnail --newline --no-playlist --user-agent \"Mozilla/5.0 \\(Windows NT 10.0; Win64; x64\\) AppleWebKit/537.36 \\(KHTML, like Gecko\\) Chrome/131.0.0.0 Safari/537.36\" --extractor-retries 3 --force-ipv4 --extractor-args \"youtube:player_client=android_vr,web\" --sleep-requests 1 --ffmpeg-location /usr/bin \"https://www.youtube.com/watch?v=5lkU-bCwoT0\" -o \"/tmp/test_exact.%\\(ext\\)s\")",
+      "Bash(~/.local/share/com.playlist.app/bin/yt-dlp --list-formats --extractor-args \"youtube:player_client=android_vr,web\" --force-ipv4 \"https://www.youtube.com/watch?v=eApXuej38f8\")",
+      "Bash(~/.local/share/com.playlist.app/bin/yt-dlp --list-formats --force-ipv4 \"https://www.youtube.com/watch?v=eApXuej38f8\")",
+      "Bash(~/.local/share/com.playlist.app/bin/yt-dlp --extract-audio --audio-format mp3 --audio-quality 0 --embed-metadata --embed-thumbnail --no-playlist --force-ipv4 --extractor-args \"youtube:player_client=android_vr,web\" --sleep-requests 1 --ffmpeg-location /usr/bin --cookies-from-browser chrome \"https://www.youtube.com/watch?v=eApXuej38f8\" -o \"/tmp/test_cookie.%\\(ext\\)s\")",
+      "Bash(~/.local/share/com.playlist.app/bin/yt-dlp --list-formats \"https://www.youtube.com/watch?v=5lkU-bCwoT0\" --no-warnings)",
+      "Bash(~/.local/share/com.playlist.app/bin/yt-dlp --ignore-config --list-formats \"https://www.youtube.com/watch?v=5lkU-bCwoT0\" --no-warnings)",
+      "Bash(~/.local/share/com.playlist.app/bin/yt-dlp --ignore-config --extractor-args \"youtube:player_client=web\" --list-formats \"https://www.youtube.com/watch?v=5lkU-bCwoT0\" --no-warnings)",
+      "Bash(~/.local/share/com.playlist.app/bin/yt-dlp --ignore-config --extract-audio --audio-format mp3 --audio-quality 0 --no-playlist --no-warnings -o \"/tmp/test_dl.%\\(ext\\)s\" \"https://www.youtube.com/watch?v=5lkU-bCwoT0\")",
+      "Bash(~/.local/share/com.playlist.app/bin/yt-dlp --ignore-config --extract-audio --audio-format mp3 --audio-quality 0 --no-playlist --no-warnings --cookies-from-browser firefox -o \"/tmp/test_dl2.%\\(ext\\)s\" \"https://www.youtube.com/watch?v=5lkU-bCwoT0\")",
+      "Bash(npm run:*)"
+    ]
+  }
+}
