@@ -109,19 +109,17 @@ pub fn update_metadata_if_missing(
 pub fn get_albums(conn: &Connection, offset: i64, limit: i64, search: Option<&str>) -> Result<(Vec<Album>, i64), rusqlite::Error> {
     let (where_clause, pattern) = match search {
         Some(q) if !q.trim().is_empty() => {
-            (format!("HAVING al.title LIKE ?3 OR a.name LIKE ?3"), Some(format!("%{}%", q)))
+            ("HAVING al.title LIKE ?3 OR a.name LIKE ?3".to_string(), Some(format!("%{}%", q)))
         }
         _ => (String::new(), None),
     };
 
     let count_sql = if pattern.is_some() {
-        format!(
-            "SELECT COUNT(*) FROM (
+        "SELECT COUNT(*) FROM (
                 SELECT al.id FROM albums al
                 LEFT JOIN artists a ON al.artist_id = a.id
                 WHERE al.title LIKE ?1 OR a.name LIKE ?1
-            )"
-        )
+            )".to_string()
     } else {
         "SELECT COUNT(*) FROM albums".to_string()
     };
@@ -146,10 +144,10 @@ pub fn get_albums(conn: &Connection, offset: i64, limit: i64, search: Option<&st
 
     let mut stmt = conn.prepare(&sql)?;
     let albums: Vec<Album> = if let Some(ref p) = pattern {
-        stmt.query_map(params![limit, offset, p], |row| row_to_album(row))?
+        stmt.query_map(params![limit, offset, p], row_to_album)?
             .collect::<Result<Vec<_>, _>>()?
     } else {
-        stmt.query_map(params![limit, offset], |row| row_to_album(row))?
+        stmt.query_map(params![limit, offset], row_to_album)?
             .collect::<Result<Vec<_>, _>>()?
     };
 
@@ -170,7 +168,7 @@ pub fn get_albums_by_artist(conn: &Connection, artist_id: i64) -> Result<Vec<Alb
     let mut stmt = conn.prepare(&sql)?;
 
     let albums = stmt
-        .query_map(params![artist_id], |row| row_to_album(row))?
+        .query_map(params![artist_id], row_to_album)?
         .collect::<Result<Vec<_>, _>>()?;
 
     Ok(albums)
@@ -190,7 +188,7 @@ pub fn get_recently_played_albums(conn: &Connection, limit: i64) -> Result<Vec<A
     );
     let mut stmt = conn.prepare(&sql)?;
     let albums = stmt
-        .query_map(params![limit], |row| row_to_album(row))?
+        .query_map(params![limit], row_to_album)?
         .collect::<Result<Vec<_>, _>>()?;
     Ok(albums)
 }
@@ -208,7 +206,7 @@ pub fn get_recently_added_albums(conn: &Connection, limit: i64) -> Result<Vec<Al
     );
     let mut stmt = conn.prepare(&sql)?;
     let albums = stmt
-        .query_map(params![limit], |row| row_to_album(row))?
+        .query_map(params![limit], row_to_album)?
         .collect::<Result<Vec<_>, _>>()?;
     Ok(albums)
 }
@@ -224,12 +222,8 @@ pub fn get_album(conn: &Connection, id: i64) -> Result<Option<Album>, rusqlite::
         ALBUM_COLUMNS
     );
     let mut stmt = conn.prepare(&sql)?;
-
-    let mut rows = stmt.query_map(params![id], |row| row_to_album(row))?;
-
-    match rows.next() {
-        Some(Ok(a)) => Ok(Some(a)),
-        Some(Err(e)) => Err(e),
-        None => Ok(None),
-    }
+    let result = stmt.query_map(params![id], row_to_album)?
+        .next()
+        .transpose();
+    result
 }

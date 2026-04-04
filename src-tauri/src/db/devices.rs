@@ -1,5 +1,7 @@
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, Row};
 use serde::{Deserialize, Serialize};
+
+use super::tracks::{row_to_track, TRACK_COLUMNS};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Device {
@@ -15,6 +17,28 @@ pub struct Device {
     pub generate_m3u: bool,
     pub first_seen_at: String,
     pub last_seen_at: String,
+}
+
+const DEVICE_COLUMNS: &str =
+    "id, device_uid, name, device_type, mount_path, capacity_bytes,
+     music_dir, output_format, output_bitrate, generate_m3u,
+     first_seen_at, last_seen_at";
+
+fn row_to_device(row: &Row) -> Result<Device, rusqlite::Error> {
+    Ok(Device {
+        id: row.get(0)?,
+        device_uid: row.get(1)?,
+        name: row.get(2)?,
+        device_type: row.get(3)?,
+        mount_path: row.get(4)?,
+        capacity_bytes: row.get(5)?,
+        music_dir: row.get::<_, Option<String>>(6)?.unwrap_or_else(|| "Music".to_string()),
+        output_format: row.get::<_, Option<String>>(7)?.unwrap_or_else(|| "original".to_string()),
+        output_bitrate: row.get::<_, Option<String>>(8)?.unwrap_or_else(|| "320".to_string()),
+        generate_m3u: row.get::<_, i64>(9).unwrap_or(1) != 0,
+        first_seen_at: row.get(10)?,
+        last_seen_at: row.get(11)?,
+    })
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -55,29 +79,13 @@ pub fn upsert_device(
 }
 
 pub fn get_devices(conn: &Connection) -> Result<Vec<Device>, Box<dyn std::error::Error>> {
-    let mut stmt = conn.prepare(
-        "SELECT id, device_uid, name, device_type, mount_path, capacity_bytes,
-                music_dir, output_format, output_bitrate, generate_m3u,
-                first_seen_at, last_seen_at
-         FROM devices ORDER BY last_seen_at DESC",
-    )?;
+    let sql = format!(
+        "SELECT {} FROM devices ORDER BY last_seen_at DESC",
+        DEVICE_COLUMNS
+    );
+    let mut stmt = conn.prepare(&sql)?;
     let devices = stmt
-        .query_map([], |row| {
-            Ok(Device {
-                id: row.get(0)?,
-                device_uid: row.get(1)?,
-                name: row.get(2)?,
-                device_type: row.get(3)?,
-                mount_path: row.get(4)?,
-                capacity_bytes: row.get(5)?,
-                music_dir: row.get::<_, Option<String>>(6)?.unwrap_or_else(|| "Music".to_string()),
-                output_format: row.get::<_, Option<String>>(7)?.unwrap_or_else(|| "original".to_string()),
-                output_bitrate: row.get::<_, Option<String>>(8)?.unwrap_or_else(|| "320".to_string()),
-                generate_m3u: row.get::<_, i64>(9).unwrap_or(1) != 0,
-                first_seen_at: row.get(10)?,
-                last_seen_at: row.get(11)?,
-            })
-        })?
+        .query_map([], row_to_device)?
         .collect::<Result<Vec<_>, _>>()?;
     Ok(devices)
 }
@@ -86,60 +94,22 @@ pub fn get_device_by_uid(
     conn: &Connection,
     device_uid: &str,
 ) -> Result<Device, Box<dyn std::error::Error>> {
-    let device = conn.query_row(
-        "SELECT id, device_uid, name, device_type, mount_path, capacity_bytes,
-                music_dir, output_format, output_bitrate, generate_m3u,
-                first_seen_at, last_seen_at
-         FROM devices WHERE device_uid = ?1",
-        params![device_uid],
-        |row| {
-            Ok(Device {
-                id: row.get(0)?,
-                device_uid: row.get(1)?,
-                name: row.get(2)?,
-                device_type: row.get(3)?,
-                mount_path: row.get(4)?,
-                capacity_bytes: row.get(5)?,
-                music_dir: row.get::<_, Option<String>>(6)?.unwrap_or_else(|| "Music".to_string()),
-                output_format: row.get::<_, Option<String>>(7)?.unwrap_or_else(|| "original".to_string()),
-                output_bitrate: row.get::<_, Option<String>>(8)?.unwrap_or_else(|| "320".to_string()),
-                generate_m3u: row.get::<_, i64>(9).unwrap_or(1) != 0,
-                first_seen_at: row.get(10)?,
-                last_seen_at: row.get(11)?,
-            })
-        },
-    )?;
-    Ok(device)
+    let sql = format!(
+        "SELECT {} FROM devices WHERE device_uid = ?1",
+        DEVICE_COLUMNS
+    );
+    Ok(conn.query_row(&sql, params![device_uid], row_to_device)?)
 }
 
 pub fn get_device_by_id(
     conn: &Connection,
     device_id: i64,
 ) -> Result<Device, Box<dyn std::error::Error>> {
-    let device = conn.query_row(
-        "SELECT id, device_uid, name, device_type, mount_path, capacity_bytes,
-                music_dir, output_format, output_bitrate, generate_m3u,
-                first_seen_at, last_seen_at
-         FROM devices WHERE id = ?1",
-        params![device_id],
-        |row| {
-            Ok(Device {
-                id: row.get(0)?,
-                device_uid: row.get(1)?,
-                name: row.get(2)?,
-                device_type: row.get(3)?,
-                mount_path: row.get(4)?,
-                capacity_bytes: row.get(5)?,
-                music_dir: row.get::<_, Option<String>>(6)?.unwrap_or_else(|| "Music".to_string()),
-                output_format: row.get::<_, Option<String>>(7)?.unwrap_or_else(|| "original".to_string()),
-                output_bitrate: row.get::<_, Option<String>>(8)?.unwrap_or_else(|| "320".to_string()),
-                generate_m3u: row.get::<_, i64>(9).unwrap_or(1) != 0,
-                first_seen_at: row.get(10)?,
-                last_seen_at: row.get(11)?,
-            })
-        },
-    )?;
-    Ok(device)
+    let sql = format!(
+        "SELECT {} FROM devices WHERE id = ?1",
+        DEVICE_COLUMNS
+    );
+    Ok(conn.query_row(&sql, params![device_id], row_to_device)?)
 }
 
 pub fn configure_device(
@@ -227,20 +197,6 @@ pub fn get_device_detail(
     })
 }
 
-pub fn get_synced_track_ids(
-    conn: &Connection,
-    device_id: i64,
-    playlist_id: i64,
-) -> Result<Vec<i64>, Box<dyn std::error::Error>> {
-    let mut stmt = conn.prepare(
-        "SELECT track_id FROM device_track_sync WHERE device_id = ?1 AND playlist_id = ?2",
-    )?;
-    let ids = stmt
-        .query_map(params![device_id, playlist_id], |row| row.get(0))?
-        .collect::<Result<Vec<i64>, _>>()?;
-    Ok(ids)
-}
-
 pub fn record_synced_track(
     conn: &Connection,
     device_id: i64,
@@ -293,62 +249,20 @@ pub fn get_unsynced_tracks(
     device_id: i64,
     playlist_id: i64,
 ) -> Result<Vec<crate::db::models::Track>, Box<dyn std::error::Error>> {
-    let mut stmt = conn.prepare(
-        "SELECT t.id, t.title, t.artist_id, t.album_id, t.album_artist, t.duration_ms,
-                t.track_number, t.disc_number, t.genre, t.year, t.file_path, t.file_size,
-                t.format, t.bitrate, t.sample_rate, t.channels, t.cover_art_path,
-                t.source_platform, t.source_url, t.play_count, t.last_played_at,
-                t.date_added, t.description, t.label, t.release_date, t.composer,
-                t.language, t.metadata_completeness, t.tags, t.lyrics,
-                t.music_video_url, t.music_video_path,
-                ar.name as artist_name, al.title as album_title
+    let sql = format!(
+        "SELECT {}
          FROM playlist_tracks pt
          JOIN tracks t ON t.id = pt.track_id
-         LEFT JOIN artists ar ON ar.id = t.artist_id
+         LEFT JOIN artists a ON a.id = t.artist_id
          LEFT JOIN albums al ON al.id = t.album_id
          WHERE pt.playlist_id = ?1
            AND t.id NOT IN (SELECT track_id FROM device_track_sync WHERE device_id = ?2 AND playlist_id = ?1)
          ORDER BY pt.position",
-    )?;
+        TRACK_COLUMNS
+    );
+    let mut stmt = conn.prepare(&sql)?;
     let tracks = stmt
-        .query_map(params![playlist_id, device_id], |row| {
-            Ok(crate::db::models::Track {
-                id: row.get(0)?,
-                title: row.get(1)?,
-                artist_id: row.get(2)?,
-                album_id: row.get(3)?,
-                album_artist: row.get(4)?,
-                duration_ms: row.get(5)?,
-                track_number: row.get(6)?,
-                disc_number: row.get(7)?,
-                genre: row.get(8)?,
-                year: row.get(9)?,
-                file_path: row.get(10)?,
-                file_size: row.get(11)?,
-                format: row.get(12)?,
-                bitrate: row.get(13)?,
-                sample_rate: row.get(14)?,
-                channels: row.get(15)?,
-                cover_art_path: row.get(16)?,
-                source_platform: row.get(17)?,
-                source_url: row.get(18)?,
-                play_count: row.get(19)?,
-                last_played_at: row.get(20)?,
-                date_added: row.get(21)?,
-                description: row.get(22)?,
-                label: row.get(23)?,
-                release_date: row.get(24)?,
-                composer: row.get(25)?,
-                language: row.get(26)?,
-                metadata_completeness: row.get(27)?,
-                tags: row.get(28)?,
-                lyrics: row.get(29)?,
-                music_video_url: row.get(30)?,
-                music_video_path: row.get(31)?,
-                artist_name: row.get(32)?,
-                album_title: row.get(33)?,
-            })
-        })?
+        .query_map(params![playlist_id, device_id], row_to_track)?
         .collect::<Result<Vec<_>, _>>()?;
     Ok(tracks)
 }

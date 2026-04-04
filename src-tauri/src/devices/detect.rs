@@ -78,42 +78,49 @@ fn parse_lsblk_json(json_str: &str) -> Result<Vec<DetectedDevice>, String> {
         let mountpoint = device.get("mountpoint").and_then(|v| v.as_str());
         let is_usb = tran.map(|t| t == "usb").unwrap_or(false);
 
-        if hotplug && is_usb {
-            if let Some(mp) = mountpoint {
-                if !mp.is_empty() {
-                    let label = device.get("label").and_then(|v| v.as_str()).unwrap_or("");
-                    let uuid = device.get("uuid").and_then(|v| v.as_str()).unwrap_or("");
-                    let size_str = device.get("size").and_then(|v| v.as_str()).unwrap_or("");
-
-                    let uid = if !serial.unwrap_or("").is_empty() {
-                        format!("{}:{}", serial.unwrap_or(""), uuid)
-                    } else {
-                        format!("{}:{}:{}", label, uuid, size_str)
-                    };
-
-                    let name = if !label.is_empty() {
-                        label.to_string()
-                    } else if let Some(m) = model {
-                        m.trim().to_string()
-                    } else {
-                        mp.split('/').last().unwrap_or("USB Device").to_string()
-                    };
-
-                    let capacity = parse_lsblk_size(device.get("fssize").and_then(|v| v.as_str()));
-                    let free = parse_lsblk_size(device.get("fsavail").and_then(|v| v.as_str()));
-
-                    devices.push(DetectedDevice {
-                        device_uid: uid,
-                        name,
-                        mount_path: mp.to_string(),
-                        capacity_bytes: capacity,
-                        free_bytes: free,
-                        vendor: None,
-                        model: model.map(|m| m.trim().to_string()),
-                    });
+        let mp = match mountpoint {
+            Some(mp) if hotplug && is_usb && !mp.is_empty() => mp,
+            _ => {
+                // Recurse into children (partitions) even if this device doesn't match
+                if let Some(children) = device.get("children").and_then(|v| v.as_array()) {
+                    for child in children {
+                        collect_devices(child, tran, model, serial, devices);
+                    }
                 }
+                return;
             }
-        }
+        };
+
+        let label = device.get("label").and_then(|v| v.as_str()).unwrap_or("");
+        let uuid = device.get("uuid").and_then(|v| v.as_str()).unwrap_or("");
+        let size_str = device.get("size").and_then(|v| v.as_str()).unwrap_or("");
+
+        let uid = if !serial.unwrap_or("").is_empty() {
+            format!("{}:{}", serial.unwrap_or(""), uuid)
+        } else {
+            format!("{}:{}:{}", label, uuid, size_str)
+        };
+
+        let name = if !label.is_empty() {
+            label.to_string()
+        } else if let Some(m) = model {
+            m.trim().to_string()
+        } else {
+            mp.rsplit('/').next().unwrap_or("USB Device").to_string()
+        };
+
+        let capacity = parse_lsblk_size(device.get("fssize").and_then(|v| v.as_str()));
+        let free = parse_lsblk_size(device.get("fsavail").and_then(|v| v.as_str()));
+
+        devices.push(DetectedDevice {
+            device_uid: uid,
+            name,
+            mount_path: mp.to_string(),
+            capacity_bytes: capacity,
+            free_bytes: free,
+            vendor: None,
+            model: model.map(|m| m.trim().to_string()),
+        });
 
         // Recurse into children (partitions)
         if let Some(children) = device.get("children").and_then(|v| v.as_array()) {
@@ -139,14 +146,14 @@ fn parse_lsblk_size(size_str: Option<&str>) -> Option<i64> {
         return None;
     }
     // lsblk SIZE can be like "14.9G", "500M", "1T", etc.
-    let (num_part, suffix) = if s.ends_with('G') {
-        (&s[..s.len() - 1], 1_073_741_824i64)
-    } else if s.ends_with('M') {
-        (&s[..s.len() - 1], 1_048_576i64)
-    } else if s.ends_with('T') {
-        (&s[..s.len() - 1], 1_099_511_627_776i64)
-    } else if s.ends_with('K') {
-        (&s[..s.len() - 1], 1024i64)
+    let (num_part, suffix) = if let Some(n) = s.strip_suffix('G') {
+        (n, 1_073_741_824i64)
+    } else if let Some(n) = s.strip_suffix('M') {
+        (n, 1_048_576i64)
+    } else if let Some(n) = s.strip_suffix('T') {
+        (n, 1_099_511_627_776i64)
+    } else if let Some(n) = s.strip_suffix('K') {
+        (n, 1024i64)
     } else {
         // Try parsing as bytes directly
         return s.parse::<i64>().ok();

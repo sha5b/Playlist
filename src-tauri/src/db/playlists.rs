@@ -1,33 +1,37 @@
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, Row};
 
 use super::models::{Playlist, Track, TrackPage};
+use super::tracks::{row_to_track, TRACK_COLUMNS};
+
+fn row_to_playlist(row: &Row) -> Result<Playlist, rusqlite::Error> {
+    Ok(Playlist {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        description: row.get(2)?,
+        cover_art_path: row.get(3)?,
+        source_platform: row.get(4)?,
+        source_url: row.get(5)?,
+        track_count: row.get(6)?,
+        total_duration_ms: row.get(7)?,
+        is_synced: row.get::<_, i64>(8)? != 0,
+        last_synced_at: row.get(9)?,
+        created_at: row.get(10)?,
+    })
+}
+
+const PLAYLIST_COLUMNS: &str =
+    "id, name, description, cover_art_path, source_platform, source_url,
+     track_count, total_duration_ms, is_synced, last_synced_at, created_at";
 
 pub fn get_playlists(conn: &Connection) -> Result<Vec<Playlist>, rusqlite::Error> {
-    let mut stmt = conn.prepare(
-        "SELECT id, name, description, cover_art_path, source_platform, source_url,
-                track_count, total_duration_ms, is_synced, last_synced_at, created_at
-         FROM playlists
-         ORDER BY created_at DESC",
-    )?;
-
+    let sql = format!(
+        "SELECT {} FROM playlists ORDER BY created_at DESC",
+        PLAYLIST_COLUMNS
+    );
+    let mut stmt = conn.prepare(&sql)?;
     let playlists = stmt
-        .query_map([], |row| {
-            Ok(Playlist {
-                id: row.get(0)?,
-                name: row.get(1)?,
-                description: row.get(2)?,
-                cover_art_path: row.get(3)?,
-                source_platform: row.get(4)?,
-                source_url: row.get(5)?,
-                track_count: row.get(6)?,
-                total_duration_ms: row.get(7)?,
-                is_synced: row.get::<_, i64>(8)? != 0,
-                last_synced_at: row.get(9)?,
-                created_at: row.get(10)?,
-            })
-        })?
+        .query_map([], row_to_playlist)?
         .collect::<Result<Vec<_>, _>>()?;
-
     Ok(playlists)
 }
 
@@ -46,33 +50,15 @@ pub fn create_playlist(
 }
 
 pub fn get_playlist(conn: &Connection, id: i64) -> Result<Option<Playlist>, rusqlite::Error> {
-    let mut stmt = conn.prepare(
-        "SELECT id, name, description, cover_art_path, source_platform, source_url,
-                track_count, total_duration_ms, is_synced, last_synced_at, created_at
-         FROM playlists WHERE id = ?1",
-    )?;
-
-    let mut rows = stmt.query_map(params![id], |row| {
-        Ok(Playlist {
-            id: row.get(0)?,
-            name: row.get(1)?,
-            description: row.get(2)?,
-            cover_art_path: row.get(3)?,
-            source_platform: row.get(4)?,
-            source_url: row.get(5)?,
-            track_count: row.get(6)?,
-            total_duration_ms: row.get(7)?,
-            is_synced: row.get::<_, i64>(8)? != 0,
-            last_synced_at: row.get(9)?,
-            created_at: row.get(10)?,
-        })
-    })?;
-
-    match rows.next() {
-        Some(Ok(p)) => Ok(Some(p)),
-        Some(Err(e)) => Err(e),
-        None => Ok(None),
-    }
+    let sql = format!(
+        "SELECT {} FROM playlists WHERE id = ?1",
+        PLAYLIST_COLUMNS
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let result = stmt.query_map(params![id], row_to_playlist)?
+        .next()
+        .transpose();
+    result
 }
 
 pub fn update_playlist(
@@ -193,64 +179,20 @@ pub fn backfill_playlist_tracks(conn: &Connection, playlist_id: i64) -> Result<(
 }
 
 pub fn get_playlist_tracks(conn: &Connection, playlist_id: i64) -> Result<Vec<Track>, rusqlite::Error> {
-    let mut stmt = conn.prepare(
-        "SELECT t.id, t.title, t.duration_ms, t.track_number, t.disc_number,
-                t.genre, t.year, t.file_path, t.file_size, t.format, t.bitrate,
-                t.sample_rate, t.channels, t.cover_art_path, t.source_platform,
-                t.source_url, t.play_count, t.last_played_at, t.date_added,
-                a.name as artist_name, al.title as album_title, t.album_artist,
-                t.artist_id, t.album_id,
-                t.description, t.label, t.release_date, t.composer, t.language,
-                t.metadata_completeness, t.tags, t.lyrics, t.music_video_url, t.music_video_path
+    let sql = format!(
+        "SELECT {}
          FROM playlist_tracks pt
          JOIN tracks t ON t.id = pt.track_id
          LEFT JOIN artists a ON t.artist_id = a.id
          LEFT JOIN albums al ON t.album_id = al.id
          WHERE pt.playlist_id = ?1
          ORDER BY pt.position",
-    )?;
-
+        TRACK_COLUMNS
+    );
+    let mut stmt = conn.prepare(&sql)?;
     let tracks = stmt
-        .query_map(params![playlist_id], |row| {
-            Ok(Track {
-                id: row.get(0)?,
-                title: row.get(1)?,
-                artist_id: row.get(22)?,
-                album_id: row.get(23)?,
-                album_artist: row.get(21)?,
-                duration_ms: row.get(2)?,
-                track_number: row.get(3)?,
-                disc_number: row.get(4)?,
-                genre: row.get(5)?,
-                year: row.get(6)?,
-                file_path: row.get(7)?,
-                file_size: row.get(8)?,
-                format: row.get(9)?,
-                bitrate: row.get(10)?,
-                sample_rate: row.get(11)?,
-                channels: row.get(12)?,
-                cover_art_path: row.get(13)?,
-                source_platform: row.get(14)?,
-                source_url: row.get(15)?,
-                play_count: row.get(16)?,
-                last_played_at: row.get(17)?,
-                date_added: row.get(18)?,
-                artist_name: row.get(19)?,
-                album_title: row.get(20)?,
-                description: row.get(24)?,
-                label: row.get(25)?,
-                release_date: row.get(26)?,
-                composer: row.get(27)?,
-                language: row.get(28)?,
-                metadata_completeness: row.get(29)?,
-                tags: row.get(30)?,
-                lyrics: row.get(31)?,
-                music_video_url: row.get(32)?,
-                music_video_path: row.get(33)?,
-            })
-        })?
+        .query_map(params![playlist_id], row_to_track)?
         .collect::<Result<Vec<_>, _>>()?;
-
     Ok(tracks)
 }
 
@@ -266,15 +208,8 @@ pub fn get_playlist_tracks_page(
         |row| row.get(0),
     )?;
 
-    let mut stmt = conn.prepare(
-        "SELECT t.id, t.title, t.duration_ms, t.track_number, t.disc_number,
-                t.genre, t.year, t.file_path, t.file_size, t.format, t.bitrate,
-                t.sample_rate, t.channels, t.cover_art_path, t.source_platform,
-                t.source_url, t.play_count, t.last_played_at, t.date_added,
-                a.name as artist_name, al.title as album_title, t.album_artist,
-                t.artist_id, t.album_id,
-                t.description, t.label, t.release_date, t.composer, t.language,
-                t.metadata_completeness, t.tags, t.lyrics, t.music_video_url, t.music_video_path
+    let sql = format!(
+        "SELECT {}
          FROM playlist_tracks pt
          JOIN tracks t ON t.id = pt.track_id
          LEFT JOIN artists a ON t.artist_id = a.id
@@ -282,47 +217,11 @@ pub fn get_playlist_tracks_page(
          WHERE pt.playlist_id = ?1
          ORDER BY pt.position
          LIMIT ?2 OFFSET ?3",
-    )?;
-
+        TRACK_COLUMNS
+    );
+    let mut stmt = conn.prepare(&sql)?;
     let tracks = stmt
-        .query_map(params![playlist_id, limit, offset], |row| {
-            Ok(Track {
-                id: row.get(0)?,
-                title: row.get(1)?,
-                artist_id: row.get(22)?,
-                album_id: row.get(23)?,
-                album_artist: row.get(21)?,
-                duration_ms: row.get(2)?,
-                track_number: row.get(3)?,
-                disc_number: row.get(4)?,
-                genre: row.get(5)?,
-                year: row.get(6)?,
-                file_path: row.get(7)?,
-                file_size: row.get(8)?,
-                format: row.get(9)?,
-                bitrate: row.get(10)?,
-                sample_rate: row.get(11)?,
-                channels: row.get(12)?,
-                cover_art_path: row.get(13)?,
-                source_platform: row.get(14)?,
-                source_url: row.get(15)?,
-                play_count: row.get(16)?,
-                last_played_at: row.get(17)?,
-                date_added: row.get(18)?,
-                artist_name: row.get(19)?,
-                album_title: row.get(20)?,
-                description: row.get(24)?,
-                label: row.get(25)?,
-                release_date: row.get(26)?,
-                composer: row.get(27)?,
-                language: row.get(28)?,
-                metadata_completeness: row.get(29)?,
-                tags: row.get(30)?,
-                lyrics: row.get(31)?,
-                music_video_url: row.get(32)?,
-                music_video_path: row.get(33)?,
-            })
-        })?
+        .query_map(params![playlist_id, limit, offset], row_to_track)?
         .collect::<Result<Vec<_>, _>>()?;
 
     Ok(TrackPage { tracks, total })

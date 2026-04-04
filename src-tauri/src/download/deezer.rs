@@ -58,19 +58,16 @@ impl DeezerSource {
             .ok_or_else(|| SourceError::AuthFailed("Invalid ARL — could not get API token".into()))?
             .to_string();
 
-        let user_id = body["results"]["USER"]["USER_ID"]
+        let user_id_value = &body["results"]["USER"]["USER_ID"];
+        let is_valid_user = user_id_value
             .as_str()
-            .or_else(|| body["results"]["USER"]["USER_ID"].as_i64().map(|_| ""))
-            .unwrap_or("0");
+            .is_some_and(|s| !s.is_empty() && s != "0")
+            || user_id_value.as_i64().is_some_and(|id| id != 0);
 
-        if user_id == "0" || user_id.is_empty() {
-            // Check if it's a number
-            let uid = body["results"]["USER"]["USER_ID"].as_i64().unwrap_or(0);
-            if uid == 0 {
-                return Err(SourceError::AuthFailed(
-                    "ARL expired or invalid — please update your Deezer ARL cookie".into(),
-                ));
-            }
+        if !is_valid_user {
+            return Err(SourceError::AuthFailed(
+                "ARL expired or invalid — please update your Deezer ARL cookie".into(),
+            ));
         }
 
         Ok((api_token, self.arl.clone()))
@@ -238,35 +235,37 @@ impl DeezerSource {
             .await
             .map_err(|e| SourceError::NetworkError(format!("CDN download error: {}", e)))?;
 
-        if !resp.status().is_success() {
-            // If FLAC fails, try MP3 320
-            if quality == 9 {
-                let cdn_url_mp3 = Self::build_cdn_url(track_info, 3);
-                let resp = self
-                    .client
-                    .get(&cdn_url_mp3)
-                    .header("Cookie", format!("arl={}", self.arl))
-                    .send()
-                    .await
-                    .map_err(|e| SourceError::NetworkError(format!("CDN fallback error: {}", e)))?;
+        if resp.status().is_success() {
+            return self
+                .decrypt_response(resp, track_info, output_dir, file_stem, ext, progress)
+                .await;
+        }
 
-                if !resp.status().is_success() {
-                    return Err(SourceError::DrmBlocked(format!(
-                        "CDN returned {}",
-                        resp.status()
-                    )));
-                }
-                return self
-                    .decrypt_response(resp, track_info, output_dir, file_stem, "mp3", progress)
-                    .await;
-            }
+        // FLAC failed — fall back to MP3 320
+        if quality != 9 {
             return Err(SourceError::DrmBlocked(format!(
                 "CDN returned {}",
                 resp.status()
             )));
         }
 
-        self.decrypt_response(resp, track_info, output_dir, file_stem, ext, progress)
+        let cdn_url_mp3 = Self::build_cdn_url(track_info, 3);
+        let resp = self
+            .client
+            .get(&cdn_url_mp3)
+            .header("Cookie", format!("arl={}", self.arl))
+            .send()
+            .await
+            .map_err(|e| SourceError::NetworkError(format!("CDN fallback error: {}", e)))?;
+
+        if !resp.status().is_success() {
+            return Err(SourceError::DrmBlocked(format!(
+                "CDN returned {}",
+                resp.status()
+            )));
+        }
+
+        self.decrypt_response(resp, track_info, output_dir, file_stem, "mp3", progress)
             .await
     }
 
@@ -295,7 +294,7 @@ impl DeezerSource {
             .map_err(|e| SourceError::Other(format!("Failed to create file: {}", e)))?;
 
         let chunk_size = 2048;
-        let total_chunks = (encrypted_data.len() + chunk_size - 1) / chunk_size;
+        let total_chunks = encrypted_data.len().div_ceil(chunk_size);
 
         for (i, chunk) in encrypted_data.chunks(chunk_size).enumerate() {
             let mut chunk_data = chunk.to_vec();
@@ -385,12 +384,7 @@ pub async fn fetch_playlist_entries(url: &str) -> Result<super::ytdlp::PlaylistF
 
     // Get tracks — paginated, fetch all pages
     let mut entries = Vec::new();
-    let mut tracks_url = if item_type == "playlist" {
-        format!("{}/{}/{}/tracks?limit=100", DEEZER_API, item_type, item_id)
-    } else {
-        // Albums have tracks directly
-        format!("{}/{}/{}/tracks?limit=100", DEEZER_API, item_type, item_id)
-    };
+    let mut tracks_url = format!("{}/{}/{}/tracks?limit=100", DEEZER_API, item_type, item_id);
 
     loop {
         let resp = client.get(&tracks_url)
@@ -558,7 +552,6 @@ pub async fn search_public_metadata(query: &str) -> Option<DeezerPublicResult> {
 }
 
 /// Metadata from Deezer's public API (no authentication required)
-#[allow(dead_code)]
 pub struct DeezerPublicResult {
     pub title: String,
     pub artist: Option<String>,

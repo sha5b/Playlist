@@ -2,12 +2,10 @@ use rusqlite::{params, Connection};
 
 pub fn get_setting(conn: &Connection, key: &str) -> Result<Option<String>, rusqlite::Error> {
     let mut stmt = conn.prepare("SELECT value FROM settings WHERE key = ?1")?;
-    let mut rows = stmt.query_map(params![key], |row| row.get::<_, String>(0))?;
-    match rows.next() {
-        Some(Ok(v)) => Ok(Some(v)),
-        Some(Err(e)) => Err(e),
-        None => Ok(None),
-    }
+    let result = stmt.query_map(params![key], |row| row.get::<_, String>(0))?
+        .next()
+        .transpose();
+    result
 }
 
 pub fn set_setting(conn: &Connection, key: &str, value: &str) -> Result<(), rusqlite::Error> {

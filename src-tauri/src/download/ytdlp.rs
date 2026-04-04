@@ -8,7 +8,6 @@ use tokio::process::Command;
 /// so they don't starve the UI or audio playback.
 #[cfg(windows)]
 fn low_priority(cmd: &mut Command) {
-    #[allow(unused_imports)]
     use std::os::windows::process::CommandExt;
     // IDLE_PRIORITY_CLASS (0x00000040) + CREATE_NO_WINDOW (0x08000000)
     // Lowest possible priority so downloads + ffmpeg never starve the audio callback.
@@ -62,12 +61,12 @@ pub async fn check_available(binary: &str) -> Result<String, String> {
         .await
         .map_err(|_| format!("{} not found or failed to run", binary))?;
 
-    if output.status.success() {
-        let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        Ok(version)
-    } else {
-        Err("yt-dlp returned an error".to_string())
+    if !output.status.success() {
+        return Err("yt-dlp returned an error".to_string());
     }
+
+    let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    Ok(version)
 }
 
 /// Fetch metadata for a URL without downloading
@@ -192,7 +191,7 @@ fn video_info_from_json(json: &serde_json::Value) -> VideoInfo {
             .map(|d| {
                 if d.len() > 500 {
                     // Find a valid char boundary at or before byte 497
-                    let end = d.floor_char_boundary(497);
+                    let end = d[..497].rfind(char::is_alphanumeric).map(|i| i + 1).unwrap_or(497);
                     format!("{}...", &d[..end])
                 } else {
                     d.to_string()
@@ -353,8 +352,8 @@ pub async fn search_music_video(
     let artist_matches = |v: &VideoInfo| -> bool {
         let t = v.title.to_lowercase();
         t.contains(&lower_artist)
-            || v.artist.as_ref().map_or(false, |a| a.to_lowercase().contains(&lower_artist))
-            || v.uploader.as_ref().map_or(false, |u| u.to_lowercase().contains(&lower_artist))
+            || v.artist.as_ref().is_some_and(|a| a.to_lowercase().contains(&lower_artist))
+            || v.uploader.as_ref().is_some_and(|u| u.to_lowercase().contains(&lower_artist))
     };
 
     // Best: real music video + artist match + title match
@@ -478,6 +477,7 @@ pub async fn get_playlist_entries(
 
 /// Download audio from a URL. Calls progress_callback with percentage updates.
 /// `file_stem` is used as the output filename (without extension) to avoid encoding issues.
+#[allow(clippy::too_many_arguments)]
 pub async fn download_audio<F>(
     binary: &str,
     ffmpeg_dir: Option<&str>,

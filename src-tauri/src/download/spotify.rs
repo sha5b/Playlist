@@ -13,24 +13,20 @@ pub async fn fetch_track_metadata(url: &str) -> Option<(String, Option<String>)>
     let html = data["html"].as_str().unwrap_or("");
     let mut artist = None;
 
-    // Parse artist from HTML - look for patterns like 'Song by Artist' or extract from iframe src
-    if !html.is_empty() {
-        // Try to extract from "Song by Artist" pattern in HTML
-        if let Some(by_pos) = html.find(" by ") {
-            let after_by = &html[by_pos + 4..];
-            if let Some(end_pos) = after_by.find(&['<', '"', '\''][..]) {
-                let artist_str = after_by[..end_pos].trim();
-                if !artist_str.is_empty() {
-                    artist = Some(artist_str.to_string());
-                }
+    // Try to extract artist from "Song by Artist" pattern in HTML
+    if let Some(by_pos) = html.find(" by ") {
+        let after_by = &html[by_pos + 4..];
+        if let Some(end_pos) = after_by.find(&['<', '"', '\''][..]) {
+            let artist_str = after_by[..end_pos].trim();
+            if !artist_str.is_empty() {
+                artist = Some(artist_str.to_string());
             }
         }
     }
 
     // Fallback: try description field
     if artist.is_none() {
-        let description = data["description"].as_str().unwrap_or("");
-        if !description.is_empty() {
+        if let Some(description) = data["description"].as_str().filter(|s| !s.is_empty()) {
             artist = Some(description.to_string());
         }
     }

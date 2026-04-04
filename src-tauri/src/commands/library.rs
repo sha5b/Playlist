@@ -12,7 +12,7 @@ use crate::metadata::tags;
 
 #[tauri::command]
 pub fn get_library_stats(db: State<'_, Arc<DbPool>>) -> Result<LibraryStats, String> {
-    let conn = db.lock().map_err(|e| e.to_string())?;
+    let conn = crate::db::lock(&db)?;
 
     let total_tracks: i64 = conn.query_row("SELECT COUNT(*) FROM tracks", [], |row| row.get(0)).map_err(|e| e.to_string())?;
     let total_albums: i64 = conn.query_row("SELECT COUNT(*) FROM albums", [], |row| row.get(0)).map_err(|e| e.to_string())?;
@@ -42,20 +42,20 @@ pub fn library_get_tracks(
     sort_dir: String,
     search: Option<String>,
 ) -> Result<TrackPage, String> {
-    let conn = db.lock().map_err(|e| e.to_string())?;
+    let conn = crate::db::lock(&db)?;
     crate::db::tracks::get_tracks(&conn, offset, limit, &sort_by, &sort_dir, search.as_deref())
         .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn library_get_track(db: State<'_, Arc<DbPool>>, id: i64) -> Result<Option<Track>, String> {
-    let conn = db.lock().map_err(|e| e.to_string())?;
+    let conn = crate::db::lock(&db)?;
     crate::db::tracks::get_track(&conn, id).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn library_get_genres(db: State<'_, Arc<DbPool>>) -> Result<Vec<String>, String> {
-    let conn = db.lock().map_err(|e| e.to_string())?;
+    let conn = crate::db::lock(&db)?;
     crate::db::tracks::get_distinct_genres(&conn).map_err(|e| e.to_string())
 }
 
@@ -65,7 +65,7 @@ pub fn library_get_tracks_by_genre(
     genre: String,
     limit: i64,
 ) -> Result<Vec<Track>, String> {
-    let conn = db.lock().map_err(|e| e.to_string())?;
+    let conn = crate::db::lock(&db)?;
     crate::db::tracks::get_tracks_by_genre(&conn, &genre, limit).map_err(|e| e.to_string())
 }
 
@@ -75,7 +75,7 @@ pub fn library_delete_track(
     id: i64,
     delete_file: bool,
 ) -> Result<(), String> {
-    let conn = db.lock().map_err(|e| e.to_string())?;
+    let conn = crate::db::lock(&db)?;
     let file_path = crate::db::tracks::delete_track(&conn, id, delete_file)
         .map_err(|e| e.to_string())?;
 
@@ -95,7 +95,7 @@ pub fn library_delete_album_tracks(
     app_handle: tauri::AppHandle,
     album_id: i64,
 ) -> Result<i64, String> {
-    let conn = db.lock().map_err(|e| e.to_string())?;
+    let conn = crate::db::lock(&db)?;
 
     // Collect file paths to delete from disk
     let file_paths: Vec<String> = {
@@ -217,7 +217,7 @@ pub async fn library_reset(
     // Cancel all active downloads before wiping data
     manager.cancel_all().await;
 
-    let conn = db.lock().map_err(|e| e.to_string())?;
+    let conn = crate::db::lock(&db)?;
 
     if delete_files {
         cleanup_download_files(&conn, &app_handle);
@@ -239,25 +239,25 @@ pub fn library_get_albums(
     limit: i64,
     search: Option<String>,
 ) -> Result<(Vec<Album>, i64), String> {
-    let conn = db.lock().map_err(|e| e.to_string())?;
+    let conn = crate::db::lock(&db)?;
     crate::db::albums::get_albums(&conn, offset, limit, search.as_deref()).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn library_get_album(db: State<'_, Arc<DbPool>>, id: i64) -> Result<Option<Album>, String> {
-    let conn = db.lock().map_err(|e| e.to_string())?;
+    let conn = crate::db::lock(&db)?;
     crate::db::albums::get_album(&conn, id).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn library_get_recently_played_albums(db: State<'_, Arc<DbPool>>, limit: i64) -> Result<Vec<Album>, String> {
-    let conn = db.lock().map_err(|e| e.to_string())?;
+    let conn = crate::db::lock(&db)?;
     crate::db::albums::get_recently_played_albums(&conn, limit).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn library_get_recently_added_albums(db: State<'_, Arc<DbPool>>, limit: i64) -> Result<Vec<Album>, String> {
-    let conn = db.lock().map_err(|e| e.to_string())?;
+    let conn = crate::db::lock(&db)?;
     crate::db::albums::get_recently_added_albums(&conn, limit).map_err(|e| e.to_string())
 }
 
@@ -270,13 +270,13 @@ pub fn library_get_artists(
     limit: i64,
     search: Option<String>,
 ) -> Result<(Vec<Artist>, i64), String> {
-    let conn = db.lock().map_err(|e| e.to_string())?;
+    let conn = crate::db::lock(&db)?;
     crate::db::artists::get_artists(&conn, offset, limit, search.as_deref()).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn library_get_artist(db: State<'_, Arc<DbPool>>, id: i64) -> Result<Option<Artist>, String> {
-    let conn = db.lock().map_err(|e| e.to_string())?;
+    let conn = crate::db::lock(&db)?;
     crate::db::artists::get_artist(&conn, id).map_err(|e| e.to_string())
 }
 
@@ -284,7 +284,7 @@ pub fn library_get_artist(db: State<'_, Arc<DbPool>>, id: i64) -> Result<Option<
 
 #[tauri::command]
 pub fn library_get_playlists(db: State<'_, Arc<DbPool>>) -> Result<Vec<Playlist>, String> {
-    let conn = db.lock().map_err(|e| e.to_string())?;
+    let conn = crate::db::lock(&db)?;
     crate::db::playlists::get_playlists(&conn).map_err(|e| e.to_string())
 }
 
@@ -293,7 +293,7 @@ pub fn library_get_playlist(
     db: State<'_, Arc<DbPool>>,
     id: i64,
 ) -> Result<Option<PlaylistDetail>, String> {
-    let conn = db.lock().map_err(|e| e.to_string())?;
+    let conn = crate::db::lock(&db)?;
     let playlist = crate::db::playlists::get_playlist(&conn, id).map_err(|e| e.to_string())?;
     match playlist {
         Some(p) => {
@@ -316,7 +316,7 @@ pub fn library_get_playlist_tracks(
     offset: i64,
     limit: i64,
 ) -> Result<TrackPage, String> {
-    let conn = db.lock().map_err(|e| e.to_string())?;
+    let conn = crate::db::lock(&db)?;
     if let Err(e) = crate::db::playlists::backfill_playlist_tracks(&conn, playlist_id) {
         log::warn!("Backfill playlist_tracks failed for playlist {}: {}", playlist_id, e);
     }
@@ -330,7 +330,7 @@ pub fn library_create_playlist(
     name: String,
     description: Option<String>,
 ) -> Result<Playlist, String> {
-    let conn = db.lock().map_err(|e| e.to_string())?;
+    let conn = crate::db::lock(&db)?;
     crate::db::playlists::create_playlist(&conn, &name, description.as_deref())
         .map_err(|e| e.to_string())
 }
@@ -342,14 +342,14 @@ pub fn library_update_playlist(
     name: Option<String>,
     description: Option<String>,
 ) -> Result<Playlist, String> {
-    let conn = db.lock().map_err(|e| e.to_string())?;
+    let conn = crate::db::lock(&db)?;
     crate::db::playlists::update_playlist(&conn, id, name.as_deref(), description.as_deref())
         .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn library_delete_playlist(db: State<'_, Arc<DbPool>>, id: i64) -> Result<(), String> {
-    let conn = db.lock().map_err(|e| e.to_string())?;
+    let conn = crate::db::lock(&db)?;
     crate::db::playlists::delete_playlist(&conn, id).map_err(|e| e.to_string())
 }
 
@@ -359,7 +359,7 @@ pub fn library_add_to_playlist(
     playlist_id: i64,
     track_ids: Vec<i64>,
 ) -> Result<(), String> {
-    let conn = db.lock().map_err(|e| e.to_string())?;
+    let conn = crate::db::lock(&db)?;
     for track_id in track_ids {
         crate::db::playlists::add_track_to_playlist(&conn, playlist_id, track_id)
             .map_err(|e| e.to_string())?;
@@ -373,7 +373,7 @@ pub fn library_remove_from_playlist(
     playlist_id: i64,
     track_id: i64,
 ) -> Result<(), String> {
-    let conn = db.lock().map_err(|e| e.to_string())?;
+    let conn = crate::db::lock(&db)?;
     crate::db::playlists::remove_track_from_playlist(&conn, playlist_id, track_id)
         .map_err(|e| e.to_string())
 }
@@ -385,7 +385,7 @@ pub fn library_reorder_playlist(
     from: i64,
     to: i64,
 ) -> Result<(), String> {
-    let conn = db.lock().map_err(|e| e.to_string())?;
+    let conn = crate::db::lock(&db)?;
     crate::db::playlists::reorder_playlist(&conn, playlist_id, from, to)
         .map_err(|e| e.to_string())
 }
@@ -398,7 +398,7 @@ pub fn search(
     query: String,
     limit: Option<i64>,
 ) -> Result<SearchResults, String> {
-    let conn = db.lock().map_err(|e| e.to_string())?;
+    let conn = crate::db::lock(&db)?;
     let limit = limit.unwrap_or(50);
 
     let tracks = if query.trim().is_empty() {
@@ -506,7 +506,7 @@ pub fn library_get_album_tracks(
     db: State<'_, Arc<DbPool>>,
     album_id: i64,
 ) -> Result<Vec<Track>, String> {
-    let conn = db.lock().map_err(|e| e.to_string())?;
+    let conn = crate::db::lock(&db)?;
     crate::db::tracks::get_tracks_by_album(&conn, album_id).map_err(|e| e.to_string())
 }
 
@@ -517,7 +517,7 @@ pub fn library_get_artist_tracks(
     db: State<'_, Arc<DbPool>>,
     artist_id: i64,
 ) -> Result<Vec<Track>, String> {
-    let conn = db.lock().map_err(|e| e.to_string())?;
+    let conn = crate::db::lock(&db)?;
     crate::db::tracks::get_tracks_by_artist(&conn, artist_id).map_err(|e| e.to_string())
 }
 
@@ -526,7 +526,7 @@ pub fn library_get_artist_albums(
     db: State<'_, Arc<DbPool>>,
     artist_id: i64,
 ) -> Result<Vec<Album>, String> {
-    let conn = db.lock().map_err(|e| e.to_string())?;
+    let conn = crate::db::lock(&db)?;
     crate::db::albums::get_albums_by_artist(&conn, artist_id).map_err(|e| e.to_string())
 }
 
@@ -537,7 +537,7 @@ pub fn settings_get(
     db: State<'_, Arc<DbPool>>,
     key: String,
 ) -> Result<Option<String>, String> {
-    let conn = db.lock().map_err(|e| e.to_string())?;
+    let conn = crate::db::lock(&db)?;
     crate::db::settings::get_setting(&conn, &key).map_err(|e| e.to_string())
 }
 
@@ -547,7 +547,7 @@ pub fn settings_set(
     key: String,
     value: String,
 ) -> Result<(), String> {
-    let conn = db.lock().map_err(|e| e.to_string())?;
+    let conn = crate::db::lock(&db)?;
     crate::db::settings::set_setting(&conn, &key, &value).map_err(|e| e.to_string())
 }
 
@@ -555,7 +555,7 @@ pub fn settings_set(
 pub fn settings_get_all(
     db: State<'_, Arc<DbPool>>,
 ) -> Result<Vec<(String, String)>, String> {
-    let conn = db.lock().map_err(|e| e.to_string())?;
+    let conn = crate::db::lock(&db)?;
     crate::db::settings::get_all_settings(&conn).map_err(|e| e.to_string())
 }
 
@@ -567,7 +567,7 @@ pub fn library_import_folder(
     app_handle: tauri::AppHandle,
     path: String,
 ) -> Result<i64, String> {
-    let conn = db.lock().map_err(|e| e.to_string())?;
+    let conn = crate::db::lock(&db)?;
 
     let covers_dir = app_handle
         .path()
@@ -727,7 +727,7 @@ pub fn library_get_album_download_status(
     db: State<'_, Arc<DbPool>>,
     album_id: i64,
 ) -> Result<serde_json::Value, String> {
-    let conn = db.lock().map_err(|e| e.to_string())?;
+    let conn = crate::db::lock(&db)?;
 
     let tracklist_json: Option<String> = conn.query_row(
         "SELECT enriched_tracklist FROM albums WHERE id = ?1",
@@ -771,7 +771,7 @@ pub fn library_get_albums_download_status(
     db: State<'_, Arc<DbPool>>,
     album_ids: Vec<i64>,
 ) -> Result<serde_json::Value, String> {
-    let conn = db.lock().map_err(|e| e.to_string())?;
+    let conn = crate::db::lock(&db)?;
     let mut results = serde_json::Map::new();
 
     for album_id in &album_ids {
@@ -820,7 +820,7 @@ pub fn library_get_artist_missing_albums(
     db: State<'_, Arc<DbPool>>,
     artist_id: i64,
 ) -> Result<serde_json::Value, String> {
-    let conn = db.lock().map_err(|e| e.to_string())?;
+    let conn = crate::db::lock(&db)?;
 
     // Get enriched discography
     let disco_json: Option<String> = conn.query_row(
@@ -841,7 +841,7 @@ pub fn library_get_artist_missing_albums(
         "SELECT LOWER(title), musicbrainz_id FROM albums WHERE artist_id = ?1"
     ).map_err(|e| e.to_string())?;
     let local_albums: std::collections::HashSet<String> = stmt.query_map(params![artist_id], |row| {
-        Ok(row.get::<_, String>(0)?)
+        row.get::<_, String>(0)
     }).map_err(|e| e.to_string())?
     .filter_map(|r| r.ok())
     .collect();
@@ -917,8 +917,9 @@ pub async fn library_export(
     }
 
     // Query all tracks with artist and album names
+    #[allow(clippy::type_complexity)]
     let rows: Vec<(String, Option<String>, Option<String>, Option<i64>, Option<i64>, String)> = {
-        let conn = db.lock().map_err(|e| e.to_string())?;
+        let conn = crate::db::lock(&db)?;
         let mut stmt = conn.prepare(
             "SELECT t.file_path, ar.name, al.title, t.track_number, t.disc_number, t.title
              FROM tracks t

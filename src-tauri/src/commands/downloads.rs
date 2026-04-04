@@ -58,7 +58,7 @@ pub async fn download_start(
 ) -> Result<Download, String> {
     let parsed = crate::download::url_parser::parse_url(&url);
     let (default_format, default_quality) = {
-        let conn = db.lock().map_err(|e| e.to_string())?;
+        let conn = crate::db::lock(&db)?;
         let f = crate::db::settings::get_setting(&conn, "download_format")
             .ok().flatten()
             .unwrap_or_else(|| "mp3".to_string());
@@ -92,7 +92,7 @@ pub async fn download_start(
     };
 
     let download = {
-        let conn = db.lock().map_err(|e| e.to_string())?;
+        let conn = crate::db::lock(&db)?;
         crate::db::downloads::create_download(
             &conn,
             &final_url,
@@ -126,7 +126,7 @@ pub async fn download_start_batch(
     quality: Option<String>,
 ) -> Result<Vec<Download>, String> {
     let (default_format, default_quality) = {
-        let conn = db.lock().map_err(|e| e.to_string())?;
+        let conn = crate::db::lock(&db)?;
         let f = crate::db::settings::get_setting(&conn, "download_format")
             .ok().flatten()
             .unwrap_or_else(|| "mp3".to_string());
@@ -164,7 +164,7 @@ pub async fn download_start_batch(
         };
 
         let download = {
-            let conn = db.lock().map_err(|e| e.to_string())?;
+            let conn = crate::db::lock(&db)?;
             crate::db::downloads::create_download(
                 &conn,
                 &final_url,
@@ -201,6 +201,7 @@ pub struct SearchDownloadRequest {
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn download_search_and_start(
     db: State<'_, Arc<DbPool>>,
     manager: State<'_, Arc<DownloadManager>>,
@@ -216,7 +217,7 @@ pub async fn download_search_and_start(
 ) -> Result<Download, String> {
     let search_url = format!("ytsearch5:{}", query);
     let (default_format, default_quality) = {
-        let conn = db.lock().map_err(|e| e.to_string())?;
+        let conn = crate::db::lock(&db)?;
         let f = crate::db::settings::get_setting(&conn, "download_format")
             .ok().flatten()
             .unwrap_or_else(|| "mp3".to_string());
@@ -229,7 +230,7 @@ pub async fn download_search_and_start(
     let qual = quality.unwrap_or(default_quality);
 
     let download = {
-        let conn = db.lock().map_err(|e| e.to_string())?;
+        let conn = crate::db::lock(&db)?;
         crate::db::downloads::create_download(
             &conn,
             &search_url,
@@ -263,7 +264,7 @@ pub async fn download_search_and_start_batch(
     quality: Option<String>,
 ) -> Result<Vec<Download>, String> {
     let (default_format, default_quality) = {
-        let conn = db.lock().map_err(|e| e.to_string())?;
+        let conn = crate::db::lock(&db)?;
         let f = crate::db::settings::get_setting(&conn, "download_format")
             .ok().flatten()
             .unwrap_or_else(|| "mp3".to_string());
@@ -279,7 +280,7 @@ pub async fn download_search_and_start_batch(
     for req in &queries {
         let search_url = format!("ytsearch5:{}", req.query);
         let download = {
-            let conn = db.lock().map_err(|e| e.to_string())?;
+            let conn = crate::db::lock(&db)?;
             crate::db::downloads::create_download(
                 &conn,
                 &search_url,
@@ -321,7 +322,7 @@ pub async fn download_retry(
     manager: State<'_, Arc<DownloadManager>>,
     id: i64,
 ) -> Result<Download, String> {
-    let conn = db.lock().map_err(|e| e.to_string())?;
+    let conn = crate::db::lock(&db)?;
     crate::db::downloads::reset_download_for_retry(&conn, id).map_err(|e| e.to_string())?;
     let download = crate::db::downloads::get_download(&conn, id)
         .map_err(|e| e.to_string())?
@@ -333,7 +334,7 @@ pub async fn download_retry(
 
 #[tauri::command]
 pub fn download_get_active(db: State<'_, Arc<DbPool>>) -> Result<Vec<Download>, String> {
-    let conn = db.lock().map_err(|e| e.to_string())?;
+    let conn = crate::db::lock(&db)?;
     crate::db::downloads::get_active_downloads(&conn).map_err(|e| e.to_string())
 }
 
@@ -343,13 +344,13 @@ pub fn download_get_history(
     offset: i64,
     limit: i64,
 ) -> Result<(Vec<Download>, i64), String> {
-    let conn = db.lock().map_err(|e| e.to_string())?;
+    let conn = crate::db::lock(&db)?;
     crate::db::downloads::get_download_history(&conn, offset, limit).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn download_clear_history(db: State<'_, Arc<DbPool>>) -> Result<i64, String> {
-    let conn = db.lock().map_err(|e| e.to_string())?;
+    let conn = crate::db::lock(&db)?;
     crate::db::downloads::clear_completed(&conn).map_err(|e| e.to_string())
 }
 
@@ -370,7 +371,7 @@ pub async fn download_set_source_credentials(
     credentials: std::collections::HashMap<String, String>,
 ) -> Result<(), String> {
     {
-        let conn = db.lock().map_err(|e| e.to_string())?;
+        let conn = crate::db::lock(&db)?;
         for (key, value) in &credentials {
             let setting_key = format!("{}_{}", platform, key);
             crate::db::settings::set_setting(&conn, &setting_key, value)
@@ -409,7 +410,7 @@ pub async fn download_artist_missing(
     album_mbids: Vec<String>,
 ) -> Result<Vec<Download>, String> {
     let artist_name: String = {
-        let conn = db.lock().map_err(|e| e.to_string())?;
+        let conn = crate::db::lock(&db)?;
         conn.query_row(
             "SELECT name FROM artists WHERE id = ?1",
             params![artist_id],
@@ -418,7 +419,7 @@ pub async fn download_artist_missing(
     };
 
     let (default_format, default_quality) = {
-        let conn = db.lock().map_err(|e| e.to_string())?;
+        let conn = crate::db::lock(&db)?;
         let f = crate::db::settings::get_setting(&conn, "download_format")
             .ok().flatten()
             .unwrap_or_else(|| "mp3".to_string());
@@ -468,6 +469,7 @@ pub async fn download_artist_missing(
             release_id
         );
         // (title, disc, track_num, duration_ms, isrc, recording_mbid)
+        #[allow(clippy::type_complexity)]
         let tracks: Vec<(String, i64, i64, Option<i64>, Option<String>, Option<String>)> = match client.get(&release_url).send().await {
             Ok(resp) => {
                 let json: serde_json::Value = resp.json().await.unwrap_or_default();
@@ -506,7 +508,7 @@ pub async fn download_artist_missing(
 
         // Create an album in the DB for this release and queue downloads
         let (album_id, album_title) = {
-            let conn = db.lock().map_err(|e| e.to_string())?;
+            let conn = crate::db::lock(&db)?;
             let album_title_from_rg: Option<String> = {
                 // Get the album title from the enriched discography
                 let disco_json: Option<String> = conn.query_row(
@@ -557,7 +559,7 @@ pub async fn download_artist_missing(
             let query = format!("{} - {}", artist_name, title);
             let search_url = format!("ytsearch5:{}", query);
             let download = {
-                let conn = db.lock().map_err(|e| e.to_string())?;
+                let conn = crate::db::lock(&db)?;
                 crate::db::downloads::create_download(
                     &conn,
                     &search_url,
@@ -593,7 +595,7 @@ pub async fn download_music_video(
 ) -> Result<String, String> {
     // Get track info
     let mv_url = {
-        let conn = db.lock().map_err(|e| e.to_string())?;
+        let conn = crate::db::lock(&db)?;
         let url: Option<String> = conn.query_row(
             "SELECT music_video_url FROM tracks WHERE id = ?1",
             params![track_id],
@@ -617,7 +619,7 @@ pub async fn download_music_video(
         .unwrap_or_else(|| "yt-dlp".to_string());
     let ffmpeg_dir = crate::download::setup::resolve_ffmpeg_dir(&bin_dir);
     let cookies = {
-        let conn = db.lock().map_err(|e| e.to_string())?;
+        let conn = crate::db::lock(&db)?;
         crate::db::settings::get_cookies_browser(&conn)
     };
 
@@ -645,7 +647,7 @@ pub async fn download_music_video(
 
     // Save path to DB
     {
-        let conn = db.lock().map_err(|e| e.to_string())?;
+        let conn = crate::db::lock(&db)?;
         conn.execute(
             "UPDATE tracks SET music_video_path = ?1 WHERE id = ?2",
             params![path, track_id],

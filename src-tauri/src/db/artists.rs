@@ -107,10 +107,10 @@ pub fn get_artists(conn: &Connection, offset: i64, limit: i64, search: Option<&s
 
     let mut stmt = conn.prepare(&sql)?;
     let artists: Vec<Artist> = if let Some(ref p) = pattern {
-        stmt.query_map(params![limit, offset, p], |row| row_to_artist(row))?
+        stmt.query_map(params![limit, offset, p], row_to_artist)?
             .collect::<Result<Vec<_>, _>>()?
     } else {
-        stmt.query_map(params![limit, offset], |row| row_to_artist(row))?
+        stmt.query_map(params![limit, offset], row_to_artist)?
             .collect::<Result<Vec<_>, _>>()?
     };
 
@@ -127,12 +127,8 @@ pub fn get_artist(conn: &Connection, id: i64) -> Result<Option<Artist>, rusqlite
         ARTIST_COLUMNS
     );
     let mut stmt = conn.prepare(&sql)?;
-
-    let mut rows = stmt.query_map(params![id], |row| row_to_artist(row))?;
-
-    match rows.next() {
-        Some(Ok(a)) => Ok(Some(a)),
-        Some(Err(e)) => Err(e),
-        None => Ok(None),
-    }
+    let result = stmt.query_map(params![id], row_to_artist)?
+        .next()
+        .transpose();
+    result
 }

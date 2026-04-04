@@ -24,11 +24,19 @@ jobs:
           if [ "${{ github.event_name }}" = "release" ]; then
             echo "tag=${{ github.event.release.tag_name }}" >> "$GITHUB_OUTPUT"
             echo "name=${{ github.event.release.name }}" >> "$GITHUB_OUTPUT"
-            echo "body=${{ github.event.release.body }}" >> "$GITHUB_OUTPUT"
           else
             echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
             echo "name=Playlist ${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
-            echo "body=Download the installer for your platform below." >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Write release body to file
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            cat <<'BODY_EOF' > /tmp/release-body.md
+          ${{ github.event.release.body }}
+          BODY_EOF
+          else
+            echo "Download the installer for your platform below." > /tmp/release-body.md
           fi
 
       - name: Download release assets from private repo
@@ -36,7 +44,13 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           mkdir -p assets
-          gh release download "${{ steps.tag.outputs.tag }}" --dir assets --pattern '*.exe' --pattern '*.deb' --pattern '*.rpm' --pattern '*.AppImage' --pattern '*.dmg' || true
+          gh release download "${{ steps.tag.outputs.tag }}" \
+            --dir assets \
+            --pattern '*.exe' \
+            --pattern '*.deb' \
+            --pattern '*.rpm' \
+            --pattern '*.AppImage' \
+            --pattern '*.dmg' || true
           ls -la assets/
 
       - name: Create release on public repo
@@ -54,10 +68,8 @@ jobs:
             gh release create "$TAG" assets/* \
               --repo "$REPO" \
               --title "${{ steps.tag.outputs.name }}" \
-              --notes "${{ steps.tag.outputs.body }}"
+              --notes-file /tmp/release-body.md
           else
-            gh release create "$TAG" \
-              --repo "$REPO" \
-              --title "${{ steps.tag.outputs.name }}" \
-              --notes "${{ steps.tag.outputs.body }}"
+            echo "::error::No assets found to publish"
+            exit 1
           fi

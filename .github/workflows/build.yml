@@ -64,7 +64,7 @@ jobs:
           tagName: ${{ github.ref_name }}
           releaseName: 'Playlist ${{ github.ref_name }}'
           releaseBody: 'Download the installer for your platform below.'
-          releaseDraft: true
+          releaseDraft: false
           prerelease: false
 
       - name: Upload artifacts

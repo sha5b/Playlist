@@ -2,8 +2,8 @@ use rusqlite::{params, Connection, Row};
 
 use super::models::{Track, TrackPage};
 
-/// Shared column list for track queries. Indexes 0–32.
-const TRACK_COLUMNS: &str =
+/// Shared column list for track queries. Indexes 0–33.
+pub const TRACK_COLUMNS: &str =
     "t.id, t.title, t.duration_ms, t.track_number, t.disc_number,
      t.genre, t.year, t.file_path, t.file_size, t.format, t.bitrate,
      t.sample_rate, t.channels, t.cover_art_path, t.source_platform,
@@ -14,7 +14,7 @@ const TRACK_COLUMNS: &str =
      t.metadata_completeness, t.tags, t.lyrics, t.music_video_url, t.music_video_path";
 
 /// Map a row (using TRACK_COLUMNS order) into a Track.
-fn row_to_track(row: &Row) -> Result<Track, rusqlite::Error> {
+pub fn row_to_track(row: &Row) -> Result<Track, rusqlite::Error> {
     Ok(Track {
         id: row.get(0)?,
         title: row.get(1)?,
@@ -53,6 +53,11 @@ fn row_to_track(row: &Row) -> Result<Track, rusqlite::Error> {
     })
 }
 
+/// Return "ASC" or "DESC" based on the direction string.
+fn sql_dir(sort_dir: &str) -> &'static str {
+    if sort_dir == "asc" { "ASC" } else { "DESC" }
+}
+
 pub fn get_tracks(
     conn: &Connection,
     offset: i64,
@@ -63,15 +68,16 @@ pub fn get_tracks(
 ) -> Result<TrackPage, rusqlite::Error> {
     let limit = limit.clamp(1, 500);
     let offset = offset.max(0);
+    let dir = sql_dir(sort_dir);
     let order_clause = match sort_by {
-        "title" => format!("t.title {}", if sort_dir == "asc" { "ASC" } else { "DESC" }),
-        "artist_name" => format!("a.name {}", if sort_dir == "asc" { "ASC" } else { "DESC" }),
-        "duration_ms" => format!("t.duration_ms {}", if sort_dir == "asc" { "ASC" } else { "DESC" }),
-        "play_count" => format!("t.play_count {}", if sort_dir == "asc" { "ASC" } else { "DESC" }),
+        "title" => format!("t.title {dir}"),
+        "artist_name" => format!("a.name {dir}"),
+        "duration_ms" => format!("t.duration_ms {dir}"),
+        "play_count" => format!("t.play_count {dir}"),
         "last_played" => "t.last_played_at DESC NULLS LAST".to_string(),
-        "year" => format!("t.year {}", if sort_dir == "asc" { "ASC" } else { "DESC" }),
+        "year" => format!("t.year {dir}"),
         "random" => "RANDOM()".to_string(),
-        _ => format!("t.date_added {}", if sort_dir == "asc" { "ASC" } else { "DESC" }),
+        _ => format!("t.date_added {dir}"),
     };
 
     // When searching, use FTS for matching then apply sort/pagination
@@ -113,10 +119,10 @@ pub fn get_tracks(
 
     let mut stmt = conn.prepare(&sql)?;
     let tracks = if let Some(ref fts) = fts_query {
-        stmt.query_map(params![fts, limit, offset], |row| row_to_track(row))?
+        stmt.query_map(params![fts, limit, offset], row_to_track)?
             .collect::<Result<Vec<_>, _>>()?
     } else {
-        stmt.query_map(params![limit, offset], |row| row_to_track(row))?
+        stmt.query_map(params![limit, offset], row_to_track)?
             .collect::<Result<Vec<_>, _>>()?
     };
 
@@ -133,14 +139,10 @@ pub fn get_track(conn: &Connection, id: i64) -> Result<Option<Track>, rusqlite::
         TRACK_COLUMNS
     );
     let mut stmt = conn.prepare(&sql)?;
-
-    let mut rows = stmt.query_map(params![id], |row| row_to_track(row))?;
-
-    match rows.next() {
-        Some(Ok(track)) => Ok(Some(track)),
-        Some(Err(e)) => Err(e),
-        None => Ok(None),
-    }
+    let result = stmt.query_map(params![id], row_to_track)?
+        .next()
+        .transpose();
+    result
 }
 
 pub fn delete_track(conn: &Connection, id: i64, delete_file: bool) -> Result<Option<String>, rusqlite::Error> {
@@ -195,7 +197,7 @@ pub fn search_tracks_fts(
     let mut stmt = conn.prepare(&sql)?;
 
     let tracks = stmt
-        .query_map(params![fts_query, limit], |row| row_to_track(row))?
+        .query_map(params![fts_query, limit], row_to_track)?
         .collect::<Result<Vec<_>, _>>()?;
 
     Ok(tracks)
@@ -214,7 +216,7 @@ pub fn get_tracks_by_album(conn: &Connection, album_id: i64) -> Result<Vec<Track
     let mut stmt = conn.prepare(&sql)?;
 
     let tracks = stmt
-        .query_map(params![album_id], |row| row_to_track(row))?
+        .query_map(params![album_id], row_to_track)?
         .collect::<Result<Vec<_>, _>>()?;
 
     Ok(tracks)
@@ -233,7 +235,7 @@ pub fn get_tracks_by_artist(conn: &Connection, artist_id: i64) -> Result<Vec<Tra
     let mut stmt = conn.prepare(&sql)?;
 
     let tracks = stmt
-        .query_map(params![artist_id], |row| row_to_track(row))?
+        .query_map(params![artist_id], row_to_track)?
         .collect::<Result<Vec<_>, _>>()?;
 
     Ok(tracks)
@@ -266,7 +268,7 @@ pub fn get_tracks_by_genre(
     );
     let mut stmt = conn.prepare(&sql)?;
     let tracks = stmt
-        .query_map(params![genre, limit], |row| row_to_track(row))?
+        .query_map(params![genre, limit], row_to_track)?
         .collect::<Result<Vec<_>, _>>()?;
     Ok(tracks)
 }
@@ -274,6 +276,7 @@ pub fn get_tracks_by_genre(
 /// Compute metadata completeness as a percentage (0–100).
 /// Checks key fields: title, artist, album, genre, year, track_number, cover_art, duration, description.
 pub fn compute_completeness(conn: &Connection, track_id: i64) -> Result<i64, rusqlite::Error> {
+    #[allow(clippy::type_complexity)]
     let row: (
         Option<String>, Option<i64>, Option<i64>, Option<String>,
         Option<i64>, Option<i64>, Option<String>, Option<i64>,
@@ -291,17 +294,17 @@ pub fn compute_completeness(conn: &Connection, track_id: i64) -> Result<i64, rus
     )?;
 
     let fields: &[bool] = &[
-        row.0.as_ref().map_or(false, |s| !s.is_empty() && s != "Unknown"), // title
+        row.0.as_ref().is_some_and(|s| !s.is_empty() && s != "Unknown"), // title
         row.1.is_some(),  // artist
         row.2.is_some(),  // album
-        row.3.as_ref().map_or(false, |s| !s.is_empty()), // genre
+        row.3.as_ref().is_some_and(|s| !s.is_empty()), // genre
         row.4.is_some(),  // year
         row.5.is_some(),  // track_number
-        row.6.as_ref().map_or(false, |s| !s.is_empty()), // cover_art
+        row.6.as_ref().is_some_and(|s| !s.is_empty()), // cover_art
         row.7.is_some(),  // duration
-        row.8.as_ref().map_or(false, |s| !s.is_empty()), // description
-        row.9.as_ref().map_or(false, |s| !s.is_empty()),  // label
-        row.10.as_ref().map_or(false, |s| !s.is_empty()), // release_date
+        row.8.as_ref().is_some_and(|s| !s.is_empty()), // description
+        row.9.as_ref().is_some_and(|s| !s.is_empty()),  // label
+        row.10.as_ref().is_some_and(|s| !s.is_empty()), // release_date
     ];
 
     let filled = fields.iter().filter(|&&b| b).count();

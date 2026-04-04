@@ -121,6 +121,7 @@ pub fn create_monitored_playlist(
 }
 
 /// Upsert entries for a monitored playlist. Returns (new_count, total_count).
+#[allow(clippy::type_complexity)]
 pub fn upsert_entries(
     conn: &Connection,
     playlist_id: i64,
@@ -236,26 +237,18 @@ const ENTRY_COLUMNS: &str =
      status, download_id, track_id, position, first_seen_at, downloaded_at, isrc";
 
 fn query_entries(conn: &Connection, playlist_id: i64, status_filter: Option<&str>) -> Result<Vec<MonitoredEntry>, rusqlite::Error> {
-    match status_filter {
-        Some(status) => {
-            let sql = format!(
-                "SELECT {} FROM monitored_playlist_entries WHERE playlist_id = ?1 AND status = ?2 ORDER BY position ASC",
-                ENTRY_COLUMNS
-            );
-            let mut stmt = conn.prepare(&sql)?;
-            let rows = stmt.query_map(params![playlist_id, status], entry_from_row)?;
-            rows.collect()
-        }
-        None => {
-            let sql = format!(
-                "SELECT {} FROM monitored_playlist_entries WHERE playlist_id = ?1 ORDER BY position ASC",
-                ENTRY_COLUMNS
-            );
-            let mut stmt = conn.prepare(&sql)?;
-            let rows = stmt.query_map(params![playlist_id], entry_from_row)?;
-            rows.collect()
-        }
-    }
+    let filter_clause = if status_filter.is_some() { " AND status = ?2" } else { "" };
+    let sql = format!(
+        "SELECT {} FROM monitored_playlist_entries WHERE playlist_id = ?1{} ORDER BY position ASC",
+        ENTRY_COLUMNS, filter_clause
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = if let Some(status) = status_filter {
+        stmt.query_map(params![playlist_id, status], entry_from_row)?
+    } else {
+        stmt.query_map(params![playlist_id], entry_from_row)?
+    };
+    rows.collect()
 }
 
 /// Get all entries for a monitored playlist
@@ -279,17 +272,12 @@ pub fn update_entry_status(
     download_id: Option<i64>,
     track_id: Option<i64>,
 ) -> Result<(), rusqlite::Error> {
-    if status == "downloaded" {
-        conn.execute(
-            "UPDATE monitored_playlist_entries SET status = ?2, download_id = ?3, track_id = ?4, downloaded_at = datetime('now') WHERE id = ?1",
-            params![entry_id, status, download_id, track_id],
-        )?;
+    let sql = if status == "downloaded" {
+        "UPDATE monitored_playlist_entries SET status = ?2, download_id = ?3, track_id = ?4, downloaded_at = datetime('now') WHERE id = ?1"
     } else {
-        conn.execute(
-            "UPDATE monitored_playlist_entries SET status = ?2, download_id = ?3, track_id = ?4 WHERE id = ?1",
-            params![entry_id, status, download_id, track_id],
-        )?;
-    }
+        "UPDATE monitored_playlist_entries SET status = ?2, download_id = ?3, track_id = ?4 WHERE id = ?1"
+    };
+    conn.execute(sql, params![entry_id, status, download_id, track_id])?;
     Ok(())
 }
 

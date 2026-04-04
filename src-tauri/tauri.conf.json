@@ -58,10 +58,23 @@
     },
     "linux": {
       "deb": {
-        "depends": ["libwebkit2gtk-4.1-0", "libgtk-3-0", "libayatana-appindicator3-1"]
+        "depends": ["libwebkit2gtk-4.1-0", "libgtk-3-0", "libayatana-appindicator3-1", "libasound2"],
+        "desktopTemplate": "resources/com.playlist.app.desktop",
+        "files": {
+          "/usr/share/metainfo/com.playlist.app.metainfo.xml": "resources/com.playlist.app.metainfo.xml"
+        }
       },
       "rpm": {
-        "depends": ["webkit2gtk4.1", "gtk3", "libappindicator-gtk3"]
+        "depends": ["webkit2gtk4.1", "gtk3", "libappindicator-gtk3", "alsa-lib"],
+        "desktopTemplate": "resources/com.playlist.app.desktop",
+        "files": {
+          "/usr/share/metainfo/com.playlist.app.metainfo.xml": "resources/com.playlist.app.metainfo.xml"
+        }
+      },
+      "appimage": {
+        "files": {
+          "usr/share/metainfo/com.playlist.app.metainfo.xml": "resources/com.playlist.app.metainfo.xml"
+        }
       }
     }
   }

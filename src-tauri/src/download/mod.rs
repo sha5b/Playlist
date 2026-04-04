@@ -75,9 +75,7 @@ impl DownloadManager {
     }
 
     fn get_download_dir(&self) -> Result<PathBuf, String> {
-        let conn = self.db.lock().map_err(|e| {
-            format!("DB mutex poisoned in get_download_dir: {}", e)
-        })?;
+        let conn = crate::db::lock(&self.db)?;
         let dir = crate::db::settings::get_setting(&conn, "download_dir")
             .ok()
             .flatten();
@@ -295,6 +293,41 @@ impl DownloadManager {
     }
 }
 
+/// Update a download's status and its linked monitored entry in one step.
+/// Emits a manager-entry-updated event if there's a linked entry.
+fn update_download_status_with_entry(
+    db: &Arc<DbPool>,
+    app_handle: &tauri::AppHandle,
+    download_id: i64,
+    status: &str,
+) {
+    if let Ok(conn) = db.lock() {
+        let _ = crate::db::downloads::update_download_status(&conn, download_id, status, None);
+        let eid: Option<i64> = conn.query_row(
+            "SELECT id FROM monitored_playlist_entries WHERE download_id = ?1",
+            rusqlite::params![download_id],
+            |row| row.get::<_, i64>(0),
+        ).ok();
+        if let Some(eid) = eid {
+            let _ = crate::db::monitored::update_entry_status(&conn, eid, status, Some(download_id), None);
+            let _ = app_handle.emit(
+                "manager-entry-updated",
+                serde_json::json!({ "entry_id": eid, "status": status }),
+            );
+        }
+    }
+}
+
+/// Build a search query string from a download's title and artist.
+fn build_download_search_query(download: &crate::db::models::Download) -> Option<String> {
+    match (&download.artist, &download.title) {
+        (Some(a), Some(t)) => Some(format!("{} - {}", a, t)),
+        (None, Some(t)) => Some(t.clone()),
+        _ => None,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn run_download(
     db: Arc<DbPool>,
     app_handle: tauri::AppHandle,
@@ -329,7 +362,6 @@ async fn run_download(
                     None => title.clone(),
                 };
                 download.url = format!("ytsearch5:{}", search_query);
-                // Update the download URL in database
                 if let Ok(conn) = db.lock() {
                     let _ = conn.execute(
                         "UPDATE downloads SET url = ?1, title = ?2, artist = ?3 WHERE id = ?4",
@@ -345,49 +377,13 @@ async fn run_download(
     }
 
     if let Err(e) = std::fs::create_dir_all(&download_dir) {
-        fail_download(
-            &db,
-            &app_handle,
-            download_id,
-            &format!("Failed to create download dir: {}", e),
-        );
+        fail_download(&db, &app_handle, download_id, &format!("Failed to create download dir: {}", e));
         return;
     }
 
-    // Update status to downloading
-    {
-        let entry_id = if let Ok(conn) = db.lock() {
-            let _ = crate::db::downloads::update_download_status(&conn, download_id, "downloading", None);
-            // Update linked monitored entry
-            let eid: Option<i64> = conn.query_row(
-                "SELECT id FROM monitored_playlist_entries WHERE download_id = ?1",
-                rusqlite::params![download_id],
-                |row| row.get::<_, i64>(0),
-            ).ok();
-            if let Some(eid) = eid {
-                let _ = crate::db::monitored::update_entry_status(&conn, eid, "downloading", Some(download_id), None);
-            }
-            eid
-        } else {
-            None
-        };
-        if let Some(eid) = entry_id {
-            let _ = app_handle.emit(
-                "manager-entry-updated",
-                serde_json::json!({ "entry_id": eid, "status": "downloading" }),
-            );
-        }
-    }
-    emit_event(
-        &app_handle,
-        download_id,
-        "downloading",
-        0.0,
-        None,
-        None,
-        None,
-        None,
-    );
+    // Update status to downloading and notify linked monitored entry
+    update_download_status_with_entry(&db, &app_handle, download_id, "downloading");
+    emit_event(&app_handle, download_id, "downloading", 0.0, None, None, None, None);
 
     let file_stem = format!("dl_{}", download_id);
     let platform = download.platform.clone();
@@ -421,11 +417,7 @@ async fn run_download(
                 ).await)
             } else {
                 // Try cross-platform search with title/artist (e.g. Deezer search for Spotify tracks)
-                let query = match (&download.artist, &download.title) {
-                    (Some(a), Some(t)) => Some(format!("{} - {}", a, t)),
-                    (None, Some(t)) => Some(t.clone()),
-                    _ => None,
-                };
+                let query = build_download_search_query(&download);
                 if let Some(ref q) = query {
                     if let Some(src) = sources_guard.get_best_search_source() {
                         log::info!("Trying {} search for download {} (fast path): {}", src.platform(), download_id, q);
@@ -830,6 +822,8 @@ async fn run_download(
                                 rusqlite::params![download_id],
                                 |row| row.get::<_, Option<f64>>(0),
                             ).ok().flatten()
+                            // Safety: normalize any legacy ms values still stored in the column
+                            .map(|d| if d > 36_000.0 { d / 1000.0 } else { d })
                         } else {
                             None
                         }
@@ -1448,6 +1442,7 @@ fn fail_download(db: &Arc<DbPool>, app_handle: &tauri::AppHandle, id: i64, error
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn emit_event(
     app_handle: &tauri::AppHandle,
     id: i64,
@@ -1523,7 +1518,7 @@ fn title_is_relevant(query: &str, result_title: &str) -> bool {
 }
 
 /// Check if a candidate duration is "in the ballpark" of the expected duration.
-/// `strict` mode (for album tracks) uses ±5 seconds; normal mode uses 15% or 10 seconds.
+/// `strict` mode (for album tracks) uses ±5 seconds; normal mode uses 15% or 30 seconds.
 fn duration_acceptable(expected_secs: f64, candidate_secs: f64, strict: bool) -> bool {
     if expected_secs <= 0.0 || candidate_secs <= 0.0 {
         return true; // Can't validate, allow it
@@ -1533,7 +1528,7 @@ fn duration_acceptable(expected_secs: f64, candidate_secs: f64, strict: bool) ->
         diff <= 5.0
     } else {
         let pct_threshold = expected_secs * 0.15;
-        diff <= pct_threshold.max(10.0)
+        diff <= pct_threshold.max(30.0)
     }
 }
 
@@ -1605,7 +1600,7 @@ fn pick_best_match(
             0.5
         };
 
-        if best.is_none() || duration_score > best.unwrap().1 {
+        if best.as_ref().map_or(true, |(_, prev_score)| duration_score > *prev_score) {
             best = Some((result, duration_score));
         }
     }

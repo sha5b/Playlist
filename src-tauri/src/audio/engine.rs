@@ -222,6 +222,7 @@ impl AudioEngine {
     /// decode samples upfront.  Decoding happens on-demand during playback.
     /// ~5MB memory per track (compressed) instead of ~100MB (raw PCM).
     /// Can be called from any thread (Tauri command handler, preload thread, etc).
+    #[allow(clippy::type_complexity)]
     pub fn decode_track(file_path: &str, ffmpeg_path: Option<&str>) -> Result<(Decoder<Cursor<Vec<u8>>>, u64), String> {
         log::info!("[audio] Creating streaming decoder: {}", file_path);
         let data = std::fs::read(file_path)
@@ -282,7 +283,7 @@ impl AudioEngine {
 
     /// Try to preload the next track based on current queue state.
     fn try_preload_next(shared: &Arc<RwLock<SharedState>>, ffmpeg_path: Option<&str>) -> Option<(QueueTrack, PreloadedSource, u64)> {
-        let s = read_state(&shared);
+        let s = read_state(shared);
         let next_track = s.queue.peek_next(s.playback.repeat == RepeatMode::All)?;
         let track = next_track.clone();
         drop(s);
@@ -719,64 +720,31 @@ impl AudioEngine {
                     // Periodically check if the OS default audio device changed
                     // (e.g., Bluetooth headphones connected/disconnected).
                     // Only auto-switch if the user hasn't manually selected a device.
-                    if explicit_device.is_none() && last_device_check.elapsed() >= Duration::from_secs(DEVICE_CHECK_INTERVAL_SECS) {
+                    let should_check_device = explicit_device.is_none()
+                        && last_device_check.elapsed() >= Duration::from_secs(DEVICE_CHECK_INTERVAL_SECS);
+                    if !should_check_device {
+                        // Nothing to do this tick
+                    } else {
                         last_device_check = Instant::now();
                         let new_default: Option<String> = {
                             use cpal::traits::{DeviceTrait, HostTrait};
                             cpal::default_host().default_output_device().and_then(|d| d.name().ok())
                         };
-                        if new_default != current_device_name {
+                        if new_default == current_device_name {
+                            // Device unchanged, nothing to do
+                        } else {
                             log::info!(
                                 "[audio] Default device changed: {:?} -> {:?}, auto-switching",
                                 current_device_name, new_default
                             );
-                            match OutputStream::try_default() {
-                                Ok((new_stream, new_handle)) => {
-                                    let vol = sink.volume();
-                                    let was_playing = is_playing;
-                                    let position = accumulated_ms
-                                        + play_start.as_ref().map(|s| s.elapsed().as_millis() as u64).unwrap_or(0);
-                                    sink.stop();
-                                    _stream = new_stream;
-                                    stream_handle = new_handle;
-                                    sink = make_sink_or_continue!(&stream_handle, vol, emit);
-
-                                    // If a track was playing, re-decode and seek to resume playback
-                                    let current_track = read_state(&shared).playback.current_track.clone();
-                                    if was_playing {
-                                        if let Some(ref track) = current_track {
-                                            match Self::decode_track(&track.file_path, ffmpeg_path.as_deref()) {
-                                                Ok((source, dur)) => {
-                                                    current_duration_ms = if dur > 0 { dur } else { current_duration_ms };
-                                                    sink.append(source);
-                                                    // Seek to the position we were at
-                                                    if position > 0 {
-                                                        sink.try_seek(std::time::Duration::from_millis(position))
-                                                            .unwrap_or_else(|e| log::warn!("[audio] Seek after device switch failed: {}", e));
-                                                    }
-                                                    accumulated_ms = position;
-                                                    play_start = Some(Instant::now());
-                                                    is_playing = true;
-                                                }
-                                                Err(e) => {
-                                                    log::warn!("[audio] Failed to re-decode after device switch: {}", e);
-                                                    is_playing = false;
-                                                    sink.pause();
-                                                }
-                                            }
-                                        }
-                                    } else {
-                                        sink.pause();
-                                    }
-                                    preloaded = None;
-                                    current_device_name = new_default;
-                                    log::info!("[audio] Auto-switched to new default device: {:?}", current_device_name);
-                                }
-                                Err(e) => {
-                                    log::warn!("[audio] Failed to auto-switch to new default device: {}", e);
-                                    current_device_name = new_default;
-                                }
-                            }
+                            Self::handle_device_switch(
+                                &mut _stream, &mut stream_handle, &mut sink,
+                                &shared, &emit, &mut current_duration_ms,
+                                &mut play_start, &mut accumulated_ms,
+                                &mut is_playing, &mut preloaded,
+                                &mut current_device_name, new_default,
+                                ffmpeg_path.as_deref(),
+                            );
                         }
                     }
                 }
@@ -831,8 +799,8 @@ impl AudioEngine {
                         if t.is_none() && repeat == RepeatMode::All {
                             (s.queue.restart().is_some(), false)
                         } else if t.is_some() {
-                            let matches_preload = preloaded.as_ref().map_or(false, |(pt, _, _)| {
-                                s.queue.current().map_or(false, |ct| ct.id == pt.id)
+                            let matches_preload = preloaded.as_ref().is_some_and(|(pt, _, _)| {
+                                s.queue.current().is_some_and(|ct| ct.id == pt.id)
                             });
                             (true, matches_preload)
                         } else {
@@ -843,7 +811,8 @@ impl AudioEngine {
 
                 if next_exists && use_preloaded {
                     log::info!("[audio] Gapless transition (preloaded)");
-                    let (track, source, dur) = preloaded.take().unwrap();
+                    let (track, source, dur) = preloaded.take()
+                        .expect("preloaded track must exist when use_preloaded is true");
                     current_duration_ms = if dur > 0 { dur } else {
                         track.duration_ms.unwrap_or(0) as u64
                     };
@@ -887,6 +856,83 @@ impl AudioEngine {
         }
     }
 
+    /// Handle auto-switching to a new default audio device.
+    /// Extracted from the main loop to reduce nesting depth.
+    #[allow(clippy::too_many_arguments)]
+    fn handle_device_switch(
+        _stream: &mut OutputStream,
+        stream_handle: &mut OutputStreamHandle,
+        sink: &mut Sink,
+        shared: &Arc<RwLock<SharedState>>,
+        emit: &dyn Fn(PlayerEvent),
+        current_duration_ms: &mut u64,
+        play_start: &mut Option<Instant>,
+        accumulated_ms: &mut u64,
+        is_playing: &mut bool,
+        preloaded: &mut Option<(QueueTrack, PreloadedSource, u64)>,
+        current_device_name: &mut Option<String>,
+        new_default: Option<String>,
+        ffmpeg_path: Option<&str>,
+    ) {
+        let (new_stream, new_handle) = match OutputStream::try_default() {
+            Ok(pair) => pair,
+            Err(e) => {
+                log::warn!("[audio] Failed to auto-switch to new default device: {}", e);
+                *current_device_name = new_default;
+                return;
+            }
+        };
+
+        let vol = sink.volume();
+        let was_playing = *is_playing;
+        let position = *accumulated_ms
+            + play_start.as_ref().map(|s| s.elapsed().as_millis() as u64).unwrap_or(0);
+
+        sink.stop();
+        *_stream = new_stream;
+        *stream_handle = new_handle;
+        *sink = match Self::make_sink(stream_handle, vol) {
+            Ok(s) => s,
+            Err(e) => {
+                log::error!("[audio] {}", e);
+                emit(PlayerEvent::Error(e));
+                return;
+            }
+        };
+
+        // If a track was playing, re-decode and seek to resume playback
+        if was_playing {
+            let current_track = read_state(shared).playback.current_track.clone();
+            if let Some(ref track) = current_track {
+                match Self::decode_track(&track.file_path, ffmpeg_path) {
+                    Ok((source, dur)) => {
+                        *current_duration_ms = if dur > 0 { dur } else { *current_duration_ms };
+                        sink.append(source);
+                        if position > 0 {
+                            sink.try_seek(std::time::Duration::from_millis(position))
+                                .unwrap_or_else(|e| log::warn!("[audio] Seek after device switch failed: {}", e));
+                        }
+                        *accumulated_ms = position;
+                        *play_start = Some(Instant::now());
+                        *is_playing = true;
+                    }
+                    Err(e) => {
+                        log::warn!("[audio] Failed to re-decode after device switch: {}", e);
+                        *is_playing = false;
+                        sink.pause();
+                    }
+                }
+            }
+        } else {
+            sink.pause();
+        }
+
+        *preloaded = None;
+        *current_device_name = new_default;
+        log::info!("[audio] Auto-switched to new default device: {:?}", current_device_name);
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn play_current(
         sink: &mut Sink,
         stream_handle: &OutputStreamHandle,
@@ -898,7 +944,7 @@ impl AudioEngine {
         is_playing: &mut bool,
         ffmpeg_path: Option<&str>,
     ) {
-        let track = read_state(&shared).queue.current().cloned();
+        let track = read_state(shared).queue.current().cloned();
 
         if let Some(track) = track {
             log::info!("[audio] play_current: \"{}\" ({})", track.title, track.file_path);
@@ -930,7 +976,7 @@ impl AudioEngine {
                     *is_playing = true;
 
                     {
-                        let mut s = write_state(&shared);
+                        let mut s = write_state(shared);
                         s.playback.state = PlayerState::Playing;
                         s.playback.current_track = Some(track.clone());
                         s.playback.position_ms = 0;

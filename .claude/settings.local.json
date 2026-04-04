@@ -120,7 +120,11 @@
       "Bash(curl -s -o /tmp/spotify_full.html -w \"%{http_code}\" \"https://open.spotify.com/playlist/37i9dQZF1DWWEJlAGA9gs0\" -H \"User-Agent: Mozilla/5.0 \\(Windows NT 10.0; Win64; x64\\) AppleWebKit/537.36 \\(KHTML, like Gecko\\) Chrome/125.0.0.0 Safari/537.36\")",
       "Bash(curl -s -o /tmp/spotify_embed.html -w \"%{http_code}\" \"https://open.spotify.com/embed/playlist/37i9dQZF1DWWEJlAGA9gs0\" -H \"User-Agent: Mozilla/5.0 \\(Windows NT 10.0; Win64; x64\\) AppleWebKit/537.36 \\(KHTML, like Gecko\\) Chrome/125.0.0.0 Safari/537.36\")",
       "Bash(curl -s \"https://open.spotifycdn.com/cdn/build/web-player/web-player.5ad1d055.js\" -o /tmp/spotify_webplayer.js)",
-      "Bash(python3)"
+      "Bash(python3)",
+      "Bash(gh pr:*)",
+      "Bash(wc -l /home/sha5b/Documents/GitHub/Playlist/src-tauri/src/**/*.rs)",
+      "Bash(find /home/sha5b/Documents/GitHub/Playlist/src -type f \\\\\\( -name \"*.svelte\" -o -name \"*.ts\" -o -name \"*.js\" \\\\\\) -exec wc -l {} +)",
+      "Bash(grep -E '\\\\.\\(json|ts|js\\)$|tauri')"
     ]
   }
 }

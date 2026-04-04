@@ -29,14 +29,17 @@ fn map_entries(entries: &[VideoInfo], label: &str) -> Vec<EntryTuple> {
                     format!("ytsearch5:{}", query)
                 });
             log::info!("[{}] Entry '{}' -> URL: {}", label, best_title, url);
-            (url, Some(best_title), best_artist, e.duration, e.thumbnail.clone(), e.isrc.clone())
+            // Normalize duration: some extractors (e.g. Spotify) return milliseconds
+            // instead of seconds.  Any value > 36000 (10 hours) is clearly in ms.
+            let duration_secs = e.duration.map(|d| if d > 36_000.0 { d / 1000.0 } else { d });
+            (url, Some(best_title), best_artist, duration_secs, e.thumbnail.clone(), e.isrc.clone())
         })
         .collect()
 }
 
 #[tauri::command]
 pub fn manager_get_playlists(db: State<'_, Arc<DbPool>>) -> Result<Vec<MonitoredPlaylist>, String> {
-    let conn = db.lock().map_err(|e| e.to_string())?;
+    let conn = crate::db::lock(&db)?;
     crate::db::monitored::get_monitored_playlists(&conn).map_err(|e| e.to_string())
 }
 
@@ -46,7 +49,7 @@ pub fn manager_get_entries(
     playlist_id: i64,
 ) -> Result<Vec<MonitoredEntry>, String> {
     log::debug!("manager_get_entries called with playlist_id: {}", playlist_id);
-    let conn = db.lock().map_err(|e| e.to_string())?;
+    let conn = crate::db::lock(&db)?;
     let entries = crate::db::monitored::get_entries(&conn, playlist_id).map_err(|e| e.to_string())?;
     log::debug!("manager_get_entries returning {} entries", entries.len());
     Ok(entries)
@@ -57,7 +60,7 @@ pub fn manager_get_new_entries(
     db: State<'_, Arc<DbPool>>,
     playlist_id: i64,
 ) -> Result<Vec<MonitoredEntry>, String> {
-    let conn = db.lock().map_err(|e| e.to_string())?;
+    let conn = crate::db::lock(&db)?;
     crate::db::monitored::get_new_entries(&conn, playlist_id).map_err(|e| e.to_string())
 }
 
@@ -78,7 +81,7 @@ pub async fn manager_add_playlist(
     // Create playlist in DB immediately so it shows up in the UI
     let placeholder_name = format!("{} playlist", parsed.platform);
     let playlist = {
-        let conn = db.lock().map_err(|e| e.to_string())?;
+        let conn = crate::db::lock(&db)?;
         crate::db::monitored::create_monitored_playlist(
             &conn,
             &placeholder_name,
@@ -91,7 +94,7 @@ pub async fn manager_add_playlist(
 
     // Return the playlist with counts (will be 0 entries at this point)
     let result = {
-        let conn = db.lock().map_err(|e| e.to_string())?;
+        let conn = crate::db::lock(&db)?;
         crate::db::monitored::get_monitored_playlists(&conn)
             .map_err(|e| e.to_string())?
             .into_iter()
@@ -105,7 +108,7 @@ pub async fn manager_add_playlist(
         .unwrap_or_else(|| "yt-dlp".to_string());
     let ffmpeg_dir = crate::download::setup::resolve_ffmpeg_dir(&bin_dir);
     let cookies_from_browser = {
-        let conn = db.lock().map_err(|e| e.to_string())?;
+        let conn = crate::db::lock(&db)?;
         crate::db::settings::get_cookies_browser(&conn)
     };
 
@@ -141,7 +144,7 @@ pub async fn manager_add_playlist(
 
             // Update playlist name if we got a real one
             if let Some(name) = fetch_result.playlist_title.as_ref().filter(|t| !t.is_empty()) {
-                let conn = db_clone.lock().map_err(|e| e.to_string())?;
+                let conn = crate::db::lock(&db_clone)?;
                 conn.execute(
                     "UPDATE playlists SET name = ?1 WHERE id = ?2",
                     rusqlite::params![name, playlist_id],
@@ -150,7 +153,7 @@ pub async fn manager_add_playlist(
 
             let entry_data = map_entries(&entries, "add");
             {
-                let conn = db_clone.lock().map_err(|e| e.to_string())?;
+                let conn = crate::db::lock(&db_clone)?;
                 crate::db::monitored::upsert_entries(&conn, playlist_id, &entry_data)
                     .map_err(|e| e.to_string())?;
             }
@@ -165,7 +168,7 @@ pub async fn manager_add_playlist(
             }
 
             // Get updated playlist with counts
-            let conn = db_clone.lock().map_err(|e| e.to_string())?;
+            let conn = crate::db::lock(&db_clone)?;
             let playlists = crate::db::monitored::get_monitored_playlists(&conn)
                 .map_err(|e| e.to_string())?;
             playlists
@@ -206,7 +209,7 @@ pub async fn manager_sync_playlist(
 ) -> Result<SyncResult, String> {
     // Get the playlist source URL and platform
     let (source_url, platform) = {
-        let conn = db.lock().map_err(|e| e.to_string())?;
+        let conn = crate::db::lock(&db)?;
         let playlist = crate::db::monitored::get_monitored_playlists(&conn)
             .map_err(|e| e.to_string())?
             .into_iter()
@@ -224,7 +227,7 @@ pub async fn manager_sync_playlist(
         .unwrap_or_else(|| "yt-dlp".to_string());
     let ffmpeg_dir = crate::download::setup::resolve_ffmpeg_dir(&bin_dir);
     let cookies_from_browser = {
-        let conn = db.lock().map_err(|e| e.to_string())?;
+        let conn = crate::db::lock(&db)?;
         crate::db::settings::get_cookies_browser(&conn)
     };
 
@@ -249,7 +252,7 @@ pub async fn manager_sync_playlist(
     let entry_data = map_entries(&fetch_result.entries, "sync");
 
     let (new_count, total_count) = {
-        let conn = db.lock().map_err(|e| e.to_string())?;
+        let conn = crate::db::lock(&db)?;
         crate::db::monitored::upsert_entries(&conn, playlist_id, &entry_data)
             .map_err(|e| e.to_string())?
     };
@@ -279,7 +282,7 @@ pub async fn manager_download_entry(
     format: Option<String>,
     quality: Option<String>,
 ) -> Result<Download, String> {
-    let conn = db.lock().map_err(|e| e.to_string())?;
+    let conn = crate::db::lock(&db)?;
 
     let entry = crate::db::monitored::get_entry(&conn, entry_id)
         .map_err(|e| e.to_string())?
@@ -362,7 +365,7 @@ pub async fn manager_download_new(
     format: Option<String>,
     quality: Option<String>,
 ) -> Result<BatchDownloadResult, String> {
-    let conn = db.lock().map_err(|e| e.to_string())?;
+    let conn = crate::db::lock(&db)?;
 
     let entries = crate::db::monitored::get_new_entries(&conn, playlist_id)
         .map_err(|e| e.to_string())?;
@@ -455,7 +458,7 @@ pub fn manager_skip_entry(
     db: State<'_, Arc<DbPool>>,
     entry_id: i64,
 ) -> Result<(), String> {
-    let conn = db.lock().map_err(|e| e.to_string())?;
+    let conn = crate::db::lock(&db)?;
     crate::db::monitored::skip_entry(&conn, entry_id).map_err(|e| e.to_string())
 }
 
@@ -467,7 +470,7 @@ pub async fn manager_cancel_entry(
     entry_id: i64,
 ) -> Result<(), String> {
     let download_id = {
-        let conn = db.lock().map_err(|e| e.to_string())?;
+        let conn = crate::db::lock(&db)?;
         let entry = crate::db::monitored::get_entry(&conn, entry_id)
             .map_err(|e| e.to_string())?
             .ok_or_else(|| "Entry not found".to_string())?;
@@ -480,7 +483,7 @@ pub async fn manager_cancel_entry(
     }
 
     // Reset entry back to "new"
-    let conn = db.lock().map_err(|e| e.to_string())?;
+    let conn = crate::db::lock(&db)?;
     crate::db::monitored::update_entry_status(&conn, entry_id, "new", None, None)
         .map_err(|e| e.to_string())
 }
@@ -493,7 +496,7 @@ pub async fn manager_cancel_all(
     playlist_id: i64,
 ) -> Result<i64, String> {
     let entries: Vec<(i64, Option<i64>)> = {
-        let conn = db.lock().map_err(|e| e.to_string())?;
+        let conn = crate::db::lock(&db)?;
         let mut stmt = conn.prepare(
             "SELECT id, download_id FROM monitored_playlist_entries
              WHERE playlist_id = ?1 AND status IN ('queued', 'downloading')"
@@ -516,7 +519,7 @@ pub async fn manager_cancel_all(
 
     // Reset all entries to "new"
     {
-        let conn = db.lock().map_err(|e| e.to_string())?;
+        let conn = crate::db::lock(&db)?;
         for (entry_id, _) in &entries {
             let _ = crate::db::monitored::update_entry_status(&conn, *entry_id, "new", None, None);
         }
@@ -534,7 +537,7 @@ pub async fn manager_remove_playlist(
 ) -> Result<(), String> {
     // Collect download IDs in a separate scope so the MutexGuard is dropped before .await
     let download_ids: Vec<i64> = {
-        let conn = db.lock().map_err(|e| e.to_string())?;
+        let conn = crate::db::lock(&db)?;
         let mut stmt = conn.prepare(
             "SELECT download_id FROM monitored_playlist_entries
              WHERE playlist_id = ?1 AND status IN ('queued', 'downloading') AND download_id IS NOT NULL"
@@ -548,7 +551,7 @@ pub async fn manager_remove_playlist(
     for id in download_ids {
         manager.cancel_download(id).await;
     }
-    let conn = db.lock().map_err(|e| e.to_string())?;
+    let conn = crate::db::lock(&db)?;
     crate::db::monitored::delete_monitored_playlist(&conn, playlist_id)
         .map_err(|e| e.to_string())
 }

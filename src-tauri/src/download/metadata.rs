@@ -1,11 +1,9 @@
 /// Platform-specific metadata extraction for DRM-protected services.
 /// These use public embed/oEmbed APIs that don't require authentication.
-
 use reqwest::Client;
 
 /// Extracted track metadata from any platform
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct TrackMetadata {
     pub title: String,
     pub artist: Option<String>,

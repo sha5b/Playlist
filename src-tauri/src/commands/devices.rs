@@ -23,7 +23,7 @@ pub struct ScannedDevice {
 pub async fn devices_scan(db: State<'_, Arc<DbPool>>) -> Result<Vec<ScannedDevice>, String> {
     let detected = detect::detect_devices().await?;
 
-    let conn = db.lock().map_err(|e| e.to_string())?;
+    let conn = crate::db::lock(&db)?;
     let known = db_devices::get_devices(&conn).map_err(|e| e.to_string())?;
 
     let mut result = Vec::new();
@@ -63,7 +63,7 @@ pub async fn devices_scan(db: State<'_, Arc<DbPool>>) -> Result<Vec<ScannedDevic
 
 #[tauri::command]
 pub fn devices_get_all(db: State<'_, Arc<DbPool>>) -> Result<Vec<db_devices::Device>, String> {
-    let conn = db.lock().map_err(|e| e.to_string())?;
+    let conn = crate::db::lock(&db)?;
     db_devices::get_devices(&conn).map_err(|e| e.to_string())
 }
 
@@ -72,7 +72,7 @@ pub fn devices_get_detail(
     db: State<'_, Arc<DbPool>>,
     device_id: i64,
 ) -> Result<db_devices::DeviceDetail, String> {
-    let conn = db.lock().map_err(|e| e.to_string())?;
+    let conn = crate::db::lock(&db)?;
     db_devices::get_device_detail(&conn, device_id).map_err(|e| e.to_string())
 }
 
@@ -85,7 +85,7 @@ pub fn devices_configure(
     output_bitrate: String,
     generate_m3u: bool,
 ) -> Result<(), String> {
-    let conn = db.lock().map_err(|e| e.to_string())?;
+    let conn = crate::db::lock(&db)?;
     db_devices::configure_device(&conn, device_id, &music_dir, &output_format, &output_bitrate, generate_m3u)
         .map_err(|e| e.to_string())
 }
@@ -96,7 +96,7 @@ pub fn devices_add_playlist(
     device_id: i64,
     playlist_id: i64,
 ) -> Result<(), String> {
-    let conn = db.lock().map_err(|e| e.to_string())?;
+    let conn = crate::db::lock(&db)?;
     db_devices::add_device_playlist(&conn, device_id, playlist_id).map_err(|e| e.to_string())
 }
 
@@ -106,7 +106,7 @@ pub fn devices_remove_playlist(
     device_id: i64,
     playlist_id: i64,
 ) -> Result<(), String> {
-    let conn = db.lock().map_err(|e| e.to_string())?;
+    let conn = crate::db::lock(&db)?;
     db_devices::remove_device_playlist(&conn, device_id, playlist_id).map_err(|e| e.to_string())
 }
 
@@ -136,6 +136,6 @@ pub fn devices_clear_history(
     db: State<'_, Arc<DbPool>>,
     device_id: i64,
 ) -> Result<i64, String> {
-    let conn = db.lock().map_err(|e| e.to_string())?;
+    let conn = crate::db::lock(&db)?;
     db_devices::clear_device_sync_history(&conn, device_id).map_err(|e| e.to_string())
 }

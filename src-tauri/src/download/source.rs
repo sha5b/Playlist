@@ -89,7 +89,7 @@ impl SourceRegistry {
     pub fn from_settings(db: &Arc<DbPool>) -> Self {
         let mut sources: Vec<Box<dyn AudioSource>> = Vec::new();
 
-        let conn = match db.lock() {
+        let conn = match crate::db::lock(db) {
             Ok(c) => c,
             Err(_) => return Self { sources },
         };
@@ -114,7 +114,7 @@ impl SourceRegistry {
 
     /// Get status of all known sources (configured or not)
     pub fn get_statuses(&self, db: &Arc<DbPool>) -> Vec<SourceStatus> {
-        let conn = match db.lock() {
+        let conn = match crate::db::lock(db) {
             Ok(c) => c,
             Err(_) => return Vec::new(),
         };

@@ -35,7 +35,7 @@ pub async fn sync_playlist_to_device(
 ) -> Result<DeviceSyncResult, String> {
     // Get device config
     let (device, tracks_to_sync) = {
-        let conn = db.lock().map_err(|e| e.to_string())?;
+        let conn = crate::db::lock(&db)?;
         let device = db_devices::get_device_by_id(&conn, device_id)
             .map_err(|e| format!("Device not found: {}", e))?;
         let tracks = db_devices::get_unsynced_tracks(&conn, device_id, playlist_id)
@@ -129,7 +129,7 @@ pub async fn sync_playlist_to_device(
 
         match result {
             Ok(()) => {
-                let conn = db.lock().map_err(|e| e.to_string())?;
+                let conn = crate::db::lock(&db)?;
                 let _ = db_devices::record_synced_track(
                     &conn,
                     device_id,
@@ -152,7 +152,7 @@ pub async fn sync_playlist_to_device(
     if device.generate_m3u {
         emit_progress(&app_handle, device_id, playlist_id, total, total, "", "generating_playlist", None);
 
-        let conn = db.lock().map_err(|e| e.to_string())?;
+        let conn = crate::db::lock(&db)?;
         if let Err(e) = generate_m3u(&conn, device_id, playlist_id, &music_dir) {
             log::error!("Failed to generate M3U: {}", e);
         }
@@ -160,7 +160,7 @@ pub async fn sync_playlist_to_device(
 
     // Update sync timestamp
     {
-        let conn = db.lock().map_err(|e| e.to_string())?;
+        let conn = crate::db::lock(&db)?;
         let _ = db_devices::update_playlist_sync_time(&conn, device_id, playlist_id);
     }
 
@@ -291,6 +291,7 @@ fn generate_m3u(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn emit_progress(
     app_handle: &AppHandle,
     device_id: i64,

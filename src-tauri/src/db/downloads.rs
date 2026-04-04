@@ -36,6 +36,7 @@ const SELECT_COLS: &str = "id, url, title, artist, platform, status, progress, e
     target_album_id, target_artist_id, target_isrc, target_disc_number, target_track_number, target_duration_ms,
     target_album_name, target_recording_mbid";
 
+#[allow(clippy::too_many_arguments)]
 pub fn create_download(
     conn: &Connection,
     url: &str,
@@ -65,12 +66,10 @@ pub fn create_download(
 pub fn get_download(conn: &Connection, id: i64) -> Result<Option<Download>, rusqlite::Error> {
     let sql = format!("SELECT {} FROM downloads WHERE id = ?1", SELECT_COLS);
     let mut stmt = conn.prepare(&sql)?;
-    let mut rows = stmt.query_map(params![id], row_to_download)?;
-    match rows.next() {
-        Some(Ok(d)) => Ok(Some(d)),
-        Some(Err(e)) => Err(e),
-        None => Ok(None),
-    }
+    let result = stmt.query_map(params![id], row_to_download)?
+        .next()
+        .transpose();
+    result
 }
 
 pub fn get_active_downloads(conn: &Connection) -> Result<Vec<Download>, rusqlite::Error> {

@@ -32,7 +32,7 @@ pub async fn enrich_track(
 ) -> Result<EnrichResult, String> {
     // Get track info for MusicBrainz search
     let (title, artist_name, duration_ms, has_lyrics, has_mv) = {
-        let conn = db.lock().map_err(|e| e.to_string())?;
+        let conn = crate::db::lock(&db)?;
         let track = crate::db::tracks::get_track(&conn, track_id)
             .map_err(|e| e.to_string())?
             .ok_or_else(|| "Track not found".to_string())?;
@@ -50,152 +50,85 @@ pub async fn enrich_track(
     // Apply enrichment to DB (only fill missing fields) — scoped to drop conn before async work
     let mut updated = 0i64;
     if let Some(ref enrichment) = enrichment {
-    let conn = db.lock().map_err(|e| e.to_string())?;
+        let conn = crate::db::lock(&db)?;
 
-    macro_rules! update_if_missing {
-        ($col:expr, $val:expr) => {
-            if let Some(ref v) = $val {
-                let changed = match conn.execute(
-                    &format!("UPDATE tracks SET {} = ?1 WHERE id = ?2 AND ({} IS NULL OR {} = '')", $col, $col, $col),
-                    rusqlite::params![v, track_id],
-                ) {
-                    Ok(n) => n,
-                    Err(e) => { log::warn!("Failed to update {} for track {}: {}", $col, track_id, e); 0 }
-                };
-                updated += changed as i64;
+        // Fill missing track fields from MusicBrainz
+        let track_fields: &[(&str, &Option<String>)] = &[
+            ("musicbrainz_id", &enrichment.musicbrainz_id),
+            ("genre", &enrichment.genre),
+            ("release_date", &enrichment.release_date),
+            ("isrc", &enrichment.isrc),
+            ("description", &enrichment.description),
+            ("label", &enrichment.label),
+            ("language", &enrichment.language),
+            ("composer", &enrichment.composer),
+        ];
+        for &(col, val) in track_fields {
+            if let Some(ref v) = val {
+                updated += crate::db::update_field_if_missing(&conn, "tracks", col, track_id, v);
             }
-        };
-    }
+        }
 
-    update_if_missing!("musicbrainz_id", enrichment.musicbrainz_id);
-    update_if_missing!("genre", enrichment.genre);
-    update_if_missing!("release_date", enrichment.release_date);
-    update_if_missing!("isrc", enrichment.isrc);
-    update_if_missing!("description", enrichment.description);
-    update_if_missing!("label", enrichment.label);
-    update_if_missing!("language", enrichment.language);
-    update_if_missing!("composer", enrichment.composer);
+        // Populate track year from release_date if missing
+        if let Some(ref rd) = enrichment.release_date {
+            if rd.len() >= 4 {
+                if let Ok(year) = rd[..4].parse::<i64>() {
+                    let _ = conn.execute(
+                        "UPDATE tracks SET year = ?1 WHERE id = ?2 AND year IS NULL",
+                        rusqlite::params![year, track_id],
+                    );
+                }
+            }
+        }
 
-    // Populate track year from release_date if missing
-    if let Some(ref rd) = enrichment.release_date {
-        if rd.len() >= 4 {
-            if let Ok(year) = rd[..4].parse::<i64>() {
-                let _ = conn.execute(
-                    "UPDATE tracks SET year = ?1 WHERE id = ?2 AND year IS NULL",
-                    rusqlite::params![year, track_id],
+        // Merge MusicBrainz tags with existing tags
+        if let Some(ref new_tags) = enrichment.tags {
+            updated += crate::db::merge_tags(&conn, track_id, new_tags);
+        }
+
+        // Update artist info if we have MusicBrainz data
+        if enrichment.artist_musicbrainz_id.is_some() {
+            let artist_id: Option<i64> = conn.query_row(
+                "SELECT artist_id FROM tracks WHERE id = ?1",
+                rusqlite::params![track_id],
+                |row| row.get(0),
+            ).ok();
+            if let Some(aid) = artist_id {
+                crate::db::apply_artist_enrichment(
+                    &conn, aid,
+                    enrichment.artist_musicbrainz_id.as_deref(),
+                    enrichment.artist_sort_name.as_deref(),
+                    enrichment.artist_type.as_deref(),
+                    enrichment.artist_country.as_deref(),
+                    enrichment.artist_begin_year,
+                    enrichment.artist_website_url.as_deref(),
                 );
             }
         }
-    }
 
-    // Merge MusicBrainz tags with existing tags
-    if let Some(ref new_tags) = enrichment.tags {
-        let existing_json: Option<String> = conn.query_row(
-            "SELECT tags FROM tracks WHERE id = ?1",
-            rusqlite::params![track_id],
-            |row| row.get(0),
-        ).ok().flatten();
-        let mut all_tags: Vec<String> = existing_json
-            .and_then(|j| serde_json::from_str::<Vec<String>>(&j).ok())
-            .unwrap_or_default();
-        for tag in new_tags {
-            let lower = tag.to_lowercase();
-            if !all_tags.iter().any(|t| t.to_lowercase() == lower) {
-                all_tags.push(tag.clone());
+        // Update album info
+        if let Some(ref mb_album_id) = enrichment.album_musicbrainz_id {
+            let album_id: Option<i64> = conn.query_row(
+                "SELECT album_id FROM tracks WHERE id = ?1",
+                rusqlite::params![track_id],
+                |row| row.get(0),
+            ).ok().flatten();
+            if let Some(aid) = album_id {
+                for &(col, val) in &[
+                    ("musicbrainz_id", Some(mb_album_id.as_str())),
+                    ("release_date", enrichment.album_release_date.as_deref()),
+                    ("album_type", enrichment.album_type.as_deref()),
+                    ("purchase_url", enrichment.album_purchase_url.as_deref()),
+                ] {
+                    if let Some(v) = val {
+                        crate::db::update_field_if_missing(&conn, "albums", col, aid, &v);
+                    }
+                }
             }
         }
-        if !all_tags.is_empty() {
-            if let Ok(json) = serde_json::to_string(&all_tags) {
-                let changed = conn.execute(
-                    "UPDATE tracks SET tags = ?1 WHERE id = ?2",
-                    rusqlite::params![json, track_id],
-                ).unwrap_or(0);
-                updated += changed as i64;
-            }
-        }
-    }
 
-    // Update artist info if we have MusicBrainz data
-    if let Some(ref mb_artist_id) = enrichment.artist_musicbrainz_id {
-        // Get the track's artist_id
-        let artist_id: Option<i64> = conn.query_row(
-            "SELECT artist_id FROM tracks WHERE id = ?1",
-            rusqlite::params![track_id],
-            |row| row.get(0),
-        ).ok();
-        if let Some(aid) = artist_id {
-            let _ = conn.execute(
-                "UPDATE artists SET musicbrainz_id = ?1 WHERE id = ?2 AND musicbrainz_id IS NULL",
-                rusqlite::params![mb_artist_id, aid],
-            );
-            if let Some(ref sn) = enrichment.artist_sort_name {
-                let _ = conn.execute(
-                    "UPDATE artists SET sort_name = ?1 WHERE id = ?2 AND sort_name IS NULL",
-                    rusqlite::params![sn, aid],
-                );
-            }
-            if let Some(ref at) = enrichment.artist_type {
-                let _ = conn.execute(
-                    "UPDATE artists SET artist_type = ?1 WHERE id = ?2 AND artist_type IS NULL",
-                    rusqlite::params![at, aid],
-                );
-            }
-            if let Some(ref c) = enrichment.artist_country {
-                let _ = conn.execute(
-                    "UPDATE artists SET country = ?1 WHERE id = ?2 AND country IS NULL",
-                    rusqlite::params![c, aid],
-                );
-            }
-            if let Some(by) = enrichment.artist_begin_year {
-                let _ = conn.execute(
-                    "UPDATE artists SET begin_year = ?1 WHERE id = ?2 AND begin_year IS NULL",
-                    rusqlite::params![by, aid],
-                );
-            }
-            if let Some(ref url) = enrichment.artist_website_url {
-                let _ = conn.execute(
-                    "UPDATE artists SET website_url = ?1 WHERE id = ?2 AND website_url IS NULL",
-                    rusqlite::params![url, aid],
-                );
-            }
-        }
-    }
-
-    // Update album info
-    if let Some(ref mb_album_id) = enrichment.album_musicbrainz_id {
-        let album_id: Option<i64> = conn.query_row(
-            "SELECT album_id FROM tracks WHERE id = ?1",
-            rusqlite::params![track_id],
-            |row| row.get(0),
-        ).ok().flatten();
-        if let Some(aid) = album_id {
-            let _ = conn.execute(
-                "UPDATE albums SET musicbrainz_id = ?1 WHERE id = ?2 AND musicbrainz_id IS NULL",
-                rusqlite::params![mb_album_id, aid],
-            );
-            if let Some(ref rd) = enrichment.album_release_date {
-                let _ = conn.execute(
-                    "UPDATE albums SET release_date = ?1 WHERE id = ?2 AND release_date IS NULL",
-                    rusqlite::params![rd, aid],
-                );
-            }
-            if let Some(ref at) = enrichment.album_type {
-                let _ = conn.execute(
-                    "UPDATE albums SET album_type = ?1 WHERE id = ?2 AND album_type IS NULL",
-                    rusqlite::params![at, aid],
-                );
-            }
-            if let Some(ref url) = enrichment.album_purchase_url {
-                let _ = conn.execute(
-                    "UPDATE albums SET purchase_url = ?1 WHERE id = ?2 AND purchase_url IS NULL",
-                    rusqlite::params![url, aid],
-                );
-            }
-        }
-    }
-
-    // Release DB lock before async lyrics/MV fetches
-    let _ = crate::db::tracks::update_fts(&conn, track_id);
+        // Release DB lock before async lyrics/MV fetches
+        let _ = crate::db::tracks::update_fts(&conn, track_id);
     } // conn dropped here (enrichment block)
 
     // Fetch lyrics if missing
@@ -250,7 +183,7 @@ pub async fn enrich_track(
             // Auto-download music video if setting is enabled
             let auto_dl = db.lock().ok()
                 .and_then(|conn| crate::db::settings::get_setting(&conn, "auto_download_music_videos").ok().flatten())
-                .map_or(false, |v| v == "true");
+                .is_some_and(|v| v == "true");
             if auto_dl {
                 let mv_dir = app_handle.path().app_data_dir()
                     .ok()
@@ -285,7 +218,7 @@ pub async fn enrich_track(
         }
     }
 
-    let conn = db.lock().map_err(|e| e.to_string())?;
+    let conn = crate::db::lock(&db)?;
     let completeness = crate::db::tracks::update_completeness(&conn, track_id)
         .map_err(|e| e.to_string())?;
 
@@ -309,7 +242,7 @@ pub async fn enrich_album(
 ) -> Result<EnrichAlbumResult, String> {
     // Get album info for search
     let (title, artist_name, existing_cover, existing_description, existing_genre) = {
-        let conn = db.lock().map_err(|e| e.to_string())?;
+        let conn = crate::db::lock(&db)?;
         let album = crate::db::albums::get_album(&conn, album_id)
             .map_err(|e| e.to_string())?
             .ok_or_else(|| "Album not found".to_string())?;
@@ -335,25 +268,21 @@ pub async fn enrich_album(
 
     // Apply all DB updates in a block so conn is dropped before async cover art download
     let (mut updated, artist_id) = {
-        let conn = db.lock().map_err(|e| e.to_string())?;
+        let conn = crate::db::lock(&db)?;
         let mut updated = 0i64;
 
-        macro_rules! update_album_if_missing {
-            ($col:expr, $val:expr) => {
-                if let Some(ref v) = $val {
-                    let changed = conn.execute(
-                        &format!("UPDATE albums SET {} = ?1 WHERE id = ?2 AND ({} IS NULL OR {} = '')", $col, $col, $col),
-                        rusqlite::params![v, album_id],
-                    ).unwrap_or(0);
-                    updated += changed as i64;
-                }
-            };
+        // Fill missing album fields
+        let album_fields: &[(&str, &Option<String>)] = &[
+            ("musicbrainz_id", &enrichment.musicbrainz_id),
+            ("release_date", &enrichment.release_date),
+            ("label", &enrichment.label),
+            ("album_type", &enrichment.album_type),
+        ];
+        for &(col, val) in album_fields {
+            if let Some(ref v) = val {
+                updated += crate::db::update_field_if_missing(&conn, "albums", col, album_id, v);
+            }
         }
-
-        update_album_if_missing!("musicbrainz_id", enrichment.musicbrainz_id);
-        update_album_if_missing!("release_date", enrichment.release_date);
-        update_album_if_missing!("label", enrichment.label);
-        update_album_if_missing!("album_type", enrichment.album_type);
 
         // Genre: prefer Last.fm tags (joined), fallback to MusicBrainz
         if existing_genre.is_none() {
@@ -361,29 +290,30 @@ pub async fn enrich_album(
                 .filter(|d| !d.tags.is_empty())
                 .map(|d| d.tags.join(", "))
                 .or(enrichment.genre.clone());
-            update_album_if_missing!("genre", genre);
+            if let Some(ref v) = genre {
+                updated += crate::db::update_field_if_missing(&conn, "albums", "genre", album_id, v);
+            }
         }
 
         // Description: prefer Last.fm wiki
         if existing_description.is_none() {
-            let desc = lastfm_data.as_ref()
-                .and_then(|d| d.description.clone());
-            update_album_if_missing!("description", desc);
+            let desc = lastfm_data.as_ref().and_then(|d| d.description.clone());
+            if let Some(ref v) = desc {
+                updated += crate::db::update_field_if_missing(&conn, "albums", "description", album_id, v);
+            }
         }
 
         if let Some(tt) = enrichment.total_tracks {
-            let changed = conn.execute(
+            updated += conn.execute(
                 "UPDATE albums SET total_tracks = ?1 WHERE id = ?2 AND total_tracks IS NULL",
                 rusqlite::params![tt, album_id],
-            ).unwrap_or(0);
-            updated += changed as i64;
+            ).unwrap_or(0) as i64;
         }
         if let Some(td) = enrichment.total_discs {
-            let changed = conn.execute(
+            updated += conn.execute(
                 "UPDATE albums SET total_discs = ?1 WHERE id = ?2 AND total_discs IS NULL",
                 rusqlite::params![td, album_id],
-            ).unwrap_or(0);
-            updated += changed as i64;
+            ).unwrap_or(0) as i64;
         }
 
         // Update artist info
@@ -394,17 +324,19 @@ pub async fn enrich_album(
         ).ok().flatten();
 
         if let Some(aid) = artist_id {
-            if let Some(ref mb_artist_id) = enrichment.artist_musicbrainz_id {
-                let _ = conn.execute("UPDATE artists SET musicbrainz_id = ?1 WHERE id = ?2 AND musicbrainz_id IS NULL", rusqlite::params![mb_artist_id, aid]);
-                if let Some(ref v) = enrichment.artist_sort_name { let _ = conn.execute("UPDATE artists SET sort_name = ?1 WHERE id = ?2 AND sort_name IS NULL", rusqlite::params![v, aid]); }
-                if let Some(ref v) = enrichment.artist_type { let _ = conn.execute("UPDATE artists SET artist_type = ?1 WHERE id = ?2 AND artist_type IS NULL", rusqlite::params![v, aid]); }
-                if let Some(ref v) = enrichment.artist_country { let _ = conn.execute("UPDATE artists SET country = ?1 WHERE id = ?2 AND country IS NULL", rusqlite::params![v, aid]); }
-                if let Some(v) = enrichment.artist_begin_year { let _ = conn.execute("UPDATE artists SET begin_year = ?1 WHERE id = ?2 AND begin_year IS NULL", rusqlite::params![v, aid]); }
-            }
+            crate::db::apply_artist_enrichment(
+                &conn, aid,
+                enrichment.artist_musicbrainz_id.as_deref(),
+                enrichment.artist_sort_name.as_deref(),
+                enrichment.artist_type.as_deref(),
+                enrichment.artist_country.as_deref(),
+                enrichment.artist_begin_year,
+                None,
+            );
             // Artist bio from Last.fm
             if let Some(ref lfm_artist) = lastfm_artist {
                 if let Some(ref bio) = lfm_artist.bio {
-                    let _ = conn.execute("UPDATE artists SET bio = ?1 WHERE id = ?2 AND (bio IS NULL OR bio = '')", rusqlite::params![bio, aid]);
+                    crate::db::update_field_if_missing(&conn, "artists", "bio", aid, bio);
                 }
             }
         }
@@ -475,7 +407,7 @@ pub async fn enrich_album(
                     }
                 }
                 if let Some(bytes) = artist_img_bytes {
-                    if let Some(covers_dir) = app_handle.path().app_data_dir().map(|d| d.join("covers")).ok() {
+                    if let Ok(covers_dir) = app_handle.path().app_data_dir().map(|d| d.join("covers")) {
                         let filename = format!("artist_{}.jpg", aid);
                         let path = covers_dir.join(&filename);
                         if std::fs::write(&path, &bytes).is_ok() {
@@ -522,7 +454,7 @@ pub async fn scan_missing_metadata(
     // because that would prevent re-enrichment after metadata deletion.
     // Tracks at 0% are explicitly marked for enrichment (e.g., after deletion).
     let tracks_to_enrich: Vec<(i64, String, Option<String>)> = {
-        let conn = db.lock().map_err(|e| e.to_string())?;
+        let conn = crate::db::lock(&db)?;
         let mut stmt = conn.prepare(
             "SELECT t.id, t.title, a.name
              FROM tracks t
@@ -589,58 +521,42 @@ pub async fn scan_missing_metadata(
             Ok(enrichment) => {
                 // Apply MusicBrainz enrichment (lock scope limited to avoid holding across await)
                 if let Ok(conn) = db.lock() {
-                    macro_rules! update_if_missing {
-                        ($col:expr, $val:expr) => {
-                            if let Some(ref v) = $val {
-                                let _ = conn.execute(
-                                    &format!("UPDATE tracks SET {} = ?1 WHERE id = ?2 AND ({} IS NULL OR {} = '')", $col, $col, $col),
-                                    rusqlite::params![v, track_id],
-                                );
-                            }
-                        };
+                    let track_fields: &[(&str, &Option<String>)] = &[
+                        ("musicbrainz_id", &enrichment.musicbrainz_id),
+                        ("genre", &enrichment.genre),
+                        ("release_date", &enrichment.release_date),
+                        ("isrc", &enrichment.isrc),
+                        ("description", &enrichment.description),
+                        ("label", &enrichment.label),
+                        ("language", &enrichment.language),
+                    ];
+                    for &(col, val) in track_fields {
+                        if let Some(ref v) = val {
+                            crate::db::update_field_if_missing(&conn, "tracks", col, *track_id, v);
+                        }
                     }
-                    update_if_missing!("musicbrainz_id", enrichment.musicbrainz_id);
-                    update_if_missing!("genre", enrichment.genre);
-                    update_if_missing!("release_date", enrichment.release_date);
-                    update_if_missing!("isrc", enrichment.isrc);
-                    update_if_missing!("description", enrichment.description);
-                    update_if_missing!("label", enrichment.label);
-                    update_if_missing!("language", enrichment.language);
 
-                    // Merge MusicBrainz tags
                     if let Some(ref new_tags) = enrichment.tags {
-                        let existing_json: Option<String> = conn.query_row(
-                            "SELECT tags FROM tracks WHERE id = ?1",
-                            rusqlite::params![track_id],
-                            |row| row.get(0),
-                        ).ok().flatten();
-                        let mut all_tags: Vec<String> = existing_json
-                            .and_then(|j| serde_json::from_str::<Vec<String>>(&j).ok())
-                            .unwrap_or_default();
-                        for tag in new_tags {
-                            let lower = tag.to_lowercase();
-                            if !all_tags.iter().any(|t| t.to_lowercase() == lower) {
-                                all_tags.push(tag.clone());
-                            }
-                        }
-                        if let Ok(json) = serde_json::to_string(&all_tags) {
-                            let _ = conn.execute("UPDATE tracks SET tags = ?1 WHERE id = ?2", rusqlite::params![json, track_id]);
-                        }
+                        crate::db::merge_tags(&conn, *track_id, new_tags);
                     }
 
                     // Update artist
-                    if let Some(ref mb_id) = enrichment.artist_musicbrainz_id {
+                    if enrichment.artist_musicbrainz_id.is_some() {
                         let artist_id: Option<i64> = conn.query_row(
                             "SELECT artist_id FROM tracks WHERE id = ?1",
                             rusqlite::params![track_id],
                             |row| row.get(0),
                         ).ok();
                         if let Some(aid) = artist_id {
-                            let _ = conn.execute("UPDATE artists SET musicbrainz_id = ?1 WHERE id = ?2 AND musicbrainz_id IS NULL", rusqlite::params![mb_id, aid]);
-                            if let Some(ref v) = enrichment.artist_sort_name { let _ = conn.execute("UPDATE artists SET sort_name = ?1 WHERE id = ?2 AND sort_name IS NULL", rusqlite::params![v, aid]); }
-                            if let Some(ref v) = enrichment.artist_type { let _ = conn.execute("UPDATE artists SET artist_type = ?1 WHERE id = ?2 AND artist_type IS NULL", rusqlite::params![v, aid]); }
-                            if let Some(ref v) = enrichment.artist_country { let _ = conn.execute("UPDATE artists SET country = ?1 WHERE id = ?2 AND country IS NULL", rusqlite::params![v, aid]); }
-                            if let Some(v) = enrichment.artist_begin_year { let _ = conn.execute("UPDATE artists SET begin_year = ?1 WHERE id = ?2 AND begin_year IS NULL", rusqlite::params![v, aid]); }
+                            crate::db::apply_artist_enrichment(
+                                &conn, aid,
+                                enrichment.artist_musicbrainz_id.as_deref(),
+                                enrichment.artist_sort_name.as_deref(),
+                                enrichment.artist_type.as_deref(),
+                                enrichment.artist_country.as_deref(),
+                                enrichment.artist_begin_year,
+                                None,
+                            );
                         }
                     }
                 } // conn dropped here before await
@@ -648,25 +564,13 @@ pub async fn scan_missing_metadata(
                 // Also try Last.fm for supplementary genre/description if MusicBrainz didn't provide them
                 if !METADATA_SCAN_CANCELLED.load(Ordering::Relaxed) {
                     if let Ok(lastfm_data) = crate::metadata::lastfm::get_track_info(title, artist_for_lastfm).await {
-                        if !lastfm_data.tags.is_empty() || lastfm_data.description.is_some() {
-                            if let Ok(conn) = db.lock() {
-                                macro_rules! update_if_missing {
-                                    ($col:expr, $val:expr) => {
-                                        if let Some(ref v) = $val {
-                                            let _ = conn.execute(
-                                                &format!("UPDATE tracks SET {} = ?1 WHERE id = ?2 AND ({} IS NULL OR {} = '')", $col, $col, $col),
-                                                rusqlite::params![v, track_id],
-                                            );
-                                        }
-                                    };
-                                }
-                                if !lastfm_data.tags.is_empty() {
-                                    let genre_val: Option<String> = Some(lastfm_data.tags.iter().take(3).cloned().collect::<Vec<_>>().join(", "));
-                                    update_if_missing!("genre", genre_val);
-                                }
-                                if lastfm_data.description.is_some() {
-                                    update_if_missing!("description", lastfm_data.description);
-                                }
+                        if let Ok(conn) = db.lock() {
+                            if !lastfm_data.tags.is_empty() {
+                                let genre_val = lastfm_data.tags.iter().take(3).cloned().collect::<Vec<_>>().join(", ");
+                                crate::db::update_field_if_missing(&conn, "tracks", "genre", *track_id, &genre_val);
+                            }
+                            if let Some(ref desc) = lastfm_data.description {
+                                crate::db::update_field_if_missing(&conn, "tracks", "description", *track_id, desc);
                             }
                         }
                     }
@@ -720,23 +624,12 @@ pub async fn scan_missing_metadata(
 
                         if has_genre || has_desc {
                             if let Ok(conn) = db.lock() {
-                                macro_rules! update_if_missing {
-                                    ($col:expr, $val:expr) => {
-                                        if let Some(ref v) = $val {
-                                            let _ = conn.execute(
-                                                &format!("UPDATE tracks SET {} = ?1 WHERE id = ?2 AND ({} IS NULL OR {} = '')", $col, $col, $col),
-                                                rusqlite::params![v, track_id],
-                                            );
-                                        }
-                                    };
-                                }
-
                                 if has_genre {
-                                    let genre_val: Option<String> = Some(lastfm_data.tags.iter().take(3).cloned().collect::<Vec<_>>().join(", "));
-                                    update_if_missing!("genre", genre_val);
+                                    let genre_val = lastfm_data.tags.iter().take(3).cloned().collect::<Vec<_>>().join(", ");
+                                    crate::db::update_field_if_missing(&conn, "tracks", "genre", *track_id, &genre_val);
                                 }
-                                if has_desc {
-                                    update_if_missing!("description", lastfm_data.description);
+                                if let Some(ref desc) = lastfm_data.description {
+                                    crate::db::update_field_if_missing(&conn, "tracks", "description", *track_id, desc);
                                 }
 
                                 let _ = crate::db::tracks::update_completeness(&conn, *track_id);
@@ -790,7 +683,7 @@ pub async fn scan_missing_metadata(
 
     // Compute average completeness
     let completeness_avg = {
-        let conn = db.lock().map_err(|e| e.to_string())?;
+        let conn = crate::db::lock(&db)?;
         conn.query_row(
             "SELECT COALESCE(AVG(metadata_completeness), 0) FROM tracks",
             [],
@@ -888,7 +781,7 @@ pub async fn auto_enrich_library(
         }));
 
         // MusicBrainz album enrichment
-        let enrichment = match crate::metadata::musicbrainz::enrich_album(&title, artist_name.as_deref()).await {
+        let enrichment = match crate::metadata::musicbrainz::enrich_album(title, artist_name.as_deref()).await {
             Ok(e) => e,
             Err(e) => {
                 log::warn!("Failed to enrich album '{}': {}", title, e);
@@ -906,38 +799,37 @@ pub async fn auto_enrich_library(
 
         // Last.fm album data
         let lastfm_data = if let Some(ref artist) = artist_name {
-            crate::metadata::lastfm::get_album_info(&title, artist).await.ok()
+            crate::metadata::lastfm::get_album_info(title, artist).await.ok()
         } else {
             None
         };
 
         if let Ok(conn) = db.lock() {
-            macro_rules! update_album {
-                ($col:expr, $val:expr) => {
-                    if let Some(ref v) = $val {
-                        let _ = conn.execute(
-                            &format!("UPDATE albums SET {} = ?1 WHERE id = ?2 AND ({} IS NULL OR {} = '')", $col, $col, $col),
-                            rusqlite::params![v, album_id],
-                        );
-                    }
-                };
+            let album_fields: &[(&str, &Option<String>)] = &[
+                ("musicbrainz_id", &enrichment.musicbrainz_id),
+                ("release_date", &enrichment.release_date),
+                ("label", &enrichment.label),
+                ("album_type", &enrichment.album_type),
+            ];
+            for &(col, val) in album_fields {
+                if let Some(ref v) = val {
+                    crate::db::update_field_if_missing(&conn, "albums", col, *album_id, v);
+                }
             }
-
-            update_album!("musicbrainz_id", enrichment.musicbrainz_id);
-            update_album!("release_date", enrichment.release_date);
-            update_album!("label", enrichment.label);
-            update_album!("album_type", enrichment.album_type);
 
             // Genre: prefer Last.fm tags
             let genre = lastfm_data.as_ref()
                 .filter(|d| !d.tags.is_empty())
                 .map(|d| d.tags.join(", "))
                 .or(enrichment.genre.clone());
-            update_album!("genre", genre);
+            if let Some(ref v) = genre {
+                crate::db::update_field_if_missing(&conn, "albums", "genre", *album_id, v);
+            }
 
             // Description from Last.fm
-            let desc = lastfm_data.as_ref().and_then(|d| d.description.clone());
-            update_album!("description", desc);
+            if let Some(ref desc) = lastfm_data.as_ref().and_then(|d| d.description.clone()) {
+                crate::db::update_field_if_missing(&conn, "albums", "description", *album_id, desc);
+            }
 
             if let Some(tt) = enrichment.total_tracks {
                 let _ = conn.execute("UPDATE albums SET total_tracks = ?1 WHERE id = ?2 AND total_tracks IS NULL", rusqlite::params![tt, album_id]);
@@ -961,13 +853,15 @@ pub async fn auto_enrich_library(
                 "SELECT artist_id FROM albums WHERE id = ?1", rusqlite::params![album_id], |row| row.get(0),
             ).ok().flatten();
             if let Some(aid) = artist_id {
-                if let Some(ref mb_id) = enrichment.artist_musicbrainz_id {
-                    let _ = conn.execute("UPDATE artists SET musicbrainz_id = ?1 WHERE id = ?2 AND musicbrainz_id IS NULL", rusqlite::params![mb_id, aid]);
-                }
-                if let Some(ref v) = enrichment.artist_sort_name { let _ = conn.execute("UPDATE artists SET sort_name = ?1 WHERE id = ?2 AND sort_name IS NULL", rusqlite::params![v, aid]); }
-                if let Some(ref v) = enrichment.artist_type { let _ = conn.execute("UPDATE artists SET artist_type = ?1 WHERE id = ?2 AND artist_type IS NULL", rusqlite::params![v, aid]); }
-                if let Some(ref v) = enrichment.artist_country { let _ = conn.execute("UPDATE artists SET country = ?1 WHERE id = ?2 AND country IS NULL", rusqlite::params![v, aid]); }
-                if let Some(v) = enrichment.artist_begin_year { let _ = conn.execute("UPDATE artists SET begin_year = ?1 WHERE id = ?2 AND begin_year IS NULL", rusqlite::params![v, aid]); }
+                crate::db::apply_artist_enrichment(
+                    &conn, aid,
+                    enrichment.artist_musicbrainz_id.as_deref(),
+                    enrichment.artist_sort_name.as_deref(),
+                    enrichment.artist_type.as_deref(),
+                    enrichment.artist_country.as_deref(),
+                    enrichment.artist_begin_year,
+                    None,
+                );
             }
         }
 
@@ -1129,67 +1023,41 @@ pub async fn auto_enrich_library(
         }));
 
         // MusicBrainz track enrichment
-        match crate::metadata::musicbrainz::enrich_track(&title, artist_name.as_deref()).await {
+        match crate::metadata::musicbrainz::enrich_track(title, artist_name.as_deref()).await {
             Ok(enrichment) => {
                 // Apply MusicBrainz data
                 if let Ok(conn) = db.lock() {
-                    macro_rules! update_track {
-                        ($col:expr, $val:expr) => {
-                            if let Some(ref v) = $val {
-                                let _ = conn.execute(
-                                    &format!("UPDATE tracks SET {} = ?1 WHERE id = ?2 AND ({} IS NULL OR {} = '')", $col, $col, $col),
-                                    rusqlite::params![v, track_id],
-                                );
-                            }
-                        };
+                    let track_fields: &[(&str, &Option<String>)] = &[
+                        ("musicbrainz_id", &enrichment.musicbrainz_id),
+                        ("genre", &enrichment.genre),
+                        ("release_date", &enrichment.release_date),
+                        ("isrc", &enrichment.isrc),
+                        ("description", &enrichment.description),
+                        ("label", &enrichment.label),
+                        ("language", &enrichment.language),
+                    ];
+                    for &(col, val) in track_fields {
+                        if let Some(ref v) = val {
+                            crate::db::update_field_if_missing(&conn, "tracks", col, *track_id, v);
+                        }
                     }
-                    update_track!("musicbrainz_id", enrichment.musicbrainz_id);
-                    update_track!("genre", enrichment.genre);
-                    update_track!("release_date", enrichment.release_date);
-                    update_track!("isrc", enrichment.isrc);
-                    update_track!("description", enrichment.description);
-                    update_track!("label", enrichment.label);
-                    update_track!("language", enrichment.language);
 
-                    // Merge tags
                     if let Some(ref new_tags) = enrichment.tags {
-                        let existing_json: Option<String> = conn.query_row(
-                            "SELECT tags FROM tracks WHERE id = ?1",
-                            rusqlite::params![track_id],
-                            |row| row.get(0),
-                        ).ok().flatten();
-                        let mut all_tags: Vec<String> = existing_json
-                            .and_then(|j| serde_json::from_str::<Vec<String>>(&j).ok())
-                            .unwrap_or_default();
-                        for tag in new_tags {
-                            let lower = tag.to_lowercase();
-                            if !all_tags.iter().any(|t| t.to_lowercase() == lower) {
-                                all_tags.push(tag.clone());
-                            }
-                        }
-                        if let Ok(json) = serde_json::to_string(&all_tags) {
-                            let _ = conn.execute("UPDATE tracks SET tags = ?1 WHERE id = ?2", rusqlite::params![json, track_id]);
-                        }
+                        crate::db::merge_tags(&conn, *track_id, new_tags);
                     }
                 }
                 // conn is dropped here
 
                 // Also enrich with Last.fm track tags
                 if let Some(ref artist) = artist_name {
-                    if let Ok(lfm) = crate::metadata::lastfm::get_track_info(&title, artist).await {
+                    if let Ok(lfm) = crate::metadata::lastfm::get_track_info(title, artist).await {
                         if let Ok(conn) = db.lock() {
                             if !lfm.tags.is_empty() {
                                 let tags_str = lfm.tags.join(", ");
-                                let _ = conn.execute(
-                                    "UPDATE tracks SET genre = ?1 WHERE id = ?2 AND (genre IS NULL OR genre = '')",
-                                    rusqlite::params![tags_str, track_id],
-                                );
+                                crate::db::update_field_if_missing(&conn, "tracks", "genre", *track_id, &tags_str);
                             }
                             if let Some(ref desc) = lfm.description {
-                                let _ = conn.execute(
-                                    "UPDATE tracks SET description = ?1 WHERE id = ?2 AND (description IS NULL OR description = '')",
-                                    rusqlite::params![desc, track_id],
-                                );
+                                crate::db::update_field_if_missing(&conn, "tracks", "description", *track_id, desc);
                             }
                         }
                     }
@@ -1248,7 +1116,7 @@ pub async fn auto_enrich_library(
 pub fn get_metadata_stats(
     db: State<'_, Arc<DbPool>>,
 ) -> Result<serde_json::Value, String> {
-    let conn = db.lock().map_err(|e| e.to_string())?;
+    let conn = crate::db::lock(&db)?;
     let total: i64 = conn.query_row("SELECT COUNT(*) FROM tracks", [], |row| row.get(0)).unwrap_or(0);
     let avg: f64 = conn.query_row("SELECT COALESCE(AVG(metadata_completeness), 0) FROM tracks", [], |row| row.get(0)).unwrap_or(0.0);
     let complete: i64 = conn.query_row("SELECT COUNT(*) FROM tracks WHERE metadata_completeness >= 80", [], |row| row.get(0)).unwrap_or(0);
@@ -1276,7 +1144,7 @@ pub fn metadata_delete_all(
     // Stop any running scan first
     METADATA_SCAN_CANCELLED.store(true, Ordering::Relaxed);
 
-    let conn = db.lock().map_err(|e| e.to_string())?;
+    let conn = crate::db::lock(&db)?;
     conn.execute_batch("
         UPDATE tracks SET musicbrainz_id=NULL, genre=NULL, isrc=NULL, description=NULL,
             label=NULL, language=NULL, release_date=NULL, composer=NULL;
@@ -1309,7 +1177,7 @@ pub fn metadata_delete_all(
 pub fn metadata_cleanup_duplicates(
     db: State<'_, Arc<DbPool>>,
 ) -> Result<serde_json::Value, String> {
-    let conn = db.lock().map_err(|e| e.to_string())?;
+    let conn = crate::db::lock(&db)?;
 
     // === PHASE 1: Merge duplicate albums ===
     // Group by LOWER(title) only — same album name with different artist_ids
@@ -1511,7 +1379,7 @@ pub fn metadata_cleanup_duplicates(
 pub fn metadata_cleanup_duplicate_tracks(
     db: State<'_, Arc<DbPool>>,
 ) -> Result<serde_json::Value, String> {
-    let conn = db.lock().map_err(|e| e.to_string())?;
+    let conn = crate::db::lock(&db)?;
 
     let dup_track_groups: Vec<(String, Option<i64>)> = conn.prepare(
         "SELECT LOWER(title), artist_id FROM tracks
@@ -1607,7 +1475,7 @@ pub async fn enrich_artist(
     artist_id: i64,
 ) -> Result<serde_json::Value, String> {
     let (name, existing_mbid): (String, Option<String>) = {
-        let conn = db.lock().map_err(|e| e.to_string())?;
+        let conn = crate::db::lock(&db)?;
         conn.query_row(
             "SELECT name, musicbrainz_id FROM artists WHERE id = ?1",
             params![artist_id],
@@ -1638,7 +1506,7 @@ pub async fn enrich_artist(
     // Store as JSON on artist
     let json = serde_json::to_string(&discography).map_err(|e| e.to_string())?;
     {
-        let conn = db.lock().map_err(|e| e.to_string())?;
+        let conn = crate::db::lock(&db)?;
         conn.execute(
             "UPDATE artists SET enriched_discography = ?1 WHERE id = ?2",
             params![json, artist_id],
