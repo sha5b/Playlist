@@ -108,7 +108,10 @@ pub fn run() {
                 });
             }
 
-            let _tray = TrayIconBuilder::new()
+            // Store tray icon in managed state so it lives for the app's lifetime.
+            // Without this, the TrayIcon is dropped at the end of setup() and
+            // disappears on Linux (libappindicator destroys it on drop).
+            let tray = TrayIconBuilder::new()
                 .icon(tray_icon)
                 .menu(&tray_menu)
                 .show_menu_on_left_click(false)
@@ -171,6 +174,7 @@ pub fn run() {
                     }
                 })
                 .build(app)?;
+            app.manage(tray);
 
             // Spawn background auto-enrichment task
             {
