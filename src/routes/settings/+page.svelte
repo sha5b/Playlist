@@ -1,5 +1,4 @@
 <script lang="ts">
-	import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '$lib/components/ui/card';
 	import { Separator } from '$lib/components/ui/separator';
 	import { Button } from '$lib/components/ui/button';
 	import { Input } from '$lib/components/ui/input';
@@ -216,355 +215,372 @@
 	});
 </script>
 
-<div class="flex-1 min-h-0 overflow-y-auto space-y-6">
+<div class="flex-1 min-h-0 overflow-y-auto overflow-x-hidden space-y-6 px-1">
 	<div>
 		<h1 class="text-3xl font-bold tracking-tight">Settings</h1>
 		<p class="text-muted-foreground mt-1">Configure your preferences</p>
 	</div>
 
-	<Card>
-		<CardHeader>
-			<CardTitle>Downloads</CardTitle>
-			<CardDescription>Download folder and audio format. Playlists are downloaded via YouTube (no login required)</CardDescription>
-		</CardHeader>
-		<CardContent class="space-y-4">
-			<div class="space-y-2">
-				<label class="text-sm font-medium flex items-center gap-2">
-					<FolderOpen class="size-4 text-muted-foreground" />
-					Download Folder
-				</label>
-				<div class="flex items-center gap-2">
-					<Input
-						value={downloadDir}
-						placeholder="Default download location"
-						readonly
-						class="flex-1"
-					/>
-					<Button variant="outline" onclick={chooseDownloadDir}>
-						<FolderOpen class="size-4" />
-						Browse
-					</Button>
-				</div>
-			</div>
-			<div class="space-y-2">
-				<label class="text-sm font-medium flex items-center gap-2">
-					<Music class="size-4 text-muted-foreground" />
-					Audio Format
-				</label>
-				<div class="flex gap-2">
-					{#each formatOptions as fmt}
-						<Button
-							variant={downloadFormat === fmt ? 'default' : 'outline'}
-							size="sm"
-							onclick={() => setFormat(fmt)}
-						>
-							{fmt.toUpperCase()}
-						</Button>
-					{/each}
-				</div>
-				<p class="text-xs text-muted-foreground">
-					MP3 is most compatible. FLAC is lossless. OPUS has best quality-to-size ratio.
-				</p>
-			</div>
-			<div class="space-y-2">
-				<label class="text-sm font-medium flex items-center gap-2">
-					<Cookie class="size-4 text-muted-foreground" />
-					Browser Cookies
-				</label>
-				<div class="flex gap-2 flex-wrap">
-					{#each browserOptions as opt}
-						<Button
-							variant={cookiesBrowser === opt.value ? 'default' : 'outline'}
-							size="sm"
-							onclick={() => setCookiesBrowser(opt.value)}
-						>
-							{opt.label}
-						</Button>
-					{/each}
-				</div>
-				<p class="text-xs text-muted-foreground">
-					Use cookies from your browser to bypass YouTube's bot detection. Pick the browser where you're logged in to YouTube.
-				</p>
-			</div>
-		</CardContent>
-	</Card>
+	<!-- Downloads -->
+	<section class="space-y-4">
+		<div>
+			<h2 class="text-lg font-semibold">Downloads</h2>
+			<p class="text-sm text-muted-foreground">Download folder and audio format</p>
+		</div>
 
-	<Card>
-		<CardHeader>
-			<CardTitle>Export Library</CardTitle>
-			<CardDescription>Copy all your music into a clean folder structure: Artist / Album / Track</CardDescription>
-		</CardHeader>
-		<CardContent class="space-y-4">
-			<div class="flex items-center justify-between gap-4">
-				<div>
-					<p class="text-sm font-medium">Export all tracks</p>
-					<p class="text-xs text-muted-foreground">
-						Copies files into <code class="text-[11px] bg-muted px-1 py-0.5 rounded">Artist/Album/01 - Title.ext</code> — originals are not moved
-					</p>
+		<div class="space-y-2">
+			<label class="text-sm font-medium flex items-center gap-2">
+				<FolderOpen class="size-4 text-muted-foreground" />
+				Download Folder
+			</label>
+			<div class="flex items-center gap-2">
+				<Input
+					value={downloadDir}
+					placeholder="Default download location"
+					readonly
+					class="flex-1"
+				/>
+				<Button variant="outline" onclick={chooseDownloadDir}>
+					<FolderOpen class="size-4" />
+					Browse
+				</Button>
+			</div>
+		</div>
+
+		<div class="space-y-2">
+			<label class="text-sm font-medium flex items-center gap-2">
+				<Music class="size-4 text-muted-foreground" />
+				Audio Format
+			</label>
+			<div class="flex gap-2">
+				{#each formatOptions as fmt}
+					<Button
+						variant={downloadFormat === fmt ? 'default' : 'outline'}
+						size="sm"
+						onclick={() => setFormat(fmt)}
+					>
+						{fmt.toUpperCase()}
+					</Button>
+				{/each}
+			</div>
+			<p class="text-xs text-muted-foreground">
+				MP3 is most compatible. FLAC is lossless. OPUS has best quality-to-size ratio.
+			</p>
+		</div>
+
+		<div class="space-y-2">
+			<label class="text-sm font-medium flex items-center gap-2">
+				<Cookie class="size-4 text-muted-foreground" />
+				Browser Cookies
+			</label>
+			<div class="flex gap-2 flex-wrap">
+				{#each browserOptions as opt}
+					<Button
+						variant={cookiesBrowser === opt.value ? 'default' : 'outline'}
+						size="sm"
+						onclick={() => setCookiesBrowser(opt.value)}
+					>
+						{opt.label}
+					</Button>
+				{/each}
+			</div>
+			<p class="text-xs text-muted-foreground">
+				Use cookies from your browser to bypass YouTube's bot detection. Pick the browser where you're logged in to YouTube.
+			</p>
+		</div>
+	</section>
+
+	<Separator />
+
+	<!-- Export Library -->
+	<section class="space-y-4">
+		<div>
+			<h2 class="text-lg font-semibold">Export Library</h2>
+			<p class="text-sm text-muted-foreground">Copy all your music into a clean folder structure</p>
+		</div>
+
+		<div class="flex items-center justify-between gap-4">
+			<div>
+				<p class="text-sm font-medium">Export all tracks</p>
+				<p class="text-xs text-muted-foreground">
+					Copies files into <code class="text-[11px] bg-muted px-1 py-0.5 rounded">Artist/Album/01 - Title.ext</code> — originals are not moved
+				</p>
+			</div>
+			<Button variant="outline" size="sm" onclick={handleExportLibrary} disabled={exporting} class="gap-1.5 shrink-0">
+				{#if exporting}
+					<Loader2 class="size-4 animate-spin" />
+					Exporting...
+				{:else}
+					<HardDriveDownload class="size-4" />
+					Export
+				{/if}
+			</Button>
+		</div>
+		{#if exporting && exportProgress}
+			<div class="space-y-2 rounded-md bg-muted/50 p-3">
+				<div class="flex items-center justify-between text-sm">
+					<span class="text-muted-foreground">Copying files...</span>
+					<span class="tabular-nums font-medium">{exportProgress.current}/{exportProgress.total}</span>
 				</div>
-				<Button variant="outline" size="sm" onclick={handleExportLibrary} disabled={exporting} class="gap-1.5 shrink-0">
-					{#if exporting}
+				<div class="h-1.5 rounded-full bg-muted overflow-hidden">
+					<div class="h-full rounded-full bg-primary transition-all" style="width: {(exportProgress.current / exportProgress.total) * 100}%"></div>
+				</div>
+				<p class="text-xs text-muted-foreground truncate">{exportProgress.track_title}</p>
+			</div>
+		{/if}
+	</section>
+
+	<Separator />
+
+	<!-- Playback -->
+	<section class="space-y-4">
+		<div>
+			<h2 class="text-lg font-semibold">Playback</h2>
+			<p class="text-sm text-muted-foreground">Audio playback settings</p>
+		</div>
+
+		<div class="space-y-2">
+			<div class="flex items-center justify-between">
+				<label class="text-sm font-medium flex items-center gap-2">
+					<Volume2 class="size-4 text-muted-foreground" />
+					Default Volume
+				</label>
+				<span class="text-sm text-muted-foreground tabular-nums">{defaultVolume}%</span>
+			</div>
+			<Slider
+				type="single"
+				value={defaultVolume}
+				max={100}
+				step={1}
+				onValueChange={handleVolumeChange}
+			/>
+		</div>
+
+		<div class="space-y-2">
+			<label class="text-sm font-medium flex items-center gap-2">
+				<Speaker class="size-4 text-muted-foreground" />
+				Audio Output Device
+			</label>
+			<select
+				class="w-full rounded-md border bg-background px-3 py-2 text-sm"
+				value={selectedDevice}
+				onchange={(e) => handleDeviceChange(e.currentTarget.value)}
+			>
+				<option value="">System Default</option>
+				{#each audioDevices as [name, isDefault]}
+					<option value={name}>{name}{isDefault ? ' (Default)' : ''}</option>
+				{/each}
+			</select>
+			<p class="text-xs text-muted-foreground">
+				Select which audio device to use for playback. Change takes effect immediately.
+			</p>
+		</div>
+	</section>
+
+	<Separator />
+
+	<!-- Metadata -->
+	<section class="space-y-4" id="metadata">
+		<div>
+			<h2 class="text-lg font-semibold">Metadata</h2>
+			<p class="text-sm text-muted-foreground">Enrich your library with MusicBrainz data</p>
+		</div>
+
+		{#if metadataStats}
+			<div class="space-y-3 rounded-lg bg-muted/30 p-4">
+				<div class="flex items-center justify-between">
+					<span class="text-sm text-muted-foreground">Average Completeness</span>
+					<span class="text-sm font-medium tabular-nums {metadataStats.average_completeness >= 80 ? 'text-green-500' : metadataStats.average_completeness >= 50 ? 'text-yellow-500' : 'text-red-500'}">
+						{metadataStats.average_completeness}%
+					</span>
+				</div>
+				<div class="h-2 rounded-full bg-muted overflow-hidden">
+					<div
+						class="h-full rounded-full transition-all duration-500 {metadataStats.average_completeness >= 80 ? 'bg-green-500' : metadataStats.average_completeness >= 50 ? 'bg-yellow-500' : 'bg-red-500'}"
+						style="width: {metadataStats.average_completeness}%"
+					></div>
+				</div>
+				<div class="grid grid-cols-3 gap-4 text-center">
+					<div>
+						<p class="text-2xl font-bold tabular-nums">{metadataStats.total_tracks}</p>
+						<p class="text-xs text-muted-foreground">Total Tracks</p>
+					</div>
+					<div>
+						<p class="text-2xl font-bold tabular-nums text-green-500">{metadataStats.complete_tracks}</p>
+						<p class="text-xs text-muted-foreground">Complete (80%+)</p>
+					</div>
+					<div>
+						<p class="text-2xl font-bold tabular-nums text-red-500">{metadataStats.incomplete_tracks}</p>
+						<p class="text-xs text-muted-foreground">Incomplete (&lt;50%)</p>
+					</div>
+				</div>
+			</div>
+		{/if}
+
+		{#if scanning && scanProgress}
+			<div class="space-y-2 rounded-md bg-muted/50 p-3">
+				<div class="flex items-center justify-between text-sm">
+					<span class="text-muted-foreground">Scanning...</span>
+					<span class="tabular-nums font-medium">{scanProgress.current}/{scanProgress.total}</span>
+				</div>
+				<div class="h-1.5 rounded-full bg-muted overflow-hidden">
+					<div class="h-full rounded-full bg-primary transition-all" style="width: {(scanProgress.current / scanProgress.total) * 100}%"></div>
+				</div>
+				<p class="text-xs text-muted-foreground truncate">Enriching: {scanProgress.track_title}</p>
+			</div>
+		{/if}
+
+		<div class="flex items-center justify-between gap-4">
+			<div>
+				<p class="text-sm font-medium">Auto-download Music Videos</p>
+				<p class="text-xs text-muted-foreground">Download music videos automatically during metadata enrichment</p>
+			</div>
+			<Button
+				variant={autoDownloadMV ? 'default' : 'outline'}
+				size="sm"
+				onclick={async () => { autoDownloadMV = !autoDownloadMV; await setSetting('auto_download_music_videos', autoDownloadMV ? 'true' : 'false'); }}
+			>
+				{autoDownloadMV ? 'On' : 'Off'}
+			</Button>
+		</div>
+
+		<div class="flex items-center justify-between gap-4">
+			<div>
+				<p class="text-sm font-medium">Scan for Missing Metadata</p>
+				<p class="text-xs text-muted-foreground">Looks up all tracks with incomplete data on MusicBrainz and Last.fm</p>
+			</div>
+			<div class="flex gap-2">
+				<Button variant="outline" size="sm" onclick={handleScanMetadata} disabled={scanning}>
+					{#if scanning}
 						<Loader2 class="size-4 animate-spin" />
-						Exporting...
+						Scanning...
 					{:else}
-						<HardDriveDownload class="size-4" />
-						Export
+						<Sparkles class="size-4" />
+						Scan
 					{/if}
 				</Button>
-			</div>
-			{#if exporting && exportProgress}
-				<div class="space-y-2 rounded-md bg-muted/50 p-3">
-					<div class="flex items-center justify-between text-sm">
-						<span class="text-muted-foreground">Copying files...</span>
-						<span class="tabular-nums font-medium">{exportProgress.current}/{exportProgress.total}</span>
-					</div>
-					<div class="h-1.5 rounded-full bg-muted overflow-hidden">
-						<div class="h-full rounded-full bg-primary transition-all" style="width: {(exportProgress.current / exportProgress.total) * 100}%"></div>
-					</div>
-					<p class="text-xs text-muted-foreground truncate">{exportProgress.track_title}</p>
-				</div>
-			{/if}
-		</CardContent>
-	</Card>
-
-	<Card>
-		<CardHeader>
-			<CardTitle>Playback</CardTitle>
-			<CardDescription>Audio playback settings</CardDescription>
-		</CardHeader>
-		<CardContent class="space-y-4">
-			<div class="space-y-2">
-				<div class="flex items-center justify-between">
-					<label class="text-sm font-medium flex items-center gap-2">
-						<Volume2 class="size-4 text-muted-foreground" />
-						Default Volume
-					</label>
-					<span class="text-sm text-muted-foreground tabular-nums">{defaultVolume}%</span>
-				</div>
-				<Slider
-					type="single"
-					value={defaultVolume}
-					max={100}
-					step={1}
-					onValueChange={handleVolumeChange}
-				/>
-			</div>
-			<div class="space-y-2">
-				<label class="text-sm font-medium flex items-center gap-2">
-					<Speaker class="size-4 text-muted-foreground" />
-					Audio Output Device
-				</label>
-				<select
-					class="w-full rounded-md border bg-background px-3 py-2 text-sm"
-					value={selectedDevice}
-					onchange={(e) => handleDeviceChange(e.currentTarget.value)}
-				>
-					<option value="">System Default</option>
-					{#each audioDevices as [name, isDefault]}
-						<option value={name}>{name}{isDefault ? ' (Default)' : ''}</option>
-					{/each}
-				</select>
-				<p class="text-xs text-muted-foreground">
-					Select which audio device to use for playback. Change takes effect immediately.
-				</p>
-			</div>
-		</CardContent>
-	</Card>
-
-	<Card id="metadata">
-		<CardHeader>
-			<CardTitle>Metadata</CardTitle>
-			<CardDescription>Enrich your library with MusicBrainz data</CardDescription>
-		</CardHeader>
-		<CardContent class="space-y-4">
-			{#if metadataStats}
-				<div class="space-y-3">
-					<div class="flex items-center justify-between">
-						<span class="text-sm text-muted-foreground">Average Completeness</span>
-						<span class="text-sm font-medium tabular-nums {metadataStats.average_completeness >= 80 ? 'text-green-500' : metadataStats.average_completeness >= 50 ? 'text-yellow-500' : 'text-red-500'}">
-							{metadataStats.average_completeness}%
-						</span>
-					</div>
-					<div class="h-2 rounded-full bg-muted overflow-hidden">
-						<div
-							class="h-full rounded-full transition-all duration-500 {metadataStats.average_completeness >= 80 ? 'bg-green-500' : metadataStats.average_completeness >= 50 ? 'bg-yellow-500' : 'bg-red-500'}"
-							style="width: {metadataStats.average_completeness}%"
-						></div>
-					</div>
-					<div class="grid grid-cols-3 gap-4 text-center">
-						<div>
-							<p class="text-2xl font-bold tabular-nums">{metadataStats.total_tracks}</p>
-							<p class="text-xs text-muted-foreground">Total Tracks</p>
-						</div>
-						<div>
-							<p class="text-2xl font-bold tabular-nums text-green-500">{metadataStats.complete_tracks}</p>
-							<p class="text-xs text-muted-foreground">Complete (80%+)</p>
-						</div>
-						<div>
-							<p class="text-2xl font-bold tabular-nums text-red-500">{metadataStats.incomplete_tracks}</p>
-							<p class="text-xs text-muted-foreground">Incomplete (&lt;50%)</p>
-						</div>
-					</div>
-				</div>
-			{/if}
-
-			{#if scanning && scanProgress}
-				<div class="space-y-2 rounded-md bg-muted/50 p-3">
-					<div class="flex items-center justify-between text-sm">
-						<span class="text-muted-foreground">Scanning...</span>
-						<span class="tabular-nums font-medium">{scanProgress.current}/{scanProgress.total}</span>
-					</div>
-					<div class="h-1.5 rounded-full bg-muted overflow-hidden">
-						<div class="h-full rounded-full bg-primary transition-all" style="width: {(scanProgress.current / scanProgress.total) * 100}%"></div>
-					</div>
-					<p class="text-xs text-muted-foreground truncate">Enriching: {scanProgress.track_title}</p>
-				</div>
-			{/if}
-
-			<div class="flex items-center justify-between gap-4">
-				<div>
-					<p class="text-sm font-medium">Auto-download Music Videos</p>
-					<p class="text-xs text-muted-foreground">Download music videos automatically during metadata enrichment</p>
-				</div>
-				<Button
-					variant={autoDownloadMV ? 'default' : 'outline'}
-					size="sm"
-					onclick={async () => { autoDownloadMV = !autoDownloadMV; await setSetting('auto_download_music_videos', autoDownloadMV ? 'true' : 'false'); }}
-				>
-					{autoDownloadMV ? 'On' : 'Off'}
+				<Button variant="outline" size="sm" onclick={handleStopMetadata} disabled={!scanning}>
+					<CircleX class="size-4" />
+					Stop
 				</Button>
 			</div>
+		</div>
+	</section>
 
-			<div class="flex items-center justify-between gap-4">
-				<div>
-					<p class="text-sm font-medium">Scan for Missing Metadata</p>
-					<p class="text-xs text-muted-foreground">Looks up all tracks with incomplete data on MusicBrainz and Last.fm</p>
-				</div>
-				<div class="flex gap-2">
-					<Button variant="outline" size="sm" onclick={handleScanMetadata} disabled={scanning}>
-						{#if scanning}
-							<Loader2 class="size-4 animate-spin" />
-							Scanning...
-						{:else}
-							<Sparkles class="size-4" />
-							Scan
-						{/if}
-					</Button>
-					<Button variant="outline" size="sm" onclick={handleStopMetadata} disabled={!scanning}>
-						<CircleX class="size-4" />
-						Stop
-					</Button>
-				</div>
-			</div>
-		</CardContent>
-	</Card>
+	<Separator />
 
-	<Card>
-		<CardHeader>
-			<CardTitle class="text-destructive">Danger Zone</CardTitle>
-			<CardDescription>Irreversible actions</CardDescription>
-		</CardHeader>
-		<CardContent class="space-y-4">
-			<div class="flex items-center justify-between gap-4">
-				<div>
-					<p class="text-sm font-medium">Delete All Metadata</p>
-					<p class="text-xs text-muted-foreground">Automatically stops any running scan, then clears all enriched metadata from tracks, albums, and artists</p>
-				</div>
-				<AlertDialog.Root bind:open={deleteMetadataOpen}>
-					<AlertDialog.Trigger>
-						{#snippet child({ props })}
-							<Button variant="destructive" size="sm" disabled={deletingMetadata} {...props}>
-								{#if deletingMetadata}
-									<Loader2 class="size-4 animate-spin" />
-									Deleting...
-								{:else}
-									<Trash2 class="size-4" />
-									Delete Metadata
-								{/if}
-							</Button>
-						{/snippet}
-					</AlertDialog.Trigger>
-					<AlertDialog.Content>
-						<AlertDialog.Header>
-							<AlertDialog.Title>Delete All Metadata</AlertDialog.Title>
-							<AlertDialog.Description>
-								This will stop any running scans and clear all enriched metadata from tracks, albums, and artists. This cannot be undone.
-							</AlertDialog.Description>
-						</AlertDialog.Header>
-						<AlertDialog.Footer>
-							<AlertDialog.Cancel>Cancel</AlertDialog.Cancel>
-							<AlertDialog.Action onclick={handleDeleteMetadata}>Delete All Metadata</AlertDialog.Action>
-						</AlertDialog.Footer>
-					</AlertDialog.Content>
-				</AlertDialog.Root>
-			</div>
-			<Separator />
-			<div class="flex items-center justify-between gap-4">
-				<div>
-					<p class="text-sm font-medium">Reset Library</p>
-					<p class="text-xs text-muted-foreground">Delete all tracks, playlists, downloads, and downloaded files</p>
-				</div>
-				<AlertDialog.Root bind:open={resetLibraryOpen}>
-					<AlertDialog.Trigger>
-						{#snippet child({ props })}
-							<Button variant="destructive" size="sm" disabled={resettingLibrary} {...props}>
-								{#if resettingLibrary}
-									<RotateCcw class="size-4 animate-spin" />
-									Resetting...
-								{:else}
-									<Trash2 class="size-4" />
-									Reset Library
-								{/if}
-							</Button>
-						{/snippet}
-					</AlertDialog.Trigger>
-					<AlertDialog.Content>
-						<AlertDialog.Header>
-							<AlertDialog.Title>Reset Library</AlertDialog.Title>
-							<AlertDialog.Description>
-								This will permanently delete all tracks, playlists, downloads, and downloaded files. This cannot be undone.
-							</AlertDialog.Description>
-						</AlertDialog.Header>
-						<AlertDialog.Footer>
-							<AlertDialog.Cancel>Cancel</AlertDialog.Cancel>
-							<AlertDialog.Action onclick={handleResetLibrary}>Reset Library</AlertDialog.Action>
-						</AlertDialog.Footer>
-					</AlertDialog.Content>
-				</AlertDialog.Root>
-			</div>
-			<Separator />
-			<div class="flex items-center justify-between gap-4">
-				<div>
-					<p class="text-sm font-medium">Reset Settings</p>
-					<p class="text-xs text-muted-foreground">Restore all settings to their default values</p>
-				</div>
-				<Button variant="outline" size="sm" onclick={resetSettings}>
-					<RotateCcw class="size-4" />
-					Reset Settings
-				</Button>
-			</div>
-		</CardContent>
-	</Card>
+	<!-- Danger Zone -->
+	<section class="space-y-4">
+		<div>
+			<h2 class="text-lg font-semibold text-destructive">Danger Zone</h2>
+			<p class="text-sm text-muted-foreground">Irreversible actions</p>
+		</div>
 
-	<Card>
-		<CardHeader>
-			<CardTitle>About</CardTitle>
-			<CardDescription>Application information</CardDescription>
-		</CardHeader>
-		<CardContent class="space-y-2">
+		<div class="flex items-center justify-between gap-4">
+			<div>
+				<p class="text-sm font-medium">Delete All Metadata</p>
+				<p class="text-xs text-muted-foreground">Stops any running scan, then clears all enriched metadata</p>
+			</div>
+			<AlertDialog.Root bind:open={deleteMetadataOpen}>
+				<AlertDialog.Trigger>
+					{#snippet child({ props })}
+						<Button variant="destructive" size="sm" disabled={deletingMetadata} {...props}>
+							{#if deletingMetadata}
+								<Loader2 class="size-4 animate-spin" />
+								Deleting...
+							{:else}
+								<Trash2 class="size-4" />
+								Delete Metadata
+							{/if}
+						</Button>
+					{/snippet}
+				</AlertDialog.Trigger>
+				<AlertDialog.Content>
+					<AlertDialog.Header>
+						<AlertDialog.Title>Delete All Metadata</AlertDialog.Title>
+						<AlertDialog.Description>
+							This will stop any running scans and clear all enriched metadata from tracks, albums, and artists. This cannot be undone.
+						</AlertDialog.Description>
+					</AlertDialog.Header>
+					<AlertDialog.Footer>
+						<AlertDialog.Cancel>Cancel</AlertDialog.Cancel>
+						<AlertDialog.Action onclick={handleDeleteMetadata}>Delete All Metadata</AlertDialog.Action>
+					</AlertDialog.Footer>
+				</AlertDialog.Content>
+			</AlertDialog.Root>
+		</div>
+
+		<Separator class="opacity-50" />
+
+		<div class="flex items-center justify-between gap-4">
+			<div>
+				<p class="text-sm font-medium">Reset Library</p>
+				<p class="text-xs text-muted-foreground">Delete all tracks, playlists, downloads, and downloaded files</p>
+			</div>
+			<AlertDialog.Root bind:open={resetLibraryOpen}>
+				<AlertDialog.Trigger>
+					{#snippet child({ props })}
+						<Button variant="destructive" size="sm" disabled={resettingLibrary} {...props}>
+							{#if resettingLibrary}
+								<RotateCcw class="size-4 animate-spin" />
+								Resetting...
+							{:else}
+								<Trash2 class="size-4" />
+								Reset Library
+							{/if}
+						</Button>
+					{/snippet}
+				</AlertDialog.Trigger>
+				<AlertDialog.Content>
+					<AlertDialog.Header>
+						<AlertDialog.Title>Reset Library</AlertDialog.Title>
+						<AlertDialog.Description>
+							This will permanently delete all tracks, playlists, downloads, and downloaded files. This cannot be undone.
+						</AlertDialog.Description>
+					</AlertDialog.Header>
+					<AlertDialog.Footer>
+						<AlertDialog.Cancel>Cancel</AlertDialog.Cancel>
+						<AlertDialog.Action onclick={handleResetLibrary}>Reset Library</AlertDialog.Action>
+					</AlertDialog.Footer>
+				</AlertDialog.Content>
+			</AlertDialog.Root>
+		</div>
+
+		<Separator class="opacity-50" />
+
+		<div class="flex items-center justify-between gap-4">
+			<div>
+				<p class="text-sm font-medium">Reset Settings</p>
+				<p class="text-xs text-muted-foreground">Restore all settings to their default values</p>
+			</div>
+			<Button variant="outline" size="sm" onclick={resetSettings}>
+				<RotateCcw class="size-4" />
+				Reset Settings
+			</Button>
+		</div>
+	</section>
+
+	<Separator />
+
+	<!-- About -->
+	<section class="space-y-3 pb-4">
+		<div>
+			<h2 class="text-lg font-semibold">About</h2>
+			<p class="text-sm text-muted-foreground">Application information</p>
+		</div>
+
+		<div class="space-y-3">
 			<div class="flex justify-between text-sm">
 				<span class="text-muted-foreground">Version</span>
-				<span>0.2.1</span>
+				<span>0.3.1</span>
 			</div>
-			<Separator />
 			<div class="flex justify-between text-sm">
 				<span class="text-muted-foreground">Stack</span>
 				<span>Tauri 2.x + SvelteKit + Svelte 5</span>
 			</div>
-			<Separator />
-			<div class="text-sm text-muted-foreground pt-2">
-				<p>Liberate your music from streaming platforms. Own your data, build your library, support artists directly. Buy their albums, back them on Patreon, go to their shows.</p>
-			</div>
-		</CardContent>
-	</Card>
+			<p class="text-sm text-muted-foreground pt-1">
+				Liberate your music from streaming platforms. Own your data, build your library, support artists directly. Buy their albums, back them on Patreon, go to their shows.
+			</p>
+		</div>
+	</section>
 </div>

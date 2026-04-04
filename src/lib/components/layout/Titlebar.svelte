@@ -37,9 +37,16 @@
 <div class="flex h-9 items-center bg-sidebar text-sidebar-foreground border-b border-sidebar-border select-none shrink-0">
 	<!-- Drag region fills the entire titlebar -->
 	<div class="flex-1 flex items-center h-full pl-3 gap-2" data-tauri-drag-region>
-		<div class="flex size-5 items-center justify-center rounded bg-primary text-primary-foreground text-[10px] font-bold pointer-events-none">
-			P
-		</div>
+		<svg class="size-5 pointer-events-none rounded" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+			<rect width="100" height="100" rx="22" fill="#f0efec"/>
+			<rect x="30" y="25" width="56" height="34" rx="7" fill="#1a1a1a" opacity="0.09"/>
+			<rect x="22" y="33" width="56" height="34" rx="7" fill="#1a1a1a" opacity="0.28"/>
+			<rect x="14" y="41" width="56" height="34" rx="7" fill="#1a1a1a"/>
+			<rect x="20" y="50" width="23" height="3" rx="1.5" fill="#f0efec"/>
+			<rect x="20" y="56" width="17" height="3" rx="1.5" fill="#f0efec" opacity="0.55"/>
+			<rect x="20" y="62" width="10" height="3" rx="1.5" fill="#f0efec" opacity="0.28"/>
+			<path d="M53 51 L65 58 L53 65 Z" fill="#f0efec"/>
+		</svg>
 		<span class="text-xs font-medium tracking-tight text-muted-foreground pointer-events-none">Playlist</span>
 	</div>
 

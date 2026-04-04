@@ -62,7 +62,22 @@
       "Bash(python3 -c \"from PIL import Image; print\\('pillow available'\\)\")",
       "Bash(wc -l /home/sha5b/Documents/GitHub/Playlist/src-tauri/src/commands/*.rs)",
       "Bash(find /home/sha5b/Documents/GitHub/Playlist/src-tauri/src -name \"lib.rs\" -exec cat {} \\\\;)",
-      "Bash(npm list:*)"
+      "Bash(npm list:*)",
+      "Bash(find /home/sha5b/Documents/GitHub/Playlist/src-tauri -name \"build.rs\" -exec cat {} \\\\;)",
+      "Bash(dpkg -l librsvg2-bin imagemagick)",
+      "Bash(rpm -q librsvg2-tools ImageMagick inkscape)",
+      "Bash(rpm -q icoutils libicns-utils)",
+      "Bash(magick --version)",
+      "Bash(magick -list format)",
+      "Bash(pip3 list:*)",
+      "Bash(npx --help)",
+      "Bash(cargo install:*)",
+      "Bash(pip3 install:*)",
+      "Bash(npx png2icons:*)",
+      "Bash(grep -n \"^\\\\s*P\\\\s*$\" /home/sha5b/Documents/GitHub/Playlist/src/lib/components/layout/Titlebar.svelte)",
+      "Bash([ -f \"src-tauri/$file\" ])",
+      "Bash([ -f \"src-tauri/icons/icon.ico\" ])",
+      "Read(//tmp/**)"
     ]
   }
 }
