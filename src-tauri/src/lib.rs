@@ -2,6 +2,7 @@ mod audio;
 mod commands;
 mod db;
 mod download;
+mod error;
 mod metadata;
 
 use std::sync::Arc;
@@ -125,8 +126,8 @@ pub fn run() {
                 .item(&quit)
                 .build()?;
 
-            let tray_icon = Image::from_bytes(include_bytes!("../icons/icon.png"))
-                .expect("bundled icon must be valid");
+            let tray_icon = Image::from_bytes(include_bytes!("../icons/tray-icon.png"))
+                .expect("bundled tray icon must be valid");
 
             // Set window icon on Linux (dev mode shows generic icon otherwise).
             if let Some(window) = app.get_webview_window("main") {
@@ -341,12 +342,24 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app_handle, event| {
-            if let tauri::RunEvent::Exit = event {
-                // Gracefully shut down the audio thread before the process exits
-                if let Some(engine) = app_handle.try_state::<Arc<audio::AudioEngine>>() {
-                    engine.shutdown();
+            match event {
+                tauri::RunEvent::Exit => {
+                    // Gracefully shut down the audio thread before the process exits
+                    if let Some(engine) = app_handle.try_state::<Arc<audio::AudioEngine>>() {
+                        engine.shutdown();
+                    }
+                    log::info!("Application exiting gracefully");
                 }
-                log::info!("Application exiting gracefully");
+                #[cfg(target_os = "macos")]
+                tauri::RunEvent::Reopen { .. } => {
+                    // macOS: clicking the dock icon when the window is hidden should show it
+                    if let Some(window) = app_handle.get_webview_window("main") {
+                        let _ = window.show();
+                        let _ = window.unminimize();
+                        let _ = window.set_focus();
+                    }
+                }
+                _ => {}
             }
         });
 }

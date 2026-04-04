@@ -16,9 +16,11 @@
 		"check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
 		"tauri": "tauri"
 	},
+	"engines": {
+		"node": ">=20"
+	},
 	"devDependencies": {
 		"@internationalized/date": "^3.12.0",
-		"@lucide/svelte": "^1.7.0",
 		"@sveltejs/adapter-auto": "^7.0.0",
 		"@sveltejs/adapter-static": "^3.0.10",
 		"@sveltejs/kit": "^2.50.2",

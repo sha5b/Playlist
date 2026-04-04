@@ -544,7 +544,7 @@ pub async fn scan_missing_metadata(
 
         // Rate limit: 1 request per second for MusicBrainz
         if i > 0 {
-            tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(crate::metadata::musicbrainz::MB_RATE_LIMIT_MS)).await;
         }
 
         // Emit progress event
@@ -864,7 +864,7 @@ pub async fn auto_enrich_library(
 
         // Rate limit for MusicBrainz
         if i > 0 {
-            tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(crate::metadata::musicbrainz::MB_RATE_LIMIT_MS)).await;
         }
 
         let _ = app_handle.emit("auto-enrich-progress", serde_json::json!({
@@ -1105,7 +1105,7 @@ pub async fn auto_enrich_library(
         }
 
         if i > 0 {
-            tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(crate::metadata::musicbrainz::MB_RATE_LIMIT_MS)).await;
         }
 
         let _ = app_handle.emit("auto-enrich-progress", serde_json::json!({
@@ -1615,7 +1615,7 @@ pub async fn enrich_artist(
             );
         }
         // Rate limit
-        tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(crate::metadata::musicbrainz::MB_RATE_LIMIT_MS)).await;
         id
     };
 

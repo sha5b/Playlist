@@ -34,7 +34,7 @@
 	$effect(() => {
 		const id = player.currentTrack?.id;
 		if (id) {
-			getTrack(id).then(t => { fullTrack = t; });
+			getTrack(id).then(t => { fullTrack = t; }).catch(e => { console.error('Failed to load track details:', e); fullTrack = null; });
 		} else {
 			fullTrack = null;
 		}

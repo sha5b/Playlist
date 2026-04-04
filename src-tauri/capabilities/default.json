@@ -9,10 +9,7 @@
     {
       "identifier": "fs:allow-read-file",
       "allow": [
-        { "path": "$APPDATA/**" },
-        { "path": "$APPDATA/covers/**" },
-        { "path": "$APPDATA/downloads/**" },
-        { "path": "$APPDATA/music_videos/**" }
+        { "path": "$APPDATA/**" }
       ]
     },
     "fs:allow-write-file",
@@ -20,8 +17,7 @@
     "fs:allow-mkdir",
     "fs:allow-read-dir",
     "shell:default",
-    "shell:allow-spawn",
-    "shell:allow-execute",
+    "shell:allow-open",
     "dialog:default",
     "dialog:allow-open",
     "dialog:allow-save",

@@ -25,10 +25,10 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: https:; connect-src ipc: http://ipc.localhost",
+      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: https://img.youtube.com; connect-src ipc: http://ipc.localhost",
       "assetProtocol": {
         "enable": true,
-        "scope": ["$APPDATA/**", "$APPDATA/covers/**", "$APPDATA/downloads/**", "$APPDATA/music_videos/**"]
+        "scope": ["$APPDATA/**"]
       }
     }
   },

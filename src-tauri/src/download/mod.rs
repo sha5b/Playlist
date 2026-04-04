@@ -71,27 +71,22 @@ impl DownloadManager {
         guard.test_source(platform).await
     }
 
-    fn get_download_dir(&self) -> PathBuf {
-        let conn = match self.db.lock() {
-            Ok(c) => c,
-            Err(e) => {
-                log::error!("DB mutex poisoned in get_download_dir: {}", e);
-                let app_dir = self.app_handle.path().app_data_dir().unwrap_or_else(|_| PathBuf::from("."));
-                return app_dir.join("downloads");
-            }
-        };
+    fn get_download_dir(&self) -> Result<PathBuf, String> {
+        let conn = self.db.lock().map_err(|e| {
+            format!("DB mutex poisoned in get_download_dir: {}", e)
+        })?;
         let dir = crate::db::settings::get_setting(&conn, "download_dir")
             .ok()
             .flatten();
         match dir {
-            Some(d) if !d.is_empty() => PathBuf::from(d),
+            Some(d) if !d.is_empty() => Ok(PathBuf::from(d)),
             _ => {
                 let app_dir = self
                     .app_handle
                     .path()
                     .app_data_dir()
                     .unwrap_or_else(|_| PathBuf::from("."));
-                app_dir.join("downloads")
+                Ok(app_dir.join("downloads"))
             }
         }
     }
@@ -170,7 +165,14 @@ impl DownloadManager {
         let db = self.db.clone();
         let app_handle = self.app_handle.clone();
         let active_tasks = self.active_tasks.clone();
-        let download_dir = self.get_download_dir();
+        let download_dir = match self.get_download_dir() {
+            Ok(d) => d,
+            Err(e) => {
+                log::error!("[download] {}", e);
+                emit_event(&self.app_handle, download_id, "error", 0.0, Some(e), None, None, title);
+                return;
+            }
+        };
         let ytdlp_binary = self.resolve_ytdlp();
         let ffmpeg_dir = self.resolve_ffmpeg_dir();
         log::info!("[download] id={} ffmpeg_dir={:?} ytdlp={}", download_id, ffmpeg_dir, ytdlp_binary);

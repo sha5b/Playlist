@@ -26,6 +26,7 @@ let playedHistory: Set<number> = new Set();
 
 // --- Event listener setup ---
 let initialized = false;
+let unlisten: (() => void) | null = null;
 
 // Throttle progress updates to display refresh rate to avoid unnecessary re-renders
 let progressRafPending = false;
@@ -106,7 +107,7 @@ async function init() {
 		seek: (seconds) => player.seek(seconds),
 	});
 
-	await listen<PlayerEvent>('player-event', (e) => handleEvent(e.payload));
+	unlisten = await listen<PlayerEvent>('player-event', (e) => handleEvent(e.payload));
 	// Fetch initial state
 	try {
 		const s = await playerApi.getState();
@@ -147,8 +148,8 @@ async function handleAutoplay() {
 				await playerApi.addToQueue(ids[0]);
 			}
 		}
-	} catch {
-		// Silently fail
+	} catch (e) {
+		console.warn('Autoplay failed:', e);
 	} finally {
 		autoplayPending = false;
 	}
@@ -183,6 +184,14 @@ export const player = {
 
 	init,
 
+	destroy() {
+		if (unlisten) {
+			unlisten();
+			unlisten = null;
+		}
+		initialized = false;
+	},
+
 	toggleQueuePanel() {
 		queueOpen = !queueOpen;
 	},
@@ -207,7 +216,7 @@ export const player = {
 				// Auto-open queue so user sees the tracks
 				if (!queueOpen) queueOpen = true;
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.warn('playRandom failed:', e); }
 	},
 
 	async playTrack(trackId: number) {

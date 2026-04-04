@@ -61,6 +61,8 @@ pub fn get_tracks(
     sort_dir: &str,
     search: Option<&str>,
 ) -> Result<TrackPage, rusqlite::Error> {
+    let limit = limit.clamp(1, 500);
+    let offset = offset.max(0);
     let order_clause = match sort_by {
         "title" => format!("t.title {}", if sort_dir == "asc" { "ASC" } else { "DESC" }),
         "artist_name" => format!("a.name {}", if sort_dir == "asc" { "ASC" } else { "DESC" }),

@@ -87,44 +87,29 @@ pub fn library_delete_track(
     Ok(())
 }
 
-/// Delete all library data: tracks (and their files), albums, artists, playlists, downloads, monitored entries.
-/// Settings are preserved.
-#[tauri::command]
-pub async fn library_reset(
-    db: State<'_, Arc<DbPool>>,
-    manager: State<'_, Arc<crate::download::DownloadManager>>,
-    app_handle: tauri::AppHandle,
-    delete_files: bool,
-) -> Result<(), String> {
-    // Cancel all active downloads before wiping data
-    manager.cancel_all().await;
-
-    let conn = db.lock().map_err(|e| e.to_string())?;
-
-    // Optionally delete downloaded files
-    if delete_files {
-        let download_dir = {
-            let dir = crate::db::settings::get_setting(&conn, "download_dir").ok().flatten();
-            match dir {
-                Some(d) if !d.is_empty() => std::path::PathBuf::from(d),
-                _ => app_handle
-                    .path()
-                    .app_data_dir()
-                    .unwrap_or_else(|_| std::path::PathBuf::from("."))
-                    .join("downloads"),
-            }
-        };
-        if download_dir.exists() {
-            if let Err(e) = std::fs::remove_dir_all(&download_dir) {
-                log::warn!("Failed to remove downloads directory: {}", e);
-            }
-            if let Err(e) = std::fs::create_dir_all(&download_dir) {
-                log::warn!("Failed to recreate downloads directory: {}", e);
-            }
+fn cleanup_download_files(conn: &rusqlite::Connection, app_handle: &tauri::AppHandle) {
+    let download_dir = {
+        let dir = crate::db::settings::get_setting(conn, "download_dir").ok().flatten();
+        match dir {
+            Some(d) if !d.is_empty() => std::path::PathBuf::from(d),
+            _ => app_handle
+                .path()
+                .app_data_dir()
+                .unwrap_or_else(|_| std::path::PathBuf::from("."))
+                .join("downloads"),
+        }
+    };
+    if download_dir.exists() {
+        if let Err(e) = std::fs::remove_dir_all(&download_dir) {
+            log::warn!("Failed to remove downloads directory: {}", e);
+        }
+        if let Err(e) = std::fs::create_dir_all(&download_dir) {
+            log::warn!("Failed to recreate downloads directory: {}", e);
         }
     }
+}
 
-    // Clear all tables (order matters for foreign keys)
+fn reset_database_tables(conn: &rusqlite::Connection) -> Result<(), String> {
     conn.execute_batch(
         "DELETE FROM monitored_playlist_entries;
          DELETE FROM playlist_tracks;
@@ -139,9 +124,10 @@ pub async fn library_reset(
              content='',
              tokenize='unicode61 remove_diacritics 2'
          );"
-    ).map_err(|e| e.to_string())?;
+    ).map_err(|e| e.to_string())
+}
 
-    // Remove cover art
+fn cleanup_cover_art(app_handle: &tauri::AppHandle) {
     if let Ok(covers_dir) = app_handle.path().app_data_dir().map(|d| d.join("covers")) {
         if covers_dir.exists() {
             if let Err(e) = std::fs::remove_dir_all(&covers_dir) {
@@ -152,8 +138,28 @@ pub async fn library_reset(
             }
         }
     }
+}
 
-    // Best-effort notification to frontend
+/// Delete all library data: tracks (and their files), albums, artists, playlists, downloads, monitored entries.
+/// Settings are preserved.
+#[tauri::command]
+pub async fn library_reset(
+    db: State<'_, Arc<DbPool>>,
+    manager: State<'_, Arc<crate::download::DownloadManager>>,
+    app_handle: tauri::AppHandle,
+    delete_files: bool,
+) -> Result<(), String> {
+    // Cancel all active downloads before wiping data
+    manager.cancel_all().await;
+
+    let conn = db.lock().map_err(|e| e.to_string())?;
+
+    if delete_files {
+        cleanup_download_files(&conn, &app_handle);
+    }
+    reset_database_tables(&conn)?;
+    cleanup_cover_art(&app_handle);
+
     let _ = app_handle.emit("library-changed", ());
     log::info!("Library reset complete");
     Ok(())
@@ -227,7 +233,9 @@ pub fn library_get_playlist(
     match playlist {
         Some(p) => {
             // Backfill playlist_tracks from monitored entries for already-downloaded tracks
-            let _ = crate::db::playlists::backfill_playlist_tracks(&conn, id);
+            if let Err(e) = crate::db::playlists::backfill_playlist_tracks(&conn, id) {
+                log::warn!("Backfill playlist_tracks failed for playlist {}: {}", id, e);
+            }
             let tracks = crate::db::playlists::get_playlist_tracks(&conn, id)
                 .map_err(|e| e.to_string())?;
             Ok(Some(PlaylistDetail { playlist: p, tracks }))
@@ -244,7 +252,9 @@ pub fn library_get_playlist_tracks(
     limit: i64,
 ) -> Result<TrackPage, String> {
     let conn = db.lock().map_err(|e| e.to_string())?;
-    let _ = crate::db::playlists::backfill_playlist_tracks(&conn, playlist_id);
+    if let Err(e) = crate::db::playlists::backfill_playlist_tracks(&conn, playlist_id) {
+        log::warn!("Backfill playlist_tracks failed for playlist {}: {}", playlist_id, e);
+    }
     crate::db::playlists::get_playlist_tracks_page(&conn, playlist_id, offset, limit)
         .map_err(|e| e.to_string())
 }

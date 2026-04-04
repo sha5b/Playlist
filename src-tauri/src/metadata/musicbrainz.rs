@@ -4,6 +4,9 @@
 
 use serde::Deserialize;
 
+/// MusicBrainz enforces max 1 request/second. We use 1100ms for safety margin.
+pub const MB_RATE_LIMIT_MS: u64 = 1100;
+
 const MB_BASE: &str = "https://musicbrainz.org/ws/2";
 const USER_AGENT: &str = "Playlist/0.1.0 (https://github.com/sha5b/Playlist)";
 
@@ -98,7 +101,7 @@ struct MbUrl {
 /// Look up a recording's URL relations to find a confirmed music video link.
 async fn lookup_music_video_url(recording_mbid: &str) -> Option<String> {
     // Rate limit: 1 req/sec
-    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    tokio::time::sleep(std::time::Duration::from_millis(MB_RATE_LIMIT_MS)).await;
 
     let url = format!(
         "{}/recording/{}?inc=url-rels&fmt=json",
@@ -138,7 +141,7 @@ async fn lookup_music_video_url(recording_mbid: &str) -> Option<String> {
 
 /// Look up an artist's URL relations to find their official website.
 async fn lookup_artist_website(artist_mbid: &str) -> Option<String> {
-    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    tokio::time::sleep(std::time::Duration::from_millis(MB_RATE_LIMIT_MS)).await;
     let url = format!("{}/artist/{}?inc=url-rels&fmt=json", MB_BASE, artist_mbid);
     let resp = client().get(&url).send().await.ok()?;
     let detail: RecordingDetail = resp.json().await.ok()?;
@@ -164,7 +167,7 @@ async fn lookup_artist_website(artist_mbid: &str) -> Option<String> {
 
 /// Look up a release's URL relations to find purchase/streaming links.
 async fn lookup_album_purchase_url(release_mbid: &str) -> Option<String> {
-    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    tokio::time::sleep(std::time::Duration::from_millis(MB_RATE_LIMIT_MS)).await;
     let url = format!("{}/release/{}?inc=url-rels&fmt=json", MB_BASE, release_mbid);
     let resp = client().get(&url).send().await.ok()?;
     let detail: RecordingDetail = resp.json().await.ok()?;
@@ -439,7 +442,7 @@ pub async fn enrich_album(title: &str, artist: Option<&str>) -> Result<AlbumEnri
     }
 
     // Now fetch full release with media for tracklist
-    tokio::time::sleep(std::time::Duration::from_millis(1100)).await; // rate limit
+    tokio::time::sleep(std::time::Duration::from_millis(MB_RATE_LIMIT_MS)).await; // rate limit
     let detail_url = format!(
         "{}/release/{}?inc=recordings+artist-credits&fmt=json",
         MB_BASE, hit.id

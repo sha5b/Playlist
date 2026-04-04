@@ -18,18 +18,18 @@ function handleEvent(data: DownloadEvent) {
 
 	if (idx >= 0) {
 		const dl = downloads[idx];
-		const statusChanged = dl.status !== data.status;
-		dl.status = data.status;
-		dl.progress = data.progress;
-		if (data.error) dl.error_message = data.error;
-		if (data.title) dl.title = data.title;
-		if (data.track_id) dl.track_id = data.track_id;
-		if (statusChanged) {
-			if (data.status === 'cancelled') {
-				downloads = downloads.filter((d) => d.id !== data.id);
-			} else {
-				downloads = [...downloads];
-			}
+		const updated = {
+			...dl,
+			status: data.status,
+			progress: data.progress,
+			...(data.error ? { error_message: data.error } : {}),
+			...(data.title ? { title: data.title } : {}),
+			...(data.track_id ? { track_id: data.track_id } : {}),
+		};
+		if (data.status === 'cancelled') {
+			downloads = downloads.filter((d) => d.id !== data.id);
+		} else {
+			downloads = downloads.map((d, i) => (i === idx ? updated : d));
 		}
 	} else if (data.status === 'queued' || data.status === 'downloading') {
 		downloads = [

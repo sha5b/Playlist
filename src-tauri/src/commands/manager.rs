@@ -6,6 +6,33 @@ use crate::db::DbPool;
 use crate::db::models::*;
 use crate::db::monitored::{MonitoredPlaylist, MonitoredEntry};
 use crate::download::DownloadManager;
+use crate::download::ytdlp::VideoInfo;
+
+type EntryTuple = (String, Option<String>, Option<String>, Option<f64>, Option<String>, Option<String>);
+
+/// Map fetched playlist entries to the tuple format expected by `upsert_entries`.
+/// For DRM platforms (Spotify, etc.) entries may lack a direct URL; fall back to ytsearch.
+fn map_entries(entries: &[VideoInfo], label: &str) -> Vec<EntryTuple> {
+    entries
+        .iter()
+        .map(|e| {
+            let best_title = e.track.clone().unwrap_or_else(|| e.title.clone());
+            let best_artist = e.artist.clone().or_else(|| e.uploader.clone());
+            let url = e.webpage_url.clone()
+                .filter(|u| !u.is_empty())
+                .unwrap_or_else(|| {
+                    let query = match &best_artist {
+                        Some(a) => format!("{} - {}", a, best_title),
+                        None => best_title.clone(),
+                    };
+                    log::warn!("[{}] No webpage_url for '{}', falling back to search: ytsearch1:{}", label, best_title, query);
+                    format!("ytsearch1:{}", query)
+                });
+            log::info!("[{}] Entry '{}' -> URL: {}", label, best_title, url);
+            (url, Some(best_title), best_artist, e.duration, e.thumbnail.clone(), e.isrc.clone())
+        })
+        .collect()
+}
 
 #[tauri::command]
 pub fn manager_get_playlists(db: State<'_, Arc<DbPool>>) -> Result<Vec<MonitoredPlaylist>, String> {
@@ -18,10 +45,10 @@ pub fn manager_get_entries(
     db: State<'_, Arc<DbPool>>,
     playlist_id: i64,
 ) -> Result<Vec<MonitoredEntry>, String> {
-    log::info!("manager_get_entries called with playlist_id: {}", playlist_id);
+    log::debug!("manager_get_entries called with playlist_id: {}", playlist_id);
     let conn = db.lock().map_err(|e| e.to_string())?;
     let entries = crate::db::monitored::get_entries(&conn, playlist_id).map_err(|e| e.to_string())?;
-    log::info!("manager_get_entries returning {} entries", entries.len());
+    log::debug!("manager_get_entries returning {} entries", entries.len());
     Ok(entries)
 }
 
@@ -98,35 +125,7 @@ pub async fn manager_add_playlist(
         .map_err(|e| e.to_string())?
     };
 
-    // Store entries — prefer music-specific fields (track > title, artist > uploader)
-    // For DRM platforms (Spotify, Apple Music, etc.) entries may lack a direct URL;
-    // fall back to a YouTube search query so they can still be downloaded.
-    let entry_data: Vec<_> = entries
-        .iter()
-        .map(|e| {
-            let best_title = e.track.clone().unwrap_or_else(|| e.title.clone());
-            let best_artist = e.artist.clone().or_else(|| e.uploader.clone());
-            let url = e.webpage_url.clone()
-                .filter(|u| !u.is_empty())
-                .unwrap_or_else(|| {
-                    let query = match &best_artist {
-                        Some(a) => format!("{} - {}", a, best_title),
-                        None => best_title.clone(),
-                    };
-                    log::warn!("[add] No webpage_url for '{}', falling back to search: ytsearch1:{}", best_title, query);
-                    format!("ytsearch1:{}", query)
-                });
-            log::info!("[add] Entry '{}' -> URL: {}", best_title, url);
-            (
-                url,
-                Some(best_title),
-                best_artist,
-                e.duration,
-                e.thumbnail.clone(),
-                e.isrc.clone(),
-            )
-        })
-        .collect();
+    let entry_data = map_entries(&entries, "add");
 
     {
         let conn = db.lock().map_err(|e| e.to_string())?;
@@ -194,32 +193,7 @@ pub async fn manager_sync_playlist(
         .await?
     };
 
-    let entry_data: Vec<_> = fetch_result.entries
-        .iter()
-        .map(|e| {
-            let best_title = e.track.clone().unwrap_or_else(|| e.title.clone());
-            let best_artist = e.artist.clone().or_else(|| e.uploader.clone());
-            let url = e.webpage_url.clone()
-                .filter(|u| !u.is_empty())
-                .unwrap_or_else(|| {
-                    let query = match &best_artist {
-                        Some(a) => format!("{} - {}", a, best_title),
-                        None => best_title.clone(),
-                    };
-                    log::warn!("[sync] No webpage_url for '{}', falling back to search: ytsearch1:{}", best_title, query);
-                    format!("ytsearch1:{}", query)
-                });
-            log::info!("[sync] Entry '{}' -> URL: {}", best_title, url);
-            (
-                url,
-                Some(best_title),
-                best_artist,
-                e.duration,
-                e.thumbnail.clone(),
-                e.isrc.clone(),
-            )
-        })
-        .collect();
+    let entry_data = map_entries(&fetch_result.entries, "sync");
 
     let (new_count, total_count) = {
         let conn = db.lock().map_err(|e| e.to_string())?;

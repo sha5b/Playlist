@@ -101,6 +101,22 @@ struct SharedState {
     queue: PlayQueue,
 }
 
+/// Read the shared state, recovering gracefully if the lock was poisoned.
+fn read_state(lock: &RwLock<SharedState>) -> std::sync::RwLockReadGuard<'_, SharedState> {
+    lock.read().unwrap_or_else(|e| {
+        log::error!("[audio] State lock poisoned (read), recovering");
+        e.into_inner()
+    })
+}
+
+/// Write the shared state, recovering gracefully if the lock was poisoned.
+fn write_state(lock: &RwLock<SharedState>) -> std::sync::RwLockWriteGuard<'_, SharedState> {
+    lock.write().unwrap_or_else(|e| {
+        log::error!("[audio] State lock poisoned (write), recovering");
+        e.into_inner()
+    })
+}
+
 /// Streaming decoder -- file bytes are in memory but samples are decoded on-demand.
 /// Uses ~5MB per track (compressed file bytes) instead of ~100MB (raw f32 PCM).
 type PreloadedSource = Decoder<Cursor<Vec<u8>>>;
@@ -190,11 +206,11 @@ impl AudioEngine {
     }
 
     pub fn get_state(&self) -> PlaybackState {
-        self.shared.read().unwrap().playback.clone()
+        read_state(&self.shared).playback.clone()
     }
 
     pub fn get_queue(&self) -> (Vec<QueueTrack>, Option<usize>) {
-        let shared = self.shared.read().unwrap();
+        let shared = read_state(&self.shared);
         (shared.queue.get_ordered_tracks(), shared.queue.position())
     }
 
@@ -257,18 +273,16 @@ impl AudioEngine {
     /// In rodio 0.20, `Sink::stop()` permanently kills a sink (the `stopped` flag
     /// is never cleared), so we must create a new Sink each time we want to play
     /// something new.  New sinks start un-paused.
-    fn make_sink(stream_handle: &OutputStreamHandle, volume: f32) -> Sink {
-        let sink = Sink::try_new(stream_handle).unwrap_or_else(|e| {
-            log::error!("[audio] Failed to create audio sink: {}. Audio device may have been disconnected.", e);
-            panic!("Audio output unavailable: {}", e);
-        });
+    fn make_sink(stream_handle: &OutputStreamHandle, volume: f32) -> Result<Sink, String> {
+        let sink = Sink::try_new(stream_handle)
+            .map_err(|e| format!("Failed to create audio sink: {}. Audio device may have been disconnected.", e))?;
         sink.set_volume(volume);
-        sink
+        Ok(sink)
     }
 
     /// Try to preload the next track based on current queue state.
     fn try_preload_next(shared: &Arc<RwLock<SharedState>>, ffmpeg_path: Option<&str>) -> Option<(QueueTrack, PreloadedSource, u64)> {
-        let s = shared.read().unwrap();
+        let s = read_state(&shared);
         let next_track = s.queue.peek_next(s.playback.repeat == RepeatMode::All)?;
         let track = next_track.clone();
         drop(s);
@@ -309,7 +323,20 @@ impl AudioEngine {
             }
         };
 
-        let mut sink = Self::make_sink(&stream_handle, 0.75);
+        let mut sink = match Self::make_sink(&stream_handle, 0.75) {
+            Ok(s) => s,
+            Err(e) => {
+                log::error!("[audio] {}", e);
+                emit(PlayerEvent::Error(e));
+                // Keep thread alive to drain commands even without audio
+                loop {
+                    match cmd_rx.recv() {
+                        Ok(PlayerCommand::Shutdown) | Err(_) => return,
+                        _ => {}
+                    }
+                }
+            }
+        };
         sink.pause(); // Start paused — nothing to play yet
 
         let mut current_duration_ms: u64 = 0;
@@ -328,6 +355,20 @@ impl AudioEngine {
         let mut explicit_device: Option<String> = None; // set when user manually picks a device
         let mut last_device_check = Instant::now();
 
+        /// Try to create a sink; on failure emit an error event and skip to next command.
+        macro_rules! make_sink_or_continue {
+            ($handle:expr, $vol:expr, $emit:expr) => {
+                match Self::make_sink($handle, $vol) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        log::error!("[audio] {}", e);
+                        $emit(PlayerEvent::Error(e));
+                        continue;
+                    }
+                }
+            };
+        }
+
         log::info!("[audio] Audio thread ready, waiting for commands");
 
         loop {
@@ -337,13 +378,13 @@ impl AudioEngine {
                         PlayerCommand::Play { tracks, start_index, source } => {
                             log::info!("[audio] Play: {} tracks, start_index={}", tracks.len(), start_index);
                             {
-                                let mut s = shared.write().unwrap();
+                                let mut s = write_state(&shared);
                                 s.queue.set_tracks(tracks, start_index);
                             }
                             preloaded = None;
                             if let Some((src, dur)) = source {
                                 // Streaming decoder created on caller's thread — instant append
-                                let track = shared.read().unwrap().queue.current().cloned();
+                                let track = read_state(&shared).queue.current().cloned();
                                 if let Some(track) = track {
                                     // Use decoder duration, fall back to DB duration if unavailable
                                     current_duration_ms = if dur > 0 { dur } else {
@@ -351,12 +392,12 @@ impl AudioEngine {
                                     };
                                     accumulated_ms = 0;
                                     sink.stop();
-                                    sink = Self::make_sink(&stream_handle, sink.volume());
+                                    sink = make_sink_or_continue!(&stream_handle, sink.volume(), emit);
                                     sink.append(src);
                                     play_start = Some(Instant::now());
                                     is_playing = true;
                                     {
-                                        let mut s = shared.write().unwrap();
+                                        let mut s = write_state(&shared);
                                         s.playback.state = PlayerState::Playing;
                                         s.playback.current_track = Some(track.clone());
                                         s.playback.position_ms = 0;
@@ -377,7 +418,7 @@ impl AudioEngine {
                         PlayerCommand::PlaySingle(track) => {
                             log::info!("[audio] PlaySingle: {}", track.title);
                             {
-                                let mut s = shared.write().unwrap();
+                                let mut s = write_state(&shared);
                                 s.queue.set_tracks(vec![track], 0);
                             }
                             preloaded = None;
@@ -391,7 +432,7 @@ impl AudioEngine {
                             }
                             is_playing = false;
                             {
-                                let mut s = shared.write().unwrap();
+                                let mut s = write_state(&shared);
                                 s.playback.state = PlayerState::Paused;
                                 s.playback.position_ms = accumulated_ms;
                                 emit(PlayerEvent::StateChanged(s.playback.clone()));
@@ -404,7 +445,7 @@ impl AudioEngine {
                                 play_start = Some(Instant::now());
                                 is_playing = true;
                                 {
-                                    let mut s = shared.write().unwrap();
+                                    let mut s = write_state(&shared);
                                     s.playback.state = PlayerState::Playing;
                                     emit(PlayerEvent::StateChanged(s.playback.clone()));
                                 }
@@ -416,7 +457,7 @@ impl AudioEngine {
                             log::info!("[audio] Stop");
                             // Stop old sink explicitly — dropping only detaches (audio keeps playing)
                             sink.stop();
-                            sink = Self::make_sink(&stream_handle, sink.volume());
+                            sink = make_sink_or_continue!(&stream_handle, sink.volume(), emit);
                             sink.pause();
                             play_start = None;
                             accumulated_ms = 0;
@@ -424,7 +465,7 @@ impl AudioEngine {
                             is_playing = false;
                             preloaded = None;
                             {
-                                let mut s = shared.write().unwrap();
+                                let mut s = write_state(&shared);
                                 s.playback.state = PlayerState::Stopped;
                                 s.playback.current_track = None;
                                 s.playback.position_ms = 0;
@@ -439,7 +480,7 @@ impl AudioEngine {
                         PlayerCommand::Next => {
                             log::info!("[audio] Next");
                             let next_track = {
-                                let mut s = shared.write().unwrap();
+                                let mut s = write_state(&shared);
                                 let repeat = s.playback.repeat.clone();
                                 if repeat == RepeatMode::One {
                                     s.queue.current().cloned()
@@ -458,14 +499,14 @@ impl AudioEngine {
                             } else {
                                 log::info!("[audio] Queue ended (Next)");
                                 sink.stop();
-                                sink = Self::make_sink(&stream_handle, sink.volume());
+                                sink = make_sink_or_continue!(&stream_handle, sink.volume(), emit);
                                 sink.pause();
                                 play_start = None;
                                 accumulated_ms = 0;
                                 is_playing = false;
                                 preloaded = None;
                                 {
-                                    let mut s = shared.write().unwrap();
+                                    let mut s = write_state(&shared);
                                     s.playback.state = PlayerState::Stopped;
                                     s.playback.position_ms = 0;
                                     emit(PlayerEvent::StateChanged(s.playback.clone()));
@@ -476,7 +517,7 @@ impl AudioEngine {
                             log::info!("[audio] Prev");
                             // Always go to previous track. If there is no previous
                             // track in the queue, restart the current one.
-                            let has_prev = shared.write().unwrap().queue.prev().is_some();
+                            let has_prev = write_state(&shared).queue.prev().is_some();
                             preloaded = None;
                             Self::play_current(&mut sink, &stream_handle, &shared, &emit, &mut current_duration_ms, &mut play_start, &mut accumulated_ms, &mut is_playing, ffmpeg_path.as_deref());
                             if !has_prev {
@@ -492,7 +533,7 @@ impl AudioEngine {
                                     play_start = Some(Instant::now());
                                     is_playing = true;
                                     {
-                                        let mut s = shared.write().unwrap();
+                                        let mut s = write_state(&shared);
                                         s.playback.position_ms = pos_ms;
                                         s.playback.state = PlayerState::Playing;
                                         emit(PlayerEvent::StateChanged(s.playback.clone()));
@@ -508,7 +549,7 @@ impl AudioEngine {
                             let vol = vol.clamp(0.0, 1.0);
                             sink.set_volume(vol as f32);
                             {
-                                let mut s = shared.write().unwrap();
+                                let mut s = write_state(&shared);
                                 s.playback.volume = vol;
                                 emit(PlayerEvent::StateChanged(s.playback.clone()));
                             }
@@ -516,7 +557,7 @@ impl AudioEngine {
                         PlayerCommand::SetShuffle(shuffle) => {
                             log::info!("[audio] SetShuffle: {}", shuffle);
                             {
-                                let mut s = shared.write().unwrap();
+                                let mut s = write_state(&shared);
                                 s.queue.set_shuffle(shuffle);
                                 s.playback.shuffle = shuffle;
                                 s.playback.queue_position = s.queue.position();
@@ -530,7 +571,7 @@ impl AudioEngine {
                         PlayerCommand::SetRepeat(mode) => {
                             log::info!("[audio] SetRepeat: {:?}", mode);
                             {
-                                let mut s = shared.write().unwrap();
+                                let mut s = write_state(&shared);
                                 s.playback.repeat = mode;
                                 emit(PlayerEvent::StateChanged(s.playback.clone()));
                             }
@@ -539,7 +580,7 @@ impl AudioEngine {
                         PlayerCommand::AddToQueue(track) => {
                             log::info!("[audio] AddToQueue: {}", track.title);
                             {
-                                let mut s = shared.write().unwrap();
+                                let mut s = write_state(&shared);
                                 s.queue.add_track(track);
                                 s.playback.queue_length = s.queue.len();
                                 let tracks = s.queue.get_ordered_tracks();
@@ -551,7 +592,7 @@ impl AudioEngine {
                         PlayerCommand::AddNext(track) => {
                             log::info!("[audio] AddNext: {}", track.title);
                             {
-                                let mut s = shared.write().unwrap();
+                                let mut s = write_state(&shared);
                                 s.queue.add_next(track);
                                 s.playback.queue_length = s.queue.len();
                                 let tracks = s.queue.get_ordered_tracks();
@@ -563,7 +604,7 @@ impl AudioEngine {
                         PlayerCommand::MoveInQueue { from, to } => {
                             log::info!("[audio] MoveInQueue: from={} to={}", from, to);
                             {
-                                let mut s = shared.write().unwrap();
+                                let mut s = write_state(&shared);
                                 s.queue.move_in_queue(from, to);
                                 s.playback.queue_position = s.queue.position();
                                 let tracks = s.queue.get_ordered_tracks();
@@ -575,7 +616,7 @@ impl AudioEngine {
                         PlayerCommand::RemoveFromQueue(order_idx) => {
                             log::info!("[audio] RemoveFromQueue: index={}", order_idx);
                             {
-                                let mut s = shared.write().unwrap();
+                                let mut s = write_state(&shared);
                                 s.queue.remove_at_order_index(order_idx);
                                 s.playback.queue_length = s.queue.len();
                                 s.playback.queue_position = s.queue.position();
@@ -588,7 +629,7 @@ impl AudioEngine {
                         PlayerCommand::SkipTo(order_idx) => {
                             log::info!("[audio] SkipTo: index={}", order_idx);
                             let found = {
-                                let mut s = shared.write().unwrap();
+                                let mut s = write_state(&shared);
                                 s.queue.skip_to(order_idx).is_some()
                             };
                             if found {
@@ -599,14 +640,14 @@ impl AudioEngine {
                         PlayerCommand::ClearQueue => {
                             log::info!("[audio] ClearQueue");
                             sink.stop();
-                            sink = Self::make_sink(&stream_handle, sink.volume());
+                            sink = make_sink_or_continue!(&stream_handle, sink.volume(), emit);
                             sink.pause();
                             play_start = None;
                             accumulated_ms = 0;
                             is_playing = false;
                             preloaded = None;
                             {
-                                let mut s = shared.write().unwrap();
+                                let mut s = write_state(&shared);
                                 s.queue.clear();
                                 s.playback.state = PlayerState::Stopped;
                                 s.playback.current_track = None;
@@ -644,7 +685,7 @@ impl AudioEngine {
                                     sink.stop();
                                     _stream = new_stream;
                                     stream_handle = new_handle;
-                                    sink = Self::make_sink(&stream_handle, vol);
+                                    sink = make_sink_or_continue!(&stream_handle, vol, emit);
                                     sink.pause();
                                     play_start = None;
                                     accumulated_ms = 0;
@@ -655,7 +696,7 @@ impl AudioEngine {
                                         cpal::default_host().default_output_device().and_then(|d| d.name().ok())
                                     });
                                     {
-                                        let mut s = shared.write().unwrap();
+                                        let mut s = write_state(&shared);
                                         s.playback.state = PlayerState::Stopped;
                                         s.playback.position_ms = 0;
                                         emit(PlayerEvent::StateChanged(s.playback.clone()));
@@ -698,10 +739,10 @@ impl AudioEngine {
                                     sink.stop();
                                     _stream = new_stream;
                                     stream_handle = new_handle;
-                                    sink = Self::make_sink(&stream_handle, vol);
+                                    sink = make_sink_or_continue!(&stream_handle, vol, emit);
 
                                     // If a track was playing, re-decode and seek to resume playback
-                                    let current_track = shared.read().unwrap().playback.current_track.clone();
+                                    let current_track = read_state(&shared).playback.current_track.clone();
                                     if was_playing {
                                         if let Some(ref track) = current_track {
                                             match Self::decode_track(&track.file_path, ffmpeg_path.as_deref()) {
@@ -767,7 +808,7 @@ impl AudioEngine {
             // Emit progress every ~500ms
             if last_progress_emit.elapsed() >= Duration::from_millis(450) {
                 {
-                    let mut s = shared.write().unwrap();
+                    let mut s = write_state(&shared);
                     s.playback.position_ms = pos;
                 }
                 emit(PlayerEvent::Progress {
@@ -781,7 +822,7 @@ impl AudioEngine {
             if sink.empty() && current_duration_ms > 0 {
                 log::info!("[audio] Track finished naturally");
                 let (next_exists, use_preloaded) = {
-                    let mut s = shared.write().unwrap();
+                    let mut s = write_state(&shared);
                     let repeat = s.playback.repeat.clone();
                     if repeat == RepeatMode::One {
                         (s.queue.current().is_some(), false)
@@ -809,11 +850,11 @@ impl AudioEngine {
                     accumulated_ms = 0;
                     // Stop old sink, then fresh sink for the new track
                     sink.stop();
-                    sink = Self::make_sink(&stream_handle, sink.volume());
+                    sink = make_sink_or_continue!(&stream_handle, sink.volume(), emit);
                     sink.append(source);
                     play_start = Some(Instant::now());
                     {
-                        let mut s = shared.write().unwrap();
+                        let mut s = write_state(&shared);
                         s.playback.state = PlayerState::Playing;
                         s.playback.current_track = Some(track.clone());
                         s.playback.position_ms = 0;
@@ -835,9 +876,9 @@ impl AudioEngine {
                     preloaded = None;
                     // Stop old sink, fresh sink in paused state
                     sink.stop();
-                    sink = Self::make_sink(&stream_handle, sink.volume());
+                    sink = make_sink_or_continue!(&stream_handle, sink.volume(), emit);
                     sink.pause();
-                    let mut s = shared.write().unwrap();
+                    let mut s = write_state(&shared);
                     s.playback.state = PlayerState::Stopped;
                     s.playback.position_ms = 0;
                     emit(PlayerEvent::StateChanged(s.playback.clone()));
@@ -857,7 +898,7 @@ impl AudioEngine {
         is_playing: &mut bool,
         ffmpeg_path: Option<&str>,
     ) {
-        let track = shared.read().unwrap().queue.current().cloned();
+        let track = read_state(&shared).queue.current().cloned();
 
         if let Some(track) = track {
             log::info!("[audio] play_current: \"{}\" ({})", track.title, track.file_path);
@@ -874,14 +915,22 @@ impl AudioEngine {
                     // Then create a fresh Sink (rodio 0.20 stop() permanently kills a sink,
                     // so we must create a new one each time).
                     sink.stop();
-                    *sink = Self::make_sink(stream_handle, sink.volume());
+                    *sink = match Self::make_sink(stream_handle, sink.volume()) {
+                        Ok(s) => s,
+                        Err(e) => {
+                            log::error!("[audio] {}", e);
+                            *is_playing = false;
+                            emit(PlayerEvent::Error(e));
+                            return;
+                        }
+                    };
                     sink.append(source);
                     // New sinks start un-paused, so playback begins immediately
                     *play_start = Some(Instant::now());
                     *is_playing = true;
 
                     {
-                        let mut s = shared.write().unwrap();
+                        let mut s = write_state(&shared);
                         s.playback.state = PlayerState::Playing;
                         s.playback.current_track = Some(track.clone());
                         s.playback.position_ms = 0;

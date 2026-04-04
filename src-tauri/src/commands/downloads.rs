@@ -6,6 +6,19 @@ use crate::db::DbPool;
 use crate::db::models::*;
 use crate::download::DownloadManager;
 
+const ALLOWED_FORMATS: &[&str] = &["mp3", "opus", "flac", "m4a", "wav", "ogg", "vorbis"];
+const ALLOWED_QUALITIES: &[&str] = &["best", "320", "256", "192", "128"];
+
+fn validate_download_params(format: &str, quality: &str) -> Result<(), String> {
+    if !ALLOWED_FORMATS.contains(&format) {
+        return Err(format!("Invalid download format '{}'. Allowed: {}", format, ALLOWED_FORMATS.join(", ")));
+    }
+    if !ALLOWED_QUALITIES.contains(&quality) {
+        return Err(format!("Invalid download quality '{}'. Allowed: {}", quality, ALLOWED_QUALITIES.join(", ")));
+    }
+    Ok(())
+}
+
 // --- Downloads ---
 
 #[tauri::command]
@@ -56,6 +69,7 @@ pub async fn download_start(
     };
     let fmt = format.unwrap_or(default_format);
     let qual = quality.unwrap_or(default_quality);
+    validate_download_params(&fmt, &qual)?;
 
     // For Spotify URLs, fetch metadata and convert to YouTube search
     let (final_url, title, artist) = if parsed.platform == "spotify" {
@@ -397,7 +411,7 @@ pub async fn download_artist_missing(
     for mbid in &album_mbids {
         // Rate limit for MusicBrainz
         if !all_downloads.is_empty() {
-            tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(crate::metadata::musicbrainz::MB_RATE_LIMIT_MS)).await;
         }
 
         // Fetch the release group's primary release to get tracklist
@@ -424,7 +438,7 @@ pub async fn download_artist_missing(
         let Some(release_id) = release_id else { continue };
 
         // Rate limit
-        tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(crate::metadata::musicbrainz::MB_RATE_LIMIT_MS)).await;
 
         // Fetch tracklist from the release
         let release_url = format!(

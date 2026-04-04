@@ -55,7 +55,14 @@
       "Bash(convert icon.png -resize 64x64 64x64.png)",
       "Bash(convert icon.png -resize 256x256 256x256.png)",
       "Bash(desktop-file-validate /home/sha5b/Documents/GitHub/Playlist/src-tauri/resources/com.playlist.app.desktop)",
-      "Bash(appstreamcli validate:*)"
+      "Bash(appstreamcli validate:*)",
+      "Bash(grep -E \"src/.*\\\\.\\(ts|tsx|js\\)$\")",
+      "Bash(file /home/sha5b/Documents/GitHub/Playlist/src-tauri/icons/*)",
+      "Bash(ls -la /home/sha5b/Documents/GitHub/Playlist/src-tauri/icons/*.png /home/sha5b/Documents/GitHub/Playlist/src-tauri/icons/*.ico)",
+      "Bash(python3 -c \"from PIL import Image; print\\('pillow available'\\)\")",
+      "Bash(wc -l /home/sha5b/Documents/GitHub/Playlist/src-tauri/src/commands/*.rs)",
+      "Bash(find /home/sha5b/Documents/GitHub/Playlist/src-tauri/src -name \"lib.rs\" -exec cat {} \\\\;)",
+      "Bash(npm list:*)"
     ]
   }
 }

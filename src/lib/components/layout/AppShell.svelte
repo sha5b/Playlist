@@ -11,6 +11,7 @@
 	import { libraryStore } from '$lib/stores/library.svelte';
 	import { downloadStore } from '$lib/stores/downloads.svelte';
 	import { metadataScanStore } from '$lib/stores/metadataScan.svelte';
+	import { mvDownloadStore } from '$lib/stores/mvDownloads.svelte';
 
 	let { children } = $props();
 
@@ -22,6 +23,14 @@
 		libraryStore.init();
 		downloadStore.init();
 		metadataScanStore.init();
+		mvDownloadStore.init();
+		return () => {
+			player.destroy();
+			libraryStore.destroy();
+			downloadStore.destroy();
+			metadataScanStore.destroy();
+			mvDownloadStore.destroy();
+		};
 	});
 
 	function handleKeydown(e: KeyboardEvent) {

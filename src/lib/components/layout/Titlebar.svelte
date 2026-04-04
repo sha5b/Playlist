@@ -4,6 +4,7 @@
 
 	let isMaximized = $state(false);
 	const appWindow = getCurrentWindow();
+	let unlistenResize: (() => void) | null = null;
 
 	async function updateMaximizedState() {
 		isMaximized = await appWindow.isMaximized();
@@ -11,10 +12,13 @@
 
 	$effect(() => {
 		updateMaximizedState();
-		const unlisten = appWindow.onResized(() => {
+		appWindow.onResized(() => {
 			updateMaximizedState();
-		});
-		return () => { unlisten.then(fn => fn()); };
+		}).then(fn => { unlistenResize = fn; });
+		return () => {
+			unlistenResize?.();
+			unlistenResize = null;
+		};
 	});
 
 	async function minimize() {
@@ -26,7 +30,7 @@
 	}
 
 	async function close() {
-		await appWindow.close();
+		await appWindow.hide();
 	}
 </script>
 

@@ -16,8 +16,10 @@
 		player.seek(seconds);
 	}
 
+	let volumeTimeout: ReturnType<typeof setTimeout>;
 	function handleVolumeChange(value: number) {
-		player.setVolume(value / 100);
+		clearTimeout(volumeTimeout);
+		volumeTimeout = setTimeout(() => player.setVolume(value / 100), 16);
 	}
 
 	const progressPercent = $derived(
@@ -98,6 +100,7 @@
 				size="icon-sm"
 				class={player.shuffle ? 'text-primary hover:text-primary' : 'text-muted-foreground hover:text-foreground'}
 				onclick={() => player.toggleShuffle()}
+				aria-label="Toggle shuffle"
 			>
 				<Shuffle class="size-4" />
 			</Button>
@@ -107,6 +110,7 @@
 				class="text-muted-foreground hover:text-foreground"
 				onclick={() => player.prev()}
 				disabled={!hasTrack}
+				aria-label="Previous track"
 			>
 				<SkipBack class="size-4" />
 			</Button>
@@ -115,6 +119,7 @@
 				size="icon"
 				class="rounded-full"
 				onclick={handlePlayPause}
+				aria-label={player.isPlaying ? 'Pause' : 'Play'}
 			>
 				{#if player.isPlaying}
 					<Pause class="size-5" fill="currentColor" />
@@ -128,6 +133,7 @@
 				class="text-muted-foreground hover:text-foreground"
 				onclick={() => player.next()}
 				disabled={!hasTrack}
+				aria-label="Next track"
 			>
 				<SkipForward class="size-4" />
 			</Button>
@@ -137,6 +143,7 @@
 				class={player.repeat !== 'off' ? 'text-primary hover:text-primary' : 'text-muted-foreground hover:text-foreground'}
 				onclick={() => player.cycleRepeat()}
 				disabled={!hasTrack}
+				aria-label="Cycle repeat mode"
 			>
 				<RepeatIcon class="size-4" />
 			</Button>
@@ -145,6 +152,7 @@
 				size="icon-sm"
 				class={player.autoplay ? 'text-primary hover:text-primary' : 'text-muted-foreground hover:text-foreground'}
 				onclick={() => player.toggleAutoplay()}
+				aria-label="Toggle autoplay"
 				title="Autoplay: add random tracks when queue ends"
 			>
 				<Infinity class="size-4" />
@@ -176,6 +184,7 @@
 			size="icon-sm"
 			class="text-muted-foreground hover:text-foreground"
 			onclick={() => player.setVolume(player.volume === 0 ? 0.75 : 0)}
+			aria-label={player.volume === 0 ? 'Unmute' : 'Mute'}
 		>
 			<VolumeIcon class="size-4" />
 		</Button>
@@ -199,6 +208,7 @@
 				size="icon-sm"
 				class={player.queueOpen ? 'text-primary hover:text-primary' : 'text-muted-foreground hover:text-foreground'}
 				onclick={() => player.toggleQueuePanel()}
+				aria-label="Toggle queue"
 			>
 				<ListMusic class="size-4" />
 			</Button>

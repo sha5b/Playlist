@@ -79,10 +79,7 @@
 			}
 
 			// Update all queueIndex values to match new positions
-			dndItems = newItems;
-			for (let j = 0; j < newItems.length; j++) {
-				newItems[j].queueIndex = startOffset + j;
-			}
+			dndItems = newItems.map((item, j) => ({ ...item, queueIndex: startOffset + j }));
 		}
 
 		isDragging = false;

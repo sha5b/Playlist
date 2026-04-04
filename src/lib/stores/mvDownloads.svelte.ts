@@ -55,11 +55,20 @@ function getProgress(trackId: number): number {
 	return active.find((d) => d.trackId === trackId)?.progress ?? 0;
 }
 
+function destroy() {
+	if (unlisten) {
+		unlisten();
+		unlisten = null;
+	}
+	initialized = false;
+}
+
 export const mvDownloadStore = {
 	get active() {
 		return active;
 	},
 	init,
+	destroy,
 	start,
 	isDownloading,
 	getProgress,
