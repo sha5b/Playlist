@@ -55,6 +55,22 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      - name: Sync version from git tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "Updating version to $VERSION"
+          # Update tauri.conf.json
+          sed -i "s/\"version\": \".*\"/\"version\": \"$VERSION\"/" src-tauri/tauri.conf.json
+          # Update Cargo.toml (only the package version, not dependency versions)
+          sed -i "0,/^version = \".*\"/s//version = \"$VERSION\"/" src-tauri/Cargo.toml
+          # Update package.json
+          sed -i "s/\"version\": \".*\"/\"version\": \"$VERSION\"/" package.json
+          echo "Versions updated:"
+          grep '"version"' src-tauri/tauri.conf.json package.json
+          grep '^version' src-tauri/Cargo.toml | head -1
+
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
         env:
