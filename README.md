@@ -47,21 +47,70 @@ Output (`.msi` on Windows, `.dmg` on macOS, `.deb`/`.AppImage` on Linux) is in `
 
 ### Flatpak
 
-A Flatpak manifest is provided at `com.playlist.app.yml` for building and publishing to Flathub.
+A Flatpak manifest is provided at `com.playlist.app.yml` for building and publishing to Flathub. The build targets GNOME Platform 48 and bundles yt-dlp as a standalone binary. System tray support is provided via libayatana-appindicator built as a Flatpak module.
+
+#### Prerequisites
 
 ```sh
-# Generate offline dependency manifests (required for Flatpak builds)
-python3 flatpak-cargo-generator.py src-tauri/Cargo.lock -o cargo-sources.json
-flatpak-node-generator npm package-lock.json -o node-sources.json
+# Install flatpak-builder and pip
+sudo dnf install flatpak-builder python3-pip   # Fedora
+sudo apt install flatpak-builder python3-pip   # Ubuntu/Debian
 
-# Build the Flatpak locally
-flatpak-builder --force-clean build-dir com.playlist.app.yml
-
-# Test the build
-flatpak-builder --run build-dir com.playlist.app.yml playlist
+# Install the SDK and extensions
+flatpak install flathub org.gnome.Sdk//48
+flatpak install flathub org.freedesktop.Sdk.Extension.rust-stable//24.08
+flatpak install flathub org.freedesktop.Sdk.Extension.node22//24.08
 ```
 
-The Flatpak bundles yt-dlp and uses ffmpeg from the GNOME runtime. System tray support is provided via libayatana-appindicator built as a Flatpak module.
+#### Generate offline dependency manifests
+
+Flatpak builds have no network access, so all Rust and Node.js dependencies must be pre-fetched. Use the [flatpak-builder-tools](https://github.com/nicknisi/nicknisi) generators:
+
+```sh
+# Clone the generator tools
+git clone https://github.com/nicknisi/nicknisi /tmp/flatpak-builder-tools
+pip3 install toml aiohttp
+
+# Generate Cargo sources from lockfile
+python3 /tmp/flatpak-builder-tools/cargo/flatpak-cargo-generator.py \
+  src-tauri/Cargo.lock -o cargo-sources.json
+
+# Generate Node.js sources from lockfile
+python3 /tmp/flatpak-builder-tools/node/flatpak-node-generator.py \
+  npm package-lock.json -o node-sources.json
+```
+
+#### Build and test locally
+
+```sh
+# Build the Flatpak
+flatpak-builder --force-clean build-dir com.playlist.app.yml
+
+# Test run
+flatpak-builder --run build-dir com.playlist.app.yml playlist
+
+# Install locally for full testing
+flatpak-builder --user --install --force-clean build-dir com.playlist.app.yml
+flatpak run com.playlist.app
+```
+
+#### Flathub submission
+
+To submit to Flathub, follow the [Flathub submission guide](https://docs.flathub.org/docs/for-app-authors/submission):
+
+1. Ensure the local Flatpak build works end-to-end
+2. Add screenshots to `src-tauri/resources/com.playlist.app.metainfo.xml`
+3. Validate metainfo with `flatpak-builder-lint`
+4. Fork the [Flathub repository](https://github.com/nicknisi/nicknisi) on GitHub
+5. Clone the `new-pr` branch and add the manifest + source files
+6. Open a PR against the `new-pr` branch (never `master`)
+
+**Remaining Flathub checklist:**
+- [ ] Add app screenshots to metainfo.xml
+- [ ] Generate `cargo-sources.json` and `node-sources.json`
+- [ ] Evaluate app ID rename to `io.github.sha5b.Playlist` (Flathub requires this for GitHub-hosted projects without a custom domain)
+- [ ] Run `flatpak-builder-lint` and fix any issues
+- [ ] Test full Flatpak build locally
 
 ## Project Structure
 

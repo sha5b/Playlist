@@ -1,6 +1,6 @@
 app-id: com.playlist.app
 runtime: org.gnome.Platform
-runtime-version: '47'
+runtime-version: '48'
 sdk: org.gnome.Sdk
 sdk-extensions:
   - org.freedesktop.Sdk.Extension.rust-stable
@@ -40,7 +40,7 @@ modules:
     sources:
       - type: file
         url: https://github.com/yt-dlp/yt-dlp/releases/download/2025.03.31/yt-dlp_linux
-        sha256: FIXME  # Generate with: sha256sum yt-dlp_linux
+        sha256: 4afb6d0b26ba27047988e315d9afa69032f30ca070d6c83833176ecc6f8f4695
         dest-filename: yt-dlp
 
   # libayatana-appindicator for system tray support

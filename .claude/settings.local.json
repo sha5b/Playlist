@@ -81,7 +81,21 @@
       "Bash(find /home/sha5b/Documents/GitHub/Playlist/src-tauri/src -name \"*.rs\" -exec grep -l \"save.*image\\\\|download.*image\\\\|fetch.*image\" {} \\\\;)",
       "WebFetch(domain:lrclib.net)",
       "Bash(grep -A 5 \"function handleDownloadTrack\" /home/sha5b/Documents/GitHub/Playlist/src/routes/library/albums/[id]/+page.svelte)",
-      "Bash(grep -E '\\\\.\\(md|txt|conf\\)$')"
+      "Bash(grep -E '\\\\.\\(md|txt|conf\\)$')",
+      "WebFetch(domain:docs.flathub.org)",
+      "Bash(gh repo:*)",
+      "Bash(gh secret:*)",
+      "Bash(curl -sL https://github.com/yt-dlp/yt-dlp/releases/download/2025.03.31/yt-dlp_linux)",
+      "Bash(flatpak --version)",
+      "Bash(pip list:*)",
+      "Bash(flatpak list:*)",
+      "Bash(pip install:*)",
+      "Bash(pip3 --version)",
+      "Bash(python3 -m pip --version)",
+      "Bash(python3 -c \"import urllib.request; urllib.request.urlretrieve\\('https://raw.githubusercontent.com/nicknisi/nicknisi/main/cargo/flatpak-cargo-generator.py', '/dev/null'\\)\")",
+      "Bash(python3 -c \"import urllib.request; urllib.request.urlretrieve\\('https://raw.githubusercontent.com/nicknisi/nicknisi/main/README.md', '/dev/null'\\)\")",
+      "Bash(python3 -c \"import urllib.request; urllib.request.urlretrieve\\('https://raw.githubusercontent.com/nicknisi/nicknisi/main/flatpak-builder-tools/cargo/flatpak-cargo-generator.py', '/dev/null'\\)\")",
+      "Bash(grep -E \"\\\\.\\(ts|js|json\\)$\")"
     ]
   }
 }

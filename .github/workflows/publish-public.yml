@@ -1,0 +1,63 @@
+name: Publish to Public Repo
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to publish (e.g. v0.4.1)'
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Determine tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            echo "tag=${{ github.event.release.tag_name }}" >> "$GITHUB_OUTPUT"
+            echo "name=${{ github.event.release.name }}" >> "$GITHUB_OUTPUT"
+            echo "body=${{ github.event.release.body }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+            echo "name=Playlist ${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+            echo "body=Download the installer for your platform below." >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download release assets from private repo
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p assets
+          gh release download "${{ steps.tag.outputs.tag }}" --dir assets --pattern '*.exe' --pattern '*.deb' --pattern '*.rpm' --pattern '*.AppImage' --pattern '*.dmg' || true
+          ls -la assets/
+
+      - name: Create release on public repo
+        env:
+          GH_TOKEN: ${{ secrets.PUBLIC_REPO_TOKEN }}
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          REPO="sha5b/Playlist-public"
+
+          # Delete existing release if it exists
+          gh release delete "$TAG" --repo "$REPO" --yes 2>/dev/null || true
+
+          # Create new release with assets
+          if ls assets/* 1>/dev/null 2>&1; then
+            gh release create "$TAG" assets/* \
+              --repo "$REPO" \
+              --title "${{ steps.tag.outputs.name }}" \
+              --notes "${{ steps.tag.outputs.body }}"
+          else
+            gh release create "$TAG" \
+              --repo "$REPO" \
+              --title "${{ steps.tag.outputs.name }}" \
+              --notes "${{ steps.tag.outputs.body }}"
+          fi
