@@ -1,21 +1,22 @@
 <script lang="ts">
-	import { getLibraryStats, getTracks } from '$lib/api/library';
+	import { getLibraryStats, getTracks, getRecentlyAddedAlbums } from '$lib/api/library';
 	import { getMonitoredPlaylists } from '$lib/api/manager';
 	import { libraryStore } from '$lib/stores/library.svelte';
-	import { Clock, TrendingUp, Sparkles, Shuffle } from 'lucide-svelte';
-	import type { LibraryStats, Track } from '$lib/types';
+	import { TrendingUp, Shuffle, Clock } from 'lucide-svelte';
+	import type { LibraryStats, Track, Album } from '$lib/types';
 
 	import WelcomeScreen from '$lib/components/home/WelcomeScreen.svelte';
-	import StatsBar from '$lib/components/home/StatsBar.svelte';
+	import HomeGreeting from '$lib/components/home/HomeGreeting.svelte';
+	import QuickAccessGrid from '$lib/components/home/QuickAccessGrid.svelte';
+	import AlbumCarousel from '$lib/components/home/AlbumCarousel.svelte';
 	import DiscoveryCard from '$lib/components/home/DiscoveryCard.svelte';
-	import GenreCards from '$lib/components/home/GenreCards.svelte';
+	import GenreGrid from '$lib/components/home/GenreGrid.svelte';
 
 	let stats = $state<LibraryStats | null>(null);
 	let hasPlaylists = $state(false);
 
-	let recentlyAdded = $state<Track[]>([]);
+	let recentlyAddedAlbums = $state<Album[]>([]);
 	let mostListened = $state<Track[]>([]);
-	let forgotten = $state<Track[]>([]);
 	let randomMix = $state<Track[]>([]);
 
 	let discoveryLoading = $state(true);
@@ -41,15 +42,13 @@
 		if (!stats || stats.total_tracks === 0) return;
 		discoveryLoading = true;
 		try {
-			const [recent, top, least, random] = await Promise.all([
-				getTracks(0, 10, 'date_added', 'desc'),
+			const [albums, top, random] = await Promise.all([
+				getRecentlyAddedAlbums(10),
 				getTracks(0, 10, 'play_count', 'desc'),
-				getTracks(0, 10, 'play_count', 'asc'),
 				getTracks(0, 10, 'random', 'desc'),
 			]);
-			recentlyAdded = recent.tracks;
+			recentlyAddedAlbums = albums;
 			mostListened = top.tracks;
-			forgotten = least.tracks;
 			randomMix = random.tracks;
 		} catch (e) {
 			console.error('Failed to load discovery:', e);
@@ -67,6 +66,9 @@
 		}
 	}
 
+	// Hide "On Repeat" when no tracks have been played
+	const hasPlayHistory = $derived(mostListened.some((t) => t.play_count > 0));
+
 	$effect(() => {
 		libraryStore.version;
 		loadStats().then(() => {
@@ -80,46 +82,41 @@
 	const isEmpty = $derived(!hasPlaylists && stats !== null && stats.total_tracks === 0);
 </script>
 
-<div class="flex-1 min-h-0 overflow-y-auto space-y-6">
+<div class="flex-1 min-h-0 overflow-y-auto space-y-5 px-1">
 	{#if isEmpty}
 		<WelcomeScreen onChanged={() => { loadStats(); loadPlaylists(); }} />
 	{:else}
-		<div>
-			<h1 class="text-3xl font-bold tracking-tight">Home</h1>
-			<p class="text-muted-foreground mt-1">Your library, your way</p>
-		</div>
+		<HomeGreeting {stats} />
 
-		<StatsBar {stats} />
+		<QuickAccessGrid />
 
-		<DiscoveryCard
+		<AlbumCarousel
 			title="Recently Added"
 			icon={Clock}
-			tracks={recentlyAdded}
+			albums={recentlyAddedAlbums}
 			loading={discoveryLoading}
 		/>
 
-		<DiscoveryCard
-			title="Most Listened"
-			icon={TrendingUp}
-			tracks={mostListened}
-			loading={discoveryLoading}
-		/>
+		{#if hasPlayHistory}
+			<DiscoveryCard
+				title="On Repeat"
+				icon={TrendingUp}
+				tracks={mostListened}
+				loading={discoveryLoading}
+			/>
+		{/if}
 
 		<DiscoveryCard
-			title="Forgotten Gems"
-			icon={Sparkles}
-			tracks={forgotten}
-			loading={discoveryLoading}
-		/>
-
-		<DiscoveryCard
-			title="Random Mix"
+			title="Rediscover"
 			icon={Shuffle}
 			tracks={randomMix}
 			loading={discoveryLoading}
 			onRefresh={refreshRandom}
 		/>
 
-		<GenreCards />
+		<GenreGrid />
+
+		<!-- Bottom spacer for scroll comfort -->
+		<div class="h-4"></div>
 	{/if}
 </div>

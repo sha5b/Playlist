@@ -262,6 +262,16 @@ pub fn player_set_audio_device(
     Ok(())
 }
 
+/// Record a play for a track (increment play_count, set last_played_at).
+#[tauri::command]
+pub fn player_record_play(
+    db: State<'_, Arc<DbPool>>,
+    track_id: i64,
+) -> Result<(), String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    crate::db::tracks::record_play(&conn, track_id).map_err(|e| e.to_string())
+}
+
 /// Get random tracks from the library, optionally excluding certain track IDs.
 #[tauri::command]
 pub fn player_random_tracks(

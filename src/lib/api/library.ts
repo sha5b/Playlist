@@ -107,6 +107,14 @@ export async function getAlbum(id: number): Promise<Album | null> {
 	return invoke('library_get_album', { id });
 }
 
+export async function getRecentlyPlayedAlbums(limit = 8): Promise<Album[]> {
+	return invoke('library_get_recently_played_albums', { limit });
+}
+
+export async function getRecentlyAddedAlbums(limit = 10): Promise<Album[]> {
+	return invoke('library_get_recently_added_albums', { limit });
+}
+
 // --- Artists ---
 
 export async function getArtists(
@@ -343,4 +351,17 @@ export async function getArtistMissingAlbums(artistId: number): Promise<ArtistMi
 
 export async function downloadArtistMissing(artistId: number, albumMbids: string[]): Promise<Download[]> {
 	return invoke('download_artist_missing', { artistId, albumMbids });
+}
+
+// --- Export ---
+
+export interface ExportResult {
+	exported: number;
+	skipped: number;
+	failed: number;
+	destination: string;
+}
+
+export async function exportLibrary(destination: string): Promise<ExportResult> {
+	return invoke('library_export', { destination });
 }

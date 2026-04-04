@@ -4,8 +4,9 @@
 	import { Button } from '$lib/components/ui/button';
 	import { Input } from '$lib/components/ui/input';
 	import { Slider } from '$lib/components/ui/slider';
-	import { FolderOpen, Volume2, RotateCcw, Music, Trash2, Cookie, Sparkles, Loader2, CircleX, Speaker } from 'lucide-svelte';
-	import { getSetting, setSetting, resetLibrary, getMetadataStats, scanMissingMetadata, stopMetadataScan, deleteAllMetadata } from '$lib/api/library';
+	import { FolderOpen, Volume2, RotateCcw, Music, Trash2, Cookie, Sparkles, Loader2, CircleX, Speaker, HardDriveDownload } from 'lucide-svelte';
+	import { getSetting, setSetting, resetLibrary, getMetadataStats, scanMissingMetadata, stopMetadataScan, deleteAllMetadata, exportLibrary } from '$lib/api/library';
+	import { listen } from '@tauri-apps/api/event';
 	import { getAudioDevices, setAudioDevice } from '$lib/api/player';
 	import type { MetadataStats } from '$lib/types';
 	import { player } from '$lib/stores/player.svelte';
@@ -97,6 +98,35 @@
 		await setAudioDevice(deviceName || null);
 		await setSetting('audio_device', deviceName);
 		toast.success(deviceName ? `Audio output: ${deviceName}` : 'Using system default audio device');
+	}
+
+	// --- Export state ---
+	let exporting = $state(false);
+	let exportProgress = $state<{ current: number; total: number; track_title: string } | null>(null);
+
+	async function handleExportLibrary() {
+		const selected = await open({ directory: true, title: 'Choose export destination' });
+		if (!selected) return;
+
+		exporting = true;
+		exportProgress = null;
+
+		const unlisten = await listen<{ current: number; total: number; track_title: string }>('export-progress', (event) => {
+			exportProgress = event.payload;
+		});
+
+		try {
+			const result = await exportLibrary(selected as string);
+			toast.success('Library exported', {
+				description: `${result.exported} copied, ${result.skipped} skipped, ${result.failed} failed`,
+			});
+		} catch (e) {
+			toast.error('Export failed', { description: String(e) });
+		} finally {
+			unlisten();
+			exporting = false;
+			exportProgress = null;
+		}
 	}
 
 	let metadataStats = $state<MetadataStats | null>(null);
@@ -256,6 +286,44 @@
 					Use cookies from your browser to bypass YouTube's bot detection. Pick the browser where you're logged in to YouTube.
 				</p>
 			</div>
+		</CardContent>
+	</Card>
+
+	<Card>
+		<CardHeader>
+			<CardTitle>Export Library</CardTitle>
+			<CardDescription>Copy all your music into a clean folder structure: Artist / Album / Track</CardDescription>
+		</CardHeader>
+		<CardContent class="space-y-4">
+			<div class="flex items-center justify-between gap-4">
+				<div>
+					<p class="text-sm font-medium">Export all tracks</p>
+					<p class="text-xs text-muted-foreground">
+						Copies files into <code class="text-[11px] bg-muted px-1 py-0.5 rounded">Artist/Album/01 - Title.ext</code> — originals are not moved
+					</p>
+				</div>
+				<Button variant="outline" size="sm" onclick={handleExportLibrary} disabled={exporting} class="gap-1.5 shrink-0">
+					{#if exporting}
+						<Loader2 class="size-4 animate-spin" />
+						Exporting...
+					{:else}
+						<HardDriveDownload class="size-4" />
+						Export
+					{/if}
+				</Button>
+			</div>
+			{#if exporting && exportProgress}
+				<div class="space-y-2 rounded-md bg-muted/50 p-3">
+					<div class="flex items-center justify-between text-sm">
+						<span class="text-muted-foreground">Copying files...</span>
+						<span class="tabular-nums font-medium">{exportProgress.current}/{exportProgress.total}</span>
+					</div>
+					<div class="h-1.5 rounded-full bg-muted overflow-hidden">
+						<div class="h-full rounded-full bg-primary transition-all" style="width: {(exportProgress.current / exportProgress.total) * 100}%"></div>
+					</div>
+					<p class="text-xs text-muted-foreground truncate">{exportProgress.track_title}</p>
+				</div>
+			{/if}
 		</CardContent>
 	</Card>
 

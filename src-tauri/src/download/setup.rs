@@ -62,9 +62,13 @@ pub fn resolve_ffmpeg_dir(bin_dir: &Path) -> Option<String> {
         return Some(bin_dir.to_string_lossy().to_string());
     }
     // Fall back to system ffmpeg on PATH
-    if let Ok(output) = std::process::Command::new("which").arg("ffmpeg").output() {
+    #[cfg(unix)]
+    let which_cmd = "which";
+    #[cfg(windows)]
+    let which_cmd = "where";
+    if let Ok(output) = std::process::Command::new(which_cmd).arg("ffmpeg").output() {
         if output.status.success() {
-            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            let path = String::from_utf8_lossy(&output.stdout).lines().next().unwrap_or("").trim().to_string();
             if let Some(parent) = Path::new(&path).parent() {
                 log::info!("ffmpeg resolved from system PATH: {} (dir: {:?})", path, parent);
                 return Some(parent.to_string_lossy().to_string());
@@ -264,6 +268,14 @@ pub async fn ensure_deps(bin_dir: &Path, app_handle: &tauri::AppHandle) -> Resul
                 0.0,
                 "Installing ffmpeg...",
             );
+
+            // Check if pkexec is available for privilege escalation
+            if !Path::new("/usr/bin/pkexec").exists() {
+                return Err("ffmpeg not found. Please install it manually with your package manager:\n\
+                    - Fedora/RHEL: sudo dnf install ffmpeg-free\n\
+                    - Debian/Ubuntu: sudo apt install ffmpeg\n\
+                    - Arch: sudo pacman -S ffmpeg".to_string());
+            }
 
             // Try common Linux package managers
             let result = if Path::new("/usr/bin/dnf").exists() {

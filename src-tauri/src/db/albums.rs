@@ -176,6 +176,43 @@ pub fn get_albums_by_artist(conn: &Connection, artist_id: i64) -> Result<Vec<Alb
     Ok(albums)
 }
 
+pub fn get_recently_played_albums(conn: &Connection, limit: i64) -> Result<Vec<Album>, rusqlite::Error> {
+    let sql = format!(
+        "SELECT {}
+         FROM albums al
+         LEFT JOIN artists a ON al.artist_id = a.id
+         LEFT JOIN tracks t ON t.album_id = al.id
+         WHERE t.last_played_at IS NOT NULL
+         GROUP BY al.id
+         ORDER BY MAX(t.last_played_at) DESC
+         LIMIT ?1",
+        ALBUM_COLUMNS
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let albums = stmt
+        .query_map(params![limit], |row| row_to_album(row))?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(albums)
+}
+
+pub fn get_recently_added_albums(conn: &Connection, limit: i64) -> Result<Vec<Album>, rusqlite::Error> {
+    let sql = format!(
+        "SELECT {}
+         FROM albums al
+         LEFT JOIN artists a ON al.artist_id = a.id
+         LEFT JOIN tracks t ON t.album_id = al.id
+         GROUP BY al.id
+         ORDER BY MAX(t.date_added) DESC
+         LIMIT ?1",
+        ALBUM_COLUMNS
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let albums = stmt
+        .query_map(params![limit], |row| row_to_album(row))?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(albums)
+}
+
 pub fn get_album(conn: &Connection, id: i64) -> Result<Option<Album>, rusqlite::Error> {
     let sql = format!(
         "SELECT {}

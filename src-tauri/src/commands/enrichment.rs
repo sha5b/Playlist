@@ -55,10 +55,13 @@ pub async fn enrich_track(
     macro_rules! update_if_missing {
         ($col:expr, $val:expr) => {
             if let Some(ref v) = $val {
-                let changed = conn.execute(
+                let changed = match conn.execute(
                     &format!("UPDATE tracks SET {} = ?1 WHERE id = ?2 AND ({} IS NULL OR {} = '')", $col, $col, $col),
                     rusqlite::params![v, track_id],
-                ).unwrap_or(0);
+                ) {
+                    Ok(n) => n,
+                    Err(e) => { log::warn!("Failed to update {} for track {}: {}", $col, track_id, e); 0 }
+                };
                 updated += changed as i64;
             }
         };

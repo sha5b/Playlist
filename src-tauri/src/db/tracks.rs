@@ -66,6 +66,7 @@ pub fn get_tracks(
         "artist_name" => format!("a.name {}", if sort_dir == "asc" { "ASC" } else { "DESC" }),
         "duration_ms" => format!("t.duration_ms {}", if sort_dir == "asc" { "ASC" } else { "DESC" }),
         "play_count" => format!("t.play_count {}", if sort_dir == "asc" { "ASC" } else { "DESC" }),
+        "last_played" => "t.last_played_at DESC NULLS LAST".to_string(),
         "year" => format!("t.year {}", if sort_dir == "asc" { "ASC" } else { "DESC" }),
         "random" => "RANDOM()".to_string(),
         _ => format!("t.date_added {}", if sort_dir == "asc" { "ASC" } else { "DESC" }),
@@ -314,6 +315,15 @@ pub fn update_completeness(conn: &Connection, track_id: i64) -> Result<i64, rusq
         params![pct, track_id],
     )?;
     Ok(pct)
+}
+
+/// Record a play: increment play_count and set last_played_at to now.
+pub fn record_play(conn: &Connection, track_id: i64) -> Result<(), rusqlite::Error> {
+    conn.execute(
+        "UPDATE tracks SET play_count = play_count + 1, last_played_at = datetime('now') WHERE id = ?1",
+        params![track_id],
+    )?;
+    Ok(())
 }
 
 pub fn update_fts(conn: &Connection, track_id: i64) -> Result<(), rusqlite::Error> {

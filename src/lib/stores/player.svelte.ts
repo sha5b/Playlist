@@ -64,6 +64,8 @@ function handleEvent(event: PlayerEvent) {
 				positionMs = 0;
 				durationMs = event.data.duration_ms ?? 0;
 				playedHistory.add(event.data.id);
+				// Record the play in the database (fire-and-forget)
+				playerApi.recordPlay(event.data.id).catch(() => {});
 			}
 			updateMediaSessionMetadata(currentTrack);
 			break;
@@ -213,6 +215,7 @@ export const player = {
 	},
 
 	async playTracks(trackIds: number[], startIndex = 0) {
+		playedHistory.clear();
 		await playerApi.playTracks(trackIds, startIndex);
 	},
 
@@ -253,17 +256,21 @@ export const player = {
 	},
 
 	async toggleShuffle() {
-		if (!shuffle && (state === 'stopped' || queueTracks.length === 0)) {
-			// Turning shuffle on with nothing playing — load random tracks
-			const ids = await playerApi.getRandomTracks([], 50);
-			if (ids.length > 0) {
-				playedHistory.clear();
-				await playerApi.playTracks(ids, 0);
-				await playerApi.setShuffle(true);
-				if (!queueOpen) queueOpen = true;
+		try {
+			if (!shuffle && (state === 'stopped' || queueTracks.length === 0)) {
+				// Turning shuffle on with nothing playing — load random tracks
+				const ids = await playerApi.getRandomTracks([], 50);
+				if (ids.length > 0) {
+					playedHistory.clear();
+					await playerApi.playTracks(ids, 0);
+					await playerApi.setShuffle(true);
+					if (!queueOpen) queueOpen = true;
+				}
+			} else {
+				await playerApi.setShuffle(!shuffle);
 			}
-		} else {
-			await playerApi.setShuffle(!shuffle);
+		} catch (e) {
+			console.error('Failed to toggle shuffle:', e);
 		}
 	},
 

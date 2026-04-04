@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::path::{Path, PathBuf};
 use rusqlite::params;
 use tauri::{Emitter, Manager, State};
 use walkdir::WalkDir;
@@ -175,6 +176,18 @@ pub fn library_get_albums(
 pub fn library_get_album(db: State<'_, Arc<DbPool>>, id: i64) -> Result<Option<Album>, String> {
     let conn = db.lock().map_err(|e| e.to_string())?;
     crate::db::albums::get_album(&conn, id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn library_get_recently_played_albums(db: State<'_, Arc<DbPool>>, limit: i64) -> Result<Vec<Album>, String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    crate::db::albums::get_recently_played_albums(&conn, limit).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn library_get_recently_added_albums(db: State<'_, Arc<DbPool>>, limit: i64) -> Result<Vec<Album>, String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    crate::db::albums::get_recently_added_albums(&conn, limit).map_err(|e| e.to_string())
 }
 
 // --- Artists ---
@@ -781,4 +794,146 @@ pub fn library_get_artist_missing_albums(
         "missing": missing,
         "total_discography": total,
     }))
+}
+
+// --- Export Library ---
+
+/// Sanitize a string for use as a filename/directory name
+fn sanitize_filename(name: &str) -> String {
+    let sanitized: String = name
+        .chars()
+        .map(|c| match c {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
+            _ => c,
+        })
+        .collect();
+    let trimmed = sanitized.trim().trim_matches('.');
+    if trimmed.is_empty() {
+        "Unknown".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+#[derive(serde::Serialize, Clone)]
+pub struct ExportProgress {
+    pub current: i64,
+    pub total: i64,
+    pub track_title: String,
+}
+
+#[derive(serde::Serialize)]
+pub struct ExportResult {
+    pub exported: i64,
+    pub skipped: i64,
+    pub failed: i64,
+    pub destination: String,
+}
+
+#[tauri::command]
+pub async fn library_export(
+    db: State<'_, Arc<DbPool>>,
+    app_handle: tauri::AppHandle,
+    destination: String,
+) -> Result<ExportResult, String> {
+    let dest = PathBuf::from(&destination);
+    if !dest.exists() {
+        std::fs::create_dir_all(&dest).map_err(|e| format!("Failed to create destination: {}", e))?;
+    }
+
+    // Query all tracks with artist and album names
+    let rows: Vec<(String, Option<String>, Option<String>, Option<i64>, Option<i64>, String)> = {
+        let conn = db.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn.prepare(
+            "SELECT t.file_path, ar.name, al.title, t.track_number, t.disc_number, t.title
+             FROM tracks t
+             LEFT JOIN artists ar ON t.artist_id = ar.id
+             LEFT JOIN albums al ON t.album_id = al.id
+             ORDER BY ar.name, al.title, t.disc_number, t.track_number"
+        ).map_err(|e| e.to_string())?;
+
+        let result: Vec<_> = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, Option<i64>>(3)?,
+                row.get::<_, Option<i64>>(4)?,
+                row.get::<_, String>(5)?,
+            ))
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+        result
+    };
+
+    let total = rows.len() as i64;
+    let mut exported: i64 = 0;
+    let mut skipped: i64 = 0;
+    let mut failed: i64 = 0;
+
+    for (i, (file_path, artist_name, album_title, track_num, disc_num, title)) in rows.iter().enumerate() {
+        // Emit progress
+        let _ = app_handle.emit("export-progress", ExportProgress {
+            current: i as i64 + 1,
+            total,
+            track_title: title.clone(),
+        });
+
+        let src = Path::new(file_path);
+        if !src.exists() {
+            skipped += 1;
+            continue;
+        }
+
+        let ext = src.extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("mp3");
+
+        let artist_dir = sanitize_filename(artist_name.as_deref().unwrap_or("Unknown Artist"));
+        let album_dir = sanitize_filename(album_title.as_deref().unwrap_or("Unknown Album"));
+
+        // Build filename: "01 - Title.ext" or "1-01 - Title.ext" for multi-disc
+        let track_prefix = match (disc_num, track_num) {
+            (Some(d), Some(n)) if *d > 1 => format!("{}-{:02}", d, n),
+            (_, Some(n)) => format!("{:02}", n),
+            _ => String::new(),
+        };
+        let safe_title = sanitize_filename(title);
+        let filename = if track_prefix.is_empty() {
+            format!("{}.{}", safe_title, ext)
+        } else {
+            format!("{} - {}.{}", track_prefix, safe_title, ext)
+        };
+
+        let target_dir = dest.join(&artist_dir).join(&album_dir);
+        if let Err(e) = std::fs::create_dir_all(&target_dir) {
+            log::warn!("Failed to create dir {:?}: {}", target_dir, e);
+            failed += 1;
+            continue;
+        }
+
+        let target_file = target_dir.join(&filename);
+        if target_file.exists() {
+            skipped += 1;
+            continue;
+        }
+
+        match std::fs::copy(src, &target_file) {
+            Ok(_) => exported += 1,
+            Err(e) => {
+                log::warn!("Failed to copy {:?} -> {:?}: {}", src, target_file, e);
+                failed += 1;
+            }
+        }
+    }
+
+    log::info!("Export complete: {} exported, {} skipped, {} failed to {}", exported, skipped, failed, destination);
+    Ok(ExportResult {
+        exported,
+        skipped,
+        failed,
+        destination,
+    })
 }

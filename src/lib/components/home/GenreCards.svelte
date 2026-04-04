@@ -4,7 +4,8 @@
 	import DiscoveryCard from './DiscoveryCard.svelte';
 	import type { Track } from '$lib/types';
 
-	const MAX_GENRES = 6;
+	const MIN_TRACKS = 3;
+	const MAX_GENRES = 4;
 	const TRACKS_PER_GENRE = 10;
 
 	let genres = $state<string[]>([]);
@@ -15,14 +16,17 @@
 		loading = true;
 		try {
 			const allGenres = await getGenres();
-			genres = allGenres.slice(0, MAX_GENRES);
+			// Load tracks for all genres, then filter to those with enough content
 			const entries = await Promise.all(
-				genres.map(async (genre) => {
+				allGenres.map(async (genre) => {
 					const tracks = await getTracksByGenre(genre, TRACKS_PER_GENRE);
 					return [genre, tracks] as const;
 				})
 			);
-			genreTracks = Object.fromEntries(entries);
+			// Only keep genres with MIN_TRACKS+ tracks, cap at MAX_GENRES
+			const filtered = entries.filter(([, tracks]) => tracks.length >= MIN_TRACKS);
+			genres = filtered.slice(0, MAX_GENRES).map(([g]) => g);
+			genreTracks = Object.fromEntries(filtered.slice(0, MAX_GENRES));
 		} catch (e) {
 			console.error('Failed to load genres:', e);
 		} finally {
@@ -45,7 +49,7 @@
 
 {#if !loading && genres.length > 0}
 	{#each genres as genre}
-		{#if genreTracks[genre]?.length > 0}
+		{#if genreTracks[genre]?.length >= MIN_TRACKS}
 			<DiscoveryCard
 				title={genre}
 				icon={Tags}

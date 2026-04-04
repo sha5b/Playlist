@@ -3,6 +3,7 @@
 	import { onMount } from 'svelte';
 	import { Button } from '$lib/components/ui/button';
 	import { Badge } from '$lib/components/ui/badge';
+	import { Progress } from '$lib/components/ui/progress';
 	import * as Card from '$lib/components/ui/card';
 	import {
 		Sparkles,
@@ -12,11 +13,14 @@
 		XCircle,
 		AlertTriangle,
 		Loader2,
-		CircleX,
+		Square,
 		Play,
 		Database,
 		Globe,
 		Radio,
+		TrendingUp,
+		CircleCheck,
+		CircleAlert,
 	} from 'lucide-svelte';
 	import { metadataScanStore } from '$lib/stores/metadataScan.svelte';
 	import { getMetadataStats, scanMissingMetadata, stopMetadataScan } from '$lib/api/library';
@@ -61,7 +65,9 @@
 	async function loadStats() {
 		try {
 			stats = await getMetadataStats();
-		} catch {}
+		} catch (e) {
+			console.error('Failed to load metadata stats:', e);
+		}
 	}
 
 	async function handleScan() {
@@ -82,17 +88,14 @@
 		try {
 			await stopMetadataScan();
 			toast.success('Scan stopped');
-		} catch {}
+		} catch (e) {
+			console.error('Failed to stop scan:', e);
+		}
 	}
 
 	function clearFeed() {
 		feed = [];
 	}
-
-	const sourceLabels: Record<string, { label: string; icon: typeof Database }> = {
-		musicbrainz: { label: 'MusicBrainz', icon: Database },
-		lastfm: { label: 'Last.fm', icon: Radio },
-	};
 
 	const fieldLabels: Record<string, string> = {
 		musicbrainz_id: 'MB ID',
@@ -134,37 +137,39 @@
 	});
 </script>
 
-<div class="flex h-full flex-col gap-6 overflow-y-auto p-6">
+<div class="flex h-full flex-col gap-6 overflow-y-auto">
+	<!-- Header -->
 	<div class="flex items-center justify-between">
 		<div>
-			<h1 class="text-2xl font-bold">Metadata</h1>
-			<p class="text-sm text-muted-foreground">Live enrichment feed and library metadata overview</p>
+			<h1 class="text-3xl font-bold tracking-tight">Metadata</h1>
+			<p class="text-muted-foreground mt-1">Enrich your library with metadata from MusicBrainz and Last.fm</p>
 		</div>
 		<div class="flex items-center gap-2">
 			{#if active}
-				<Badge variant="outline" class="gap-1.5 border-amber-400/50 text-amber-400">
+				<Badge variant="outline" class="gap-1.5 border-amber-400/40 text-amber-400 py-1">
 					<Loader2 class="size-3 animate-spin" />
 					{#if scanning && scanProgress}
 						Scanning {scanProgress.current}/{scanProgress.total}
 					{:else if autoEnriching}
-						Auto-enriching {metadataScanStore.autoPhase} {metadataScanStore.autoCurrent}/{metadataScanStore.autoTotal}
+						Enriching {metadataScanStore.autoPhase} {metadataScanStore.autoCurrent}/{metadataScanStore.autoTotal}
 					{:else}
-						Enriching...
+						Starting...
 					{/if}
 				</Badge>
 			{/if}
-			<Button variant="outline" size="sm" onclick={handleScan} disabled={scanning}>
-				{#if scanning}
-					<Loader2 class="size-4 animate-spin" />
-				{:else}
-					<Play class="size-4" />
-				{/if}
-				Scan Missing
-			</Button>
 			{#if active}
-				<Button variant="outline" size="sm" onclick={handleStop}>
-					<CircleX class="size-4" />
+				<Button variant="outline" size="sm" onclick={handleStop} class="gap-1.5">
+					<Square class="size-3.5" />
 					Stop
+				</Button>
+			{:else}
+				<Button size="sm" onclick={handleScan} disabled={scanning} class="gap-1.5">
+					{#if scanning}
+						<Loader2 class="size-4 animate-spin" />
+					{:else}
+						<Play class="size-4" />
+					{/if}
+					Scan Missing
 				</Button>
 			{/if}
 		</div>
@@ -172,112 +177,130 @@
 
 	<!-- Stats Cards -->
 	{#if stats}
-		<div class="grid grid-cols-2 gap-3 sm:grid-cols-4">
-			<Card.Root>
+		<div class="grid grid-cols-2 gap-4 sm:grid-cols-4">
+			<Card.Root class="border-border/60">
 				<Card.Content class="p-4">
-					<div class="text-sm text-muted-foreground">Total Tracks</div>
-					<div class="text-2xl font-bold">{stats.total_tracks}</div>
+					<div class="flex items-center gap-2 mb-2">
+						<div class="size-8 rounded-lg bg-primary/10 flex items-center justify-center">
+							<Music class="size-4 text-primary" />
+						</div>
+					</div>
+					<div class="text-2xl font-bold tabular-nums">{stats.total_tracks}</div>
+					<div class="text-xs text-muted-foreground mt-0.5">Total Tracks</div>
 				</Card.Content>
 			</Card.Root>
-			<Card.Root>
+			<Card.Root class="border-border/60">
 				<Card.Content class="p-4">
-					<div class="text-sm text-muted-foreground">Avg Completeness</div>
+					<div class="flex items-center gap-2 mb-2">
+						<div class="size-8 rounded-lg flex items-center justify-center {stats.average_completeness >= 70 ? 'bg-green-500/10' : stats.average_completeness >= 40 ? 'bg-amber-500/10' : 'bg-red-500/10'}">
+							<TrendingUp class="size-4 {stats.average_completeness >= 70 ? 'text-green-500' : stats.average_completeness >= 40 ? 'text-amber-500' : 'text-red-500'}" />
+						</div>
+					</div>
 					<div class="flex items-baseline gap-1">
-						<span class="text-2xl font-bold">{stats.average_completeness}%</span>
+						<span class="text-2xl font-bold tabular-nums">{stats.average_completeness}%</span>
 					</div>
-					<div class="mt-1 h-1.5 w-full rounded-full bg-muted">
-						<div
-							class="h-1.5 rounded-full transition-all {stats.average_completeness >= 70 ? 'bg-green-500' : stats.average_completeness >= 40 ? 'bg-amber-500' : 'bg-red-500'}"
-							style="width: {stats.average_completeness}%"
-						></div>
-					</div>
+					<Progress
+						value={stats.average_completeness}
+						class="mt-2 h-1.5"
+					/>
+					<div class="text-xs text-muted-foreground mt-1.5">Avg Completeness</div>
 				</Card.Content>
 			</Card.Root>
-			<Card.Root>
+			<Card.Root class="border-border/60">
 				<Card.Content class="p-4">
-					<div class="text-sm text-muted-foreground">Complete ({'\u2265'}80%)</div>
-					<div class="text-2xl font-bold text-green-500">{stats.complete_tracks}</div>
+					<div class="flex items-center gap-2 mb-2">
+						<div class="size-8 rounded-lg bg-green-500/10 flex items-center justify-center">
+							<CircleCheck class="size-4 text-green-500" />
+						</div>
+					</div>
+					<div class="text-2xl font-bold text-green-500 tabular-nums">{stats.complete_tracks}</div>
+					<div class="text-xs text-muted-foreground mt-0.5">Complete ({'\u2265'}80%)</div>
 				</Card.Content>
 			</Card.Root>
-			<Card.Root>
+			<Card.Root class="border-border/60">
 				<Card.Content class="p-4">
-					<div class="text-sm text-muted-foreground">Incomplete ({'<'}50%)</div>
-					<div class="text-2xl font-bold text-red-500">{stats.incomplete_tracks}</div>
+					<div class="flex items-center gap-2 mb-2">
+						<div class="size-8 rounded-lg bg-red-500/10 flex items-center justify-center">
+							<CircleAlert class="size-4 text-red-500" />
+						</div>
+					</div>
+					<div class="text-2xl font-bold text-red-500 tabular-nums">{stats.incomplete_tracks}</div>
+					<div class="text-xs text-muted-foreground mt-0.5">Incomplete ({'<'}50%)</div>
 				</Card.Content>
 			</Card.Root>
 		</div>
 	{/if}
 
-	<!-- Progress Bar -->
+	<!-- Active Progress Banner -->
 	{#if active}
-		<Card.Root class="border-amber-400/30 bg-amber-400/5">
-			<Card.Content class="p-4">
-				<div class="flex items-center gap-3">
-					<Sparkles class="size-5 shrink-0 text-amber-400 animate-pulse" />
-					<div class="flex-1">
-						{#if scanning && scanProgress}
-							<div class="flex items-center justify-between text-sm">
-								<span class="font-medium">Scanning: {scanProgress.track_title}</span>
-								<span class="text-muted-foreground">{scanProgress.current}/{scanProgress.total}</span>
-							</div>
-							<div class="mt-1.5 h-2 w-full rounded-full bg-amber-400/20">
-								<div
-									class="h-2 rounded-full bg-amber-400 transition-all"
-									style="width: {Math.round((scanProgress.current / scanProgress.total) * 100)}%"
-								></div>
-							</div>
-						{:else if autoEnriching}
-							<div class="flex items-center justify-between text-sm">
-								<span class="font-medium">
-									Auto-enriching {metadataScanStore.autoPhase}: {metadataScanStore.autoTitle}
-								</span>
-								<span class="text-muted-foreground">
-									{metadataScanStore.autoCurrent}/{metadataScanStore.autoTotal}
-								</span>
-							</div>
-							<div class="mt-1.5 h-2 w-full rounded-full bg-amber-400/20">
-								<div
-									class="h-2 rounded-full bg-amber-400 transition-all"
-									style="width: {metadataScanStore.autoTotal > 0 ? Math.round((metadataScanStore.autoCurrent / metadataScanStore.autoTotal) * 100) : 0}%"
-								></div>
-							</div>
-						{:else}
-							<span class="text-sm font-medium">Starting enrichment...</span>
-						{/if}
-					</div>
+		<div class="rounded-xl border border-amber-400/20 bg-amber-400/5 p-4">
+			<div class="flex items-center gap-3">
+				<Sparkles class="size-5 shrink-0 text-amber-400 animate-pulse" />
+				<div class="flex-1 min-w-0">
+					{#if scanning && scanProgress}
+						<div class="flex items-center justify-between text-sm mb-1.5">
+							<span class="font-medium truncate">{scanProgress.track_title}</span>
+							<span class="text-xs text-muted-foreground tabular-nums shrink-0 ml-2">
+								{scanProgress.current}/{scanProgress.total}
+							</span>
+						</div>
+						{@const pct = Math.round((scanProgress.current / scanProgress.total) * 100)}
+						<div class="flex items-center gap-2">
+							<Progress value={pct} class="h-1.5 flex-1" />
+							<span class="text-xs text-muted-foreground tabular-nums">{pct}%</span>
+						</div>
+					{:else if autoEnriching}
+						<div class="flex items-center justify-between text-sm mb-1.5">
+							<span class="font-medium truncate">
+								{metadataScanStore.autoPhase}: {metadataScanStore.autoTitle}
+							</span>
+							<span class="text-xs text-muted-foreground tabular-nums shrink-0 ml-2">
+								{metadataScanStore.autoCurrent}/{metadataScanStore.autoTotal}
+							</span>
+						</div>
+						{@const pct = metadataScanStore.autoTotal > 0 ? Math.round((metadataScanStore.autoCurrent / metadataScanStore.autoTotal) * 100) : 0}
+						<div class="flex items-center gap-2">
+							<Progress value={pct} class="h-1.5 flex-1" />
+							<span class="text-xs text-muted-foreground tabular-nums">{pct}%</span>
+						</div>
+					{:else}
+						<span class="text-sm font-medium">Starting enrichment...</span>
+					{/if}
 				</div>
-			</Card.Content>
-		</Card.Root>
+			</div>
+		</div>
 	{/if}
 
 	<!-- Feed Section -->
 	<div class="flex flex-1 flex-col gap-3 min-h-0">
 		<div class="flex items-center justify-between">
-			<h2 class="text-lg font-semibold">Enrichment Feed</h2>
+			<h2 class="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Enrichment Feed</h2>
 			<div class="flex items-center gap-2">
 				<!-- Session summary badges -->
 				{#if feed.length > 0}
-					<Badge variant="outline" class="gap-1 text-green-500 border-green-500/30">
-						<CheckCircle2 class="size-3" />
-						{successCount}
-					</Badge>
-					{#if partialCount > 0}
-						<Badge variant="outline" class="gap-1 text-amber-400 border-amber-400/30">
-							<AlertTriangle class="size-3" />
-							{partialCount}
+					<div class="flex items-center gap-1.5 mr-2">
+						<Badge variant="outline" class="gap-1 text-green-500 border-green-500/30 py-0.5">
+							<CheckCircle2 class="size-3" />
+							{successCount}
 						</Badge>
-					{/if}
-					{#if failedCount > 0}
-						<Badge variant="outline" class="gap-1 text-red-500 border-red-500/30">
-							<XCircle class="size-3" />
-							{failedCount}
-						</Badge>
-					{/if}
+						{#if partialCount > 0}
+							<Badge variant="outline" class="gap-1 text-amber-400 border-amber-400/30 py-0.5">
+								<AlertTriangle class="size-3" />
+								{partialCount}
+							</Badge>
+						{/if}
+						{#if failedCount > 0}
+							<Badge variant="outline" class="gap-1 text-red-500 border-red-500/30 py-0.5">
+								<XCircle class="size-3" />
+								{failedCount}
+							</Badge>
+						{/if}
+					</div>
 				{/if}
 
 				<!-- Filters -->
 				<select
-					class="h-8 rounded-md border border-input bg-background px-2 text-xs"
+					class="h-7 rounded-md border border-input bg-background px-2 text-xs focus:outline-none focus:ring-1 focus:ring-ring"
 					bind:value={filterType}
 				>
 					<option value="all">All Types</option>
@@ -285,7 +308,7 @@
 					<option value="album">Albums</option>
 				</select>
 				<select
-					class="h-8 rounded-md border border-input bg-background px-2 text-xs"
+					class="h-7 rounded-md border border-input bg-background px-2 text-xs focus:outline-none focus:ring-1 focus:ring-ring"
 					bind:value={filterStatus}
 				>
 					<option value="all">All Status</option>
@@ -295,54 +318,61 @@
 				</select>
 
 				{#if feed.length > 0}
-					<Button variant="ghost" size="sm" onclick={clearFeed} class="text-xs text-muted-foreground">
+					<Button variant="ghost" size="sm" onclick={clearFeed} class="text-xs text-muted-foreground h-7 px-2">
 						Clear
 					</Button>
 				{/if}
 			</div>
 		</div>
 
-		<div class="flex-1 overflow-y-auto space-y-2 min-h-0">
+		<!-- Feed items -->
+		<div class="flex-1 overflow-y-auto min-h-0">
 			{#if filteredFeed.length === 0}
-				<div class="flex flex-col items-center justify-center py-16 text-muted-foreground">
-					<Sparkles class="size-10 mb-3 opacity-30" />
-					<p class="text-sm">
-						{#if feed.length === 0}
-							No enrichment activity yet. Start a scan or wait for background enrichment.
-						{:else}
-							No items match the current filters.
-						{/if}
-					</p>
+				<div class="flex flex-col items-center justify-center py-20 gap-4">
+					<div class="size-14 rounded-2xl bg-muted/50 flex items-center justify-center">
+						<Sparkles class="size-7 text-muted-foreground/40" />
+					</div>
+					<div class="text-center space-y-1">
+						<p class="text-muted-foreground font-medium">
+							{#if feed.length === 0}
+								No enrichment activity yet
+							{:else}
+								No items match current filters
+							{/if}
+						</p>
+						<p class="text-muted-foreground/60 text-sm">
+							{#if feed.length === 0}
+								Start a scan or wait for background enrichment
+							{:else}
+								Try adjusting the filters above
+							{/if}
+						</p>
+					</div>
 				</div>
 			{:else}
-				{#each filteredFeed as item (item.id + '-' + item.timestamp)}
-					<div
-						class="group rounded-lg border p-3 transition-colors
-							{item.status === 'success' ? 'border-green-500/20 bg-green-500/5 hover:border-green-500/40' :
-							 item.status === 'partial' ? 'border-amber-400/20 bg-amber-400/5 hover:border-amber-400/40' :
-							 'border-red-500/20 bg-red-500/5 hover:border-red-500/40'}"
-					>
-						<div class="flex items-start gap-3">
-							<!-- Icon -->
+				<div class="rounded-xl border border-border/60 overflow-hidden divide-y divide-border/30">
+					{#each filteredFeed as item (item.id + '-' + item.timestamp)}
+						<div class="flex items-start gap-3 px-4 py-3 hover:bg-muted/20 transition-colors group">
+							<!-- Status icon -->
 							<div
-								class="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-full
+								class="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-full
 									{item.status === 'success' ? 'bg-green-500/10 text-green-500' :
 									 item.status === 'partial' ? 'bg-amber-400/10 text-amber-400' :
 									 'bg-red-500/10 text-red-500'}"
 							>
 								{#if item.status === 'success'}
-									<CheckCircle2 class="size-4" />
+									<CheckCircle2 class="size-3.5" />
 								{:else if item.status === 'partial'}
-									<AlertTriangle class="size-4" />
+									<AlertTriangle class="size-3.5" />
 								{:else}
-									<XCircle class="size-4" />
+									<XCircle class="size-3.5" />
 								{/if}
 							</div>
 
 							<!-- Content -->
 							<div class="flex-1 min-w-0">
 								<div class="flex items-center gap-2">
-									<Badge variant="outline" class="text-[10px] px-1.5 py-0">
+									<Badge variant="outline" class="text-[10px] px-1.5 py-0 shrink-0">
 										{#if item.item_type === 'track'}
 											<Music class="size-2.5 mr-0.5" />
 										{:else}
@@ -352,14 +382,14 @@
 									</Badge>
 									<span class="font-medium text-sm truncate">{item.title}</span>
 									{#if item.artist}
-										<span class="text-xs text-muted-foreground truncate">by {item.artist}</span>
+										<span class="text-xs text-muted-foreground truncate shrink-0">by {item.artist}</span>
 									{/if}
 								</div>
 
 								{#if item.status === 'failed'}
-									<p class="mt-1 text-xs text-red-400">{item.error}</p>
+									<p class="mt-1 text-xs text-red-400/80">{item.error}</p>
 								{:else}
-									<!-- Sources & Fields -->
+									<!-- Sources & fields enriched -->
 									<div class="mt-1.5 flex flex-wrap gap-x-4 gap-y-1">
 										{#each Object.entries(item.sources || {}) as [source, fields]}
 											{#if fields.length > 0}
@@ -374,7 +404,7 @@
 														<Globe class="size-3 text-muted-foreground" />
 														<span class="text-[10px] font-medium text-muted-foreground">{source}</span>
 													{/if}
-													<span class="text-[10px] text-muted-foreground">
+													<span class="text-[10px] text-muted-foreground/70">
 														{fields.map((f: string) => fieldLabels[f] || f).join(', ')}
 													</span>
 												</div>
@@ -382,18 +412,18 @@
 										{/each}
 									</div>
 									{#if item.note}
-										<p class="mt-1 text-[10px] text-muted-foreground italic">{item.note}</p>
+										<p class="mt-1 text-[10px] text-muted-foreground/60 italic">{item.note}</p>
 									{/if}
 								{/if}
 							</div>
 
 							<!-- Timestamp -->
-							<span class="shrink-0 text-[10px] text-muted-foreground/50">
-								{new Date(item.timestamp).toLocaleTimeString()}
+							<span class="shrink-0 text-[10px] text-muted-foreground/40 tabular-nums mt-0.5">
+								{new Date(item.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
 							</span>
 						</div>
-					</div>
-				{/each}
+					{/each}
+				</div>
 			{/if}
 		</div>
 	</div>

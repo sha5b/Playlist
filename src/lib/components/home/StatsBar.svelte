@@ -1,36 +1,35 @@
 <script lang="ts">
-	import { Card, CardContent } from '$lib/components/ui/card';
 	import { Music, Disc, Users, ListMusic } from 'lucide-svelte';
 	import { formatDurationLong, formatFileSize } from '$lib/utils/format';
 	import type { LibraryStats } from '$lib/types';
 
 	let { stats }: { stats: LibraryStats | null } = $props();
-
-	const items = $derived([
-		{ label: 'Tracks', value: stats?.total_tracks, icon: Music },
-		{ label: 'Albums', value: stats?.total_albums, icon: Disc },
-		{ label: 'Artists', value: stats?.total_artists, icon: Users },
-		{ label: 'Playlists', value: stats?.total_playlists, icon: ListMusic },
-	]);
 </script>
 
-<Card>
-	<CardContent class="py-4">
-		<div class="flex items-center justify-between gap-4 flex-wrap">
-			<div class="flex items-center gap-6">
-				{#each items as item}
-					<div class="flex items-center gap-2">
-						<item.icon class="size-4 text-muted-foreground" />
-						<span class="text-sm font-medium">{item.value ?? '...'}</span>
-						<span class="text-sm text-muted-foreground">{item.label}</span>
-					</div>
-				{/each}
-			</div>
-			{#if stats && stats.total_tracks > 0}
-				<div class="text-sm text-muted-foreground">
-					{formatDurationLong(stats.total_duration_ms)} &middot; {formatFileSize(stats.total_size_bytes)}
-				</div>
-			{/if}
-		</div>
-	</CardContent>
-</Card>
+{#if stats}
+	<div class="flex items-center gap-5 text-sm text-muted-foreground flex-wrap">
+		<span class="flex items-center gap-1.5">
+			<Music class="size-3.5" />
+			<span class="font-medium text-foreground">{stats.total_tracks.toLocaleString()}</span> tracks
+		</span>
+		<span class="flex items-center gap-1.5">
+			<Disc class="size-3.5" />
+			<span class="font-medium text-foreground">{stats.total_albums.toLocaleString()}</span> albums
+		</span>
+		<span class="flex items-center gap-1.5">
+			<Users class="size-3.5" />
+			<span class="font-medium text-foreground">{stats.total_artists.toLocaleString()}</span> artists
+		</span>
+		{#if stats.total_playlists > 0}
+			<span class="flex items-center gap-1.5">
+				<ListMusic class="size-3.5" />
+				<span class="font-medium text-foreground">{stats.total_playlists}</span> playlists
+			</span>
+		{/if}
+		{#if stats.total_tracks > 0}
+			<span class="ml-auto text-xs">
+				{formatDurationLong(stats.total_duration_ms)} &middot; {formatFileSize(stats.total_size_bytes)}
+			</span>
+		{/if}
+	</div>
+{/if}

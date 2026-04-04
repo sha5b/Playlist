@@ -6,7 +6,7 @@
 	import { Badge } from '$lib/components/ui/badge';
 	import { Progress } from '$lib/components/ui/progress';
 	import * as Tabs from '$lib/components/ui/tabs';
-	import * as Card from '$lib/components/ui/card';
+
 	import {
 		Download,
 		Disc,
@@ -29,6 +29,7 @@
 		ChevronLeft,
 		ArrowDownToLine,
 		Square,
+		AlertCircle,
 	} from 'lucide-svelte';
 	import { toast } from 'svelte-sonner';
 	import {
@@ -59,7 +60,7 @@
 		ManagerEntryEvent,
 		MonitoredEntryStatus,
 	} from '$lib/types';
-	import { formatDate, formatSeconds, timeAgo, platformLabel, platformColor } from '$lib/utils/format';
+	import { assetUrl, formatDate, formatSeconds, timeAgo, platformLabel, platformColor } from '$lib/utils/format';
 	import { groupDownloadsByAlbum, type DownloadGroup } from '$lib/utils/grouping';
 
 	// --- Deps state (from global store, checked once at app startup) ---
@@ -114,19 +115,16 @@
 	$effect(() => {
 		downloadStore.init();
 
-		// Load playlists once deps are ready
 		if (depsReady) {
 			loadPlaylists();
 		}
 
-		// Listen for monitored entry status changes (from download completions)
 		let unlistenEntry: (() => void) | null = null;
 		listen<ManagerEntryEvent>('manager-entry-updated', (event) => {
 			const { entry_id, status } = event.payload;
 			selectedEntries = selectedEntries.map((e) =>
 				e.id === entry_id ? { ...e, status: status as MonitoredEntryStatus } : e
 			);
-			// Refresh playlist counts
 			loadPlaylists();
 		}).then((fn) => {
 			unlistenEntry = fn;
@@ -259,7 +257,6 @@
 			} else {
 				toast.info('Playlist is up to date');
 			}
-			// Refresh entries if viewing this playlist
 			if (selectedPlaylist?.id === playlistId) {
 				await loadEntries(playlistId);
 			}
@@ -313,11 +310,9 @@
 	}
 
 	async function openPlaylist(pl: MonitoredPlaylist) {
-		toast.info(`Loading ${pl.name}...`);
 		selectedPlaylist = pl;
 		entriesPage = 0;
 		await loadEntries(pl.id);
-		toast.success(`Loaded ${selectedEntries.length} entries`);
 	}
 
 	async function loadEntries(playlistId: number) {
@@ -355,7 +350,6 @@
 		try {
 			const dl = await downloadEntry(entryId);
 			downloadStore.addDownload(dl);
-			// Update local entry state
 			selectedEntries = selectedEntries.map((e) =>
 				e.id === entryId ? { ...e, status: 'queued' as const, download_id: dl.id } : e
 			);
@@ -372,7 +366,6 @@
 	async function handleDownloadAllNew(playlistId: number) {
 		try {
 			const result = await downloadNew(playlistId);
-			// Refresh entries to show queued status
 			if (selectedPlaylist?.id === playlistId) {
 				await loadEntries(playlistId);
 			}
@@ -461,7 +454,6 @@
 	// Cache album names for grouped downloads
 	let albumNames: Record<number, string> = $state({});
 
-	// Group active downloads: album-grouped first, then ungrouped
 	const groupedActiveDownloads = $derived(groupDownloadsByAlbum(activeDownloads, albumNames));
 
 	$effect(() => {
@@ -472,7 +464,6 @@
 			}
 		}
 		if (albumIds.size > 0) {
-			// Fetch album names lazily
 			import('$lib/api/library').then(({ getAlbum }) => {
 				for (const id of albumIds) {
 					getAlbum(id).then((album) => {
@@ -515,21 +506,33 @@
 			loadHistory();
 		}
 	});
+
+	function entryStatusColor(status: string): string {
+		switch (status) {
+			case 'downloaded': return 'text-green-500';
+			case 'new': return 'text-blue-400';
+			case 'queued': return 'text-muted-foreground';
+			case 'downloading': return 'text-blue-400';
+			case 'failed': return 'text-destructive';
+			case 'skipped': return 'text-muted-foreground/60';
+			default: return 'text-muted-foreground';
+		}
+	}
 </script>
 
 <div class="flex-1 min-h-0 overflow-y-auto space-y-6">
 	<div>
-		<h1 class="text-3xl font-bold tracking-tight">Manager</h1>
-		<p class="text-muted-foreground mt-1">
-			Track playlists, download music, and manage your sources
+		<h1 class="text-2xl font-bold tracking-tight">Manager</h1>
+		<p class="text-sm text-muted-foreground/70 mt-0.5">
+			Track playlists and download music
 		</p>
 	</div>
 
 	<!-- Setup state -->
 	{#if depsChecking || setupInProgress}
-		<div class="flex flex-col items-center justify-center gap-4 rounded-lg border border-border p-8">
+		<div class="flex flex-col items-center justify-center gap-4 rounded-xl border border-border p-10">
 			<PackageOpen class="size-10 text-muted-foreground" />
-			<div class="text-center space-y-2 w-full max-w-md">
+			<div class="text-center space-y-3 w-full max-w-md">
 				<p class="font-medium">{setupMessage}</p>
 				{#if setupInProgress && setupProgress > 0}
 					<Progress value={setupProgress} class="w-full" />
@@ -542,19 +545,21 @@
 			</div>
 		</div>
 	{:else if setupError}
-		<div class="flex flex-col items-start gap-3 rounded-lg border border-destructive/50 bg-destructive/10 p-4">
-			<div>
+		<div class="flex items-start gap-3 rounded-xl border border-destructive/30 bg-destructive/5 p-4">
+			<AlertCircle class="size-5 text-destructive shrink-0 mt-0.5" />
+			<div class="flex-1 min-w-0">
 				<p class="font-medium text-destructive">Setup failed</p>
 				<p class="text-sm text-muted-foreground mt-1">{setupError}</p>
 			</div>
-			<Button variant="outline" size="sm" onclick={() => depsStore.init(true)}>
+			<Button variant="outline" size="sm" onclick={() => depsStore.init(true)} class="shrink-0 gap-1.5">
 				<RotateCcw class="size-3" />
-				Try again
+				Retry
 			</Button>
 		</div>
 	{:else if !depsReady}
-		<div class="flex flex-col items-start gap-3 rounded-lg border border-destructive/50 bg-destructive/10 p-4">
-			<div>
+		<div class="flex items-start gap-3 rounded-xl border border-destructive/30 bg-destructive/5 p-4">
+			<AlertCircle class="size-5 text-destructive shrink-0 mt-0.5" />
+			<div class="flex-1 min-w-0">
 				<p class="font-medium text-destructive">Dependencies not available</p>
 				<p class="text-sm text-muted-foreground mt-1">
 					{#if !depsStatus?.ytdlp_available}yt-dlp{/if}
@@ -563,49 +568,12 @@
 					could not be set up automatically.
 				</p>
 			</div>
-			<Button variant="outline" size="sm" onclick={() => depsStore.init(true)}>
+			<Button variant="outline" size="sm" onclick={() => depsStore.init(true)} class="shrink-0 gap-1.5">
 				<RotateCcw class="size-3" />
-				Retry setup
+				Retry
 			</Button>
 		</div>
 	{:else}
-		<!-- Dashboard Summary -->
-		<div class="grid grid-cols-3 gap-4">
-			<Card.Root>
-				<Card.Content class="flex items-center gap-3 p-4">
-					<div class="flex items-center justify-center size-10 rounded-lg bg-primary/10 shrink-0">
-						<ListMusic class="size-5 text-primary" />
-					</div>
-					<div>
-						<p class="text-2xl font-bold tabular-nums">{playlists.length}</p>
-						<p class="text-xs text-muted-foreground">Playlists</p>
-					</div>
-				</Card.Content>
-			</Card.Root>
-			<Card.Root>
-				<Card.Content class="flex items-center gap-3 p-4">
-					<div class="flex items-center justify-center size-10 rounded-lg bg-blue-500/10 shrink-0">
-						<Download class="size-5 text-blue-500" />
-					</div>
-					<div>
-						<p class="text-2xl font-bold tabular-nums">{activeDownloads.length}</p>
-						<p class="text-xs text-muted-foreground">Active Downloads</p>
-					</div>
-				</Card.Content>
-			</Card.Root>
-			<Card.Root>
-				<Card.Content class="flex items-center gap-3 p-4">
-					<div class="flex items-center justify-center size-10 rounded-lg bg-green-500/10 shrink-0">
-						<Plus class="size-5 text-green-500" />
-					</div>
-					<div>
-						<p class="text-2xl font-bold tabular-nums">{totalNewAcrossPlaylists}</p>
-						<p class="text-xs text-muted-foreground">New Tracks</p>
-					</div>
-				</Card.Content>
-			</Card.Root>
-		</div>
-
 		<!-- Main content - tabbed interface -->
 		<Tabs.Root bind:value={activeTab}>
 			<div class="flex items-center justify-between">
@@ -631,44 +599,61 @@
 				</Tabs.List>
 
 				{#if depsStatus?.ytdlp_version}
-					<span class="text-xs text-muted-foreground font-mono">yt-dlp {depsStatus.ytdlp_version}</span>
+					<span class="text-xs text-muted-foreground font-mono opacity-60">yt-dlp {depsStatus.ytdlp_version}</span>
 				{/if}
 			</div>
 
 			<!-- ==================== PLAYLISTS TAB ==================== -->
-			<Tabs.Content value="playlists" class="space-y-4 mt-4">
+			<Tabs.Content value="playlists" class="space-y-5 mt-4">
 				{#if selectedPlaylist}
 					<!-- Playlist detail view -->
 					<div class="space-y-4">
-						<div class="flex items-center gap-3">
-							<Button variant="ghost" size="sm" onclick={closePlaylistDetail}>
-								<ChevronLeft class="size-4" />
-								Back
+						<!-- Detail header -->
+						<div class="flex items-start gap-4">
+							<Button variant="ghost" size="icon" onclick={closePlaylistDetail} class="shrink-0 mt-0.5 rounded-full">
+								<ChevronLeft class="size-5" />
 							</Button>
 							<div class="flex-1 min-w-0">
-								<div class="flex items-center gap-2">
-									<h2 class="text-lg font-semibold truncate">{selectedPlaylist.name}</h2>
+								<div class="flex items-center gap-2 mb-1">
+									<h2 class="text-xl font-semibold truncate">{selectedPlaylist.name}</h2>
 									<Badge variant={platformColor(selectedPlaylist.source_platform ?? 'other')} class="text-xs shrink-0">
 										{platformLabel(selectedPlaylist.source_platform ?? 'other')}
 									</Badge>
 								</div>
-								<p class="text-xs text-muted-foreground truncate">
-									{selectedEntries.length} tracks
+								<!-- Stats row -->
+								<div class="flex items-center gap-2 text-xs text-muted-foreground flex-wrap">
+									<span>{selectedEntries.length} total</span>
+									{#if downloadedEntries.length > 0}
+										<span class="opacity-40">&middot;</span>
+										<span class="text-green-500">{downloadedEntries.length} downloaded</span>
+									{/if}
 									{#if downloadingEntries.length > 0}
-										&middot; <span class="text-blue-400">{downloadingEntries.length} downloading</span>
+										<span class="opacity-40">&middot;</span>
+										<span class="text-blue-400">{downloadingEntries.length} downloading</span>
 									{/if}
 									{#if queuedEntries.length > 0}
-										&middot; {queuedEntries.length} queued
+										<span class="opacity-40">&middot;</span>
+										<span>{queuedEntries.length} queued</span>
 									{/if}
 									{#if newEntries.length > 0}
-										&middot; {newEntries.length} new
+										<span class="opacity-40">&middot;</span>
+										<span class="text-blue-400">{newEntries.length} new</span>
 									{/if}
 									{#if failedEntries.length > 0}
-										&middot; <span class="text-destructive">{failedEntries.length} failed</span>
+										<span class="opacity-40">&middot;</span>
+										<span class="text-destructive">{failedEntries.length} failed</span>
 									{/if}
-									&middot; {downloadedEntries.length} downloaded
-									&middot; Synced {timeAgo(selectedPlaylist.last_synced_at)}
-								</p>
+									<span class="opacity-40">&middot;</span>
+									<span>Synced {timeAgo(selectedPlaylist.last_synced_at)}</span>
+								</div>
+								<!-- Progress bar showing completion -->
+								{#if selectedEntries.length > 0}
+									{@const pct = Math.round((downloadedEntries.length / selectedEntries.length) * 100)}
+									<div class="flex items-center gap-2 mt-2">
+										<Progress value={pct} class="h-1.5 flex-1 max-w-xs" />
+										<span class="text-xs text-muted-foreground tabular-nums">{pct}%</span>
+									</div>
+								{/if}
 							</div>
 							<div class="flex items-center gap-2 shrink-0">
 								{#if queuedEntries.length > 0 || downloadingEntries.length > 0}
@@ -676,6 +661,7 @@
 										variant="destructive"
 										size="sm"
 										onclick={() => handleCancelAll(selectedPlaylist!.id)}
+										class="gap-1.5"
 									>
 										<Square class="size-3.5" />
 										Stop all
@@ -687,17 +673,18 @@
 										size="sm"
 										onclick={handleRetryAllFailed}
 										disabled={retryingAll}
+										class="gap-1.5"
 									>
 										{#if retryingAll}
 											<Loader2 class="size-3.5 animate-spin" />
 										{:else}
 											<RotateCcw class="size-3.5" />
 										{/if}
-										Retry {failedEntries.length} failed
+										Retry {failedEntries.length}
 									</Button>
 								{/if}
 								{#if newEntries.length > 0}
-									<Button size="sm" onclick={() => handleDownloadAllNew(selectedPlaylist!.id)}>
+									<Button size="sm" onclick={() => handleDownloadAllNew(selectedPlaylist!.id)} class="gap-1.5">
 										<ArrowDownToLine class="size-4" />
 										Download {newEntries.length} new
 									</Button>
@@ -707,6 +694,7 @@
 									size="sm"
 									onclick={() => handleSync(selectedPlaylist!.id)}
 									disabled={syncingIds.has(selectedPlaylist.id)}
+									class="gap-1.5"
 								>
 									<RefreshCw class="size-3.5 {syncingIds.has(selectedPlaylist.id) ? 'animate-spin' : ''}" />
 									Sync
@@ -715,126 +703,184 @@
 						</div>
 
 						{#if loadingEntries}
-							<div class="flex justify-center p-8">
+							<div class="flex justify-center p-12">
 								<Loader2 class="size-6 animate-spin text-muted-foreground" />
 							</div>
 						{:else if selectedEntries.length === 0}
-							<div class="flex flex-col items-center justify-center h-32 rounded-lg border border-dashed border-border gap-2">
-								<ListMusic class="size-6 text-muted-foreground" />
-								<p class="text-muted-foreground text-sm">No tracks found</p>
+							<div class="flex flex-col items-center justify-center py-16 rounded-xl border border-dashed border-border/60 gap-3">
+								<ListMusic class="size-8 text-muted-foreground/40" />
+								<p class="text-muted-foreground text-sm">No tracks in this playlist</p>
 							</div>
 						{:else}
-							<div class="space-y-3">
-								<div class="space-y-1">
+							<!-- Entries table -->
+							<div class="rounded-xl border border-border/60 overflow-hidden">
+								<!-- Table header -->
+								<div class="border-b border-border bg-muted/30 text-xs text-muted-foreground uppercase tracking-wider flex items-center px-4 py-2.5">
+									<div class="w-8 text-center">#</div>
+									<div class="w-7"></div>
+									<div class="flex-1 pl-3">Title</div>
+									<div class="w-24 text-right">Duration</div>
+									<div class="w-24 text-center">Status</div>
+									<div class="w-20"></div>
+								</div>
+								<!-- Table body -->
+								<div class="divide-y divide-border/40">
 									{#each paginatedEntries as entry, i (entry.id)}
-										<div class="flex items-center gap-3 rounded-lg border border-border p-3 hover:bg-accent/50 transition-colors">
-											<span class="text-xs text-muted-foreground w-6 text-right shrink-0">{entriesPage * entriesPageSize + i + 1}</span>
-										<div class="shrink-0">
-											{#if entry.status === 'downloaded'}
-												<CheckCircle2 class="size-4 text-green-500" />
-											{:else if entry.status === 'new'}
-												<div class="size-4 rounded-full border-2 border-blue-500 bg-blue-500/20"></div>
-											{:else if entry.status === 'queued' || entry.status === 'downloading'}
-												<Loader2 class="size-4 animate-spin text-muted-foreground" />
-											{:else if entry.status === 'failed'}
-												<XCircle class="size-4 text-destructive" />
-											{:else if entry.status === 'skipped'}
-												<SkipForward class="size-4 text-muted-foreground" />
-											{:else}
-												<div class="size-4"></div>
-											{/if}
-										</div>
-										<div class="flex-1 min-w-0">
-											<p class="text-sm truncate">{entry.title || entry.source_url}</p>
-											<div class="flex items-center gap-2 mt-0.5">
-												{#if entry.artist}
-													<span class="text-xs text-muted-foreground truncate">{entry.artist}</span>
+										<div class="flex items-center px-4 py-2.5 hover:bg-muted/30 transition-colors group">
+											<!-- Index -->
+											<div class="w-8 text-center text-xs text-muted-foreground tabular-nums">
+												{entriesPage * entriesPageSize + i + 1}
+											</div>
+											<!-- Status icon -->
+											<div class="w-7 flex items-center justify-center">
+												{#if entry.status === 'downloaded'}
+													<CheckCircle2 class="size-4 text-green-500" />
+												{:else if entry.status === 'new'}
+													<div class="size-2.5 rounded-full bg-blue-400"></div>
+												{:else if entry.status === 'queued'}
+													<Clock class="size-3.5 text-muted-foreground" />
+												{:else if entry.status === 'downloading'}
+													<Loader2 class="size-3.5 animate-spin text-blue-400" />
+												{:else if entry.status === 'failed'}
+													<XCircle class="size-4 text-destructive" />
+												{:else if entry.status === 'skipped'}
+													<SkipForward class="size-3.5 text-muted-foreground/50" />
 												{/if}
-												{#if entry.duration_seconds}
-													<span class="text-xs text-muted-foreground">{formatSeconds(entry.duration_seconds)}</span>
+											</div>
+											<!-- Title & artist -->
+											<div class="flex-1 min-w-0 pl-3">
+												<p class="text-sm truncate {entry.status === 'skipped' ? 'text-muted-foreground/50 line-through' : ''}">{entry.title || entry.source_url}</p>
+												{#if entry.artist}
+													<p class="text-xs text-muted-foreground truncate mt-0.5">{entry.artist}</p>
+												{/if}
+											</div>
+											<!-- Duration -->
+											<div class="w-24 text-right text-xs text-muted-foreground tabular-nums">
+												{entry.duration_seconds ? formatSeconds(entry.duration_seconds) : '--:--'}
+											</div>
+											<!-- Status badge -->
+											<div class="w-24 flex justify-center">
+												<Badge variant="outline" class="text-xs capitalize {entryStatusColor(entry.status)}">
+													{entry.status}
+												</Badge>
+											</div>
+											<!-- Actions -->
+											<div class="w-20 flex items-center justify-end gap-1">
+												{#if entry.status === 'new'}
+													<Button
+														variant="ghost"
+														size="icon-sm"
+														class="size-7 opacity-0 group-hover:opacity-100 transition-opacity"
+														onclick={() => handleDownloadEntry(entry.id)}
+														disabled={downloadingEntryIds.has(entry.id)}
+													>
+														{#if downloadingEntryIds.has(entry.id)}
+															<Loader2 class="size-3.5 animate-spin" />
+														{:else}
+															<Download class="size-3.5" />
+														{/if}
+													</Button>
+													<Button
+														variant="ghost"
+														size="icon-sm"
+														class="size-7 opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground"
+														onclick={() => handleSkipEntry(entry.id)}
+													>
+														<SkipForward class="size-3.5" />
+													</Button>
+												{:else if entry.status === 'queued' || entry.status === 'downloading'}
+													<Button
+														variant="ghost"
+														size="icon-sm"
+														class="size-7 opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground"
+														onclick={() => handleCancelEntry(entry.id)}
+													>
+														<X class="size-3.5" />
+													</Button>
+												{:else if entry.status === 'failed'}
+													<Button
+														variant="ghost"
+														size="icon-sm"
+														class="size-7 text-destructive"
+														onclick={() => handleDownloadEntry(entry.id)}
+													>
+														<RotateCcw class="size-3.5" />
+													</Button>
 												{/if}
 											</div>
 										</div>
-										<div class="flex items-center gap-1 shrink-0">
-											{#if entry.status === 'new'}
-												<Button
-													variant="ghost"
-													size="sm"
-													onclick={() => handleDownloadEntry(entry.id)}
-													disabled={downloadingEntryIds.has(entry.id)}
-												>
-													{#if downloadingEntryIds.has(entry.id)}
-														<Loader2 class="size-3.5 animate-spin" />
-													{:else}
-														<Download class="size-3.5" />
-													{/if}
-												</Button>
-												<Button
-													variant="ghost"
-													size="sm"
-													onclick={() => handleSkipEntry(entry.id)}
-												>
-													<SkipForward class="size-3.5" />
-												</Button>
-											{:else if entry.status === 'queued' || entry.status === 'downloading'}
-												<Button
-													variant="ghost"
-													size="sm"
-													onclick={() => handleCancelEntry(entry.id)}
-												>
-													<X class="size-3.5" />
-												</Button>
-											{:else if entry.status === 'failed'}
-												<Button
-													variant="ghost"
-													size="sm"
-													onclick={() => handleDownloadEntry(entry.id)}
-												>
-													<RotateCcw class="size-3.5" />
-												</Button>
-											{/if}
-											<Badge variant="outline" class="text-xs">
-												{entry.status}
-											</Badge>
-										</div>
-										</div>
 									{/each}
 								</div>
-								
-								{#if sortedEntries.length > entriesPageSize}
-									{@const totalPages = Math.ceil(sortedEntries.length / entriesPageSize)}
-									<div class="flex items-center justify-center gap-2 pt-2 border-t">
-										<Button
-											variant="outline"
-											size="sm"
-											onclick={prevEntriesPage}
-											disabled={entriesPage === 0}
-										>
-											Previous
-										</Button>
-										<span class="text-sm text-muted-foreground">
-											Page {entriesPage + 1} of {totalPages}
-										</span>
-										<Button
-											variant="outline"
-											size="sm"
-											onclick={nextEntriesPage}
-											disabled={entriesPage >= totalPages - 1}
-										>
-											Next
-										</Button>
-									</div>
-								{/if}
 							</div>
+
+							{#if sortedEntries.length > entriesPageSize}
+								{@const totalPages = Math.ceil(sortedEntries.length / entriesPageSize)}
+								<div class="flex items-center justify-center gap-3 pt-2">
+									<Button variant="outline" size="sm" onclick={prevEntriesPage} disabled={entriesPage === 0} class="gap-1">
+										<ChevronLeft class="size-4" />
+										Previous
+									</Button>
+									<span class="text-sm text-muted-foreground tabular-nums">
+										{entriesPage + 1} / {totalPages}
+									</span>
+									<Button variant="outline" size="sm" onclick={nextEntriesPage} disabled={entriesPage >= totalPages - 1} class="gap-1">
+										Next
+										<ChevronRight class="size-4" />
+									</Button>
+								</div>
+							{/if}
 						{/if}
 					</div>
 				{:else}
 					<!-- Playlist list view -->
-					<div class="flex gap-2 max-w-2xl">
+
+					<!-- Action banner: new tracks ready -->
+					{#if totalNewAcrossPlaylists > 0}
+						{@const playlistsWithNew = playlists.filter(p => p.new_count > 0)}
+						<div class="flex items-center gap-4 rounded-xl bg-primary/8 border border-primary/20 px-5 py-3.5">
+							<div class="flex items-center gap-3 flex-1 min-w-0">
+								<div class="flex items-center justify-center size-10 rounded-full bg-primary/15 shrink-0">
+									<ArrowDownToLine class="size-5 text-primary" />
+								</div>
+								<div>
+									<p class="text-sm font-medium">
+										{totalNewAcrossPlaylists} new track{totalNewAcrossPlaylists !== 1 ? 's' : ''} found
+									</p>
+									<p class="text-xs text-muted-foreground mt-0.5">
+										Across {playlistsWithNew.length} playlist{playlistsWithNew.length !== 1 ? 's' : ''}
+									</p>
+								</div>
+							</div>
+							<Button
+								size="sm"
+								class="gap-1.5 shrink-0"
+								onclick={() => { for (const pl of playlistsWithNew) handleDownloadAllNew(pl.id); }}
+							>
+								<ArrowDownToLine class="size-3.5" />
+								Download all
+							</Button>
+						</div>
+					{/if}
+
+					<!-- Active downloads indicator -->
+					{#if activeDownloads.length > 0}
+						<div class="flex items-center gap-3 rounded-lg bg-muted/30 px-4 py-2.5">
+							<span class="relative flex size-2 shrink-0">
+								<span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
+								<span class="relative inline-flex rounded-full size-2 bg-blue-400"></span>
+							</span>
+							<span class="text-sm text-muted-foreground">
+								{activeDownloads.length} download{activeDownloads.length !== 1 ? 's' : ''} in progress
+							</span>
+						</div>
+					{/if}
+
+					<!-- Add playlist + actions row -->
+					<div class="flex gap-2">
 						<div class="relative flex-1">
 							<ListMusic class="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" />
 							<Input
-								placeholder="Paste a playlist URL to monitor..."
+								placeholder="Paste a playlist URL..."
 								class="pl-10"
 								bind:value={playlistUrlInput}
 								onkeydown={handlePlaylistKeydown}
@@ -843,6 +889,7 @@
 						<Button
 							onclick={handleAddPlaylist}
 							disabled={!playlistUrlInput.trim() || addingPlaylist}
+							class="gap-1.5"
 						>
 							{#if addingPlaylist}
 								<Loader2 class="size-4 animate-spin" />
@@ -856,10 +903,11 @@
 								variant="outline"
 								onclick={handleSyncAll}
 								disabled={syncingAll}
+								class="gap-1.5"
 							>
 								{#if syncingAll}
 									<Loader2 class="size-4 animate-spin" />
-									Syncing {syncAllProgress.current}/{syncAllProgress.total}
+									{syncAllProgress.current}/{syncAllProgress.total}
 								{:else}
 									<RefreshCw class="size-4" />
 									Sync all
@@ -869,106 +917,178 @@
 					</div>
 
 					{#if playlists.length === 0}
-						<div class="flex flex-col items-center justify-center h-48 rounded-lg border border-dashed border-border gap-3">
-							<ListMusic class="size-8 text-muted-foreground" />
-							<div class="text-center">
-								<p class="text-muted-foreground text-sm">No playlists tracked yet</p>
-								<p class="text-muted-foreground text-xs mt-1">
-									Paste a playlist URL from YouTube, SoundCloud, Bandcamp, or any yt-dlp supported site
+						<div class="flex flex-col items-center justify-center py-20 rounded-xl border border-dashed border-border/40 gap-5">
+							<div class="size-16 rounded-2xl bg-muted/30 flex items-center justify-center">
+								<ListMusic class="size-8 text-muted-foreground/30" />
+							</div>
+							<div class="text-center space-y-1.5 max-w-sm">
+								<p class="font-medium">No playlists yet</p>
+								<p class="text-muted-foreground/50 text-sm leading-relaxed">
+									Paste a playlist URL above to start monitoring. Supports YouTube, SoundCloud, Bandcamp, Spotify, and more.
 								</p>
 							</div>
 						</div>
 					{:else}
-						<div class="grid gap-3">
-							{#each playlists as pl (pl.id)}
+						<!-- Playlist grid -->
+						<div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+							{#each playlists.filter(pl => pl.total_entries > 1) as pl (pl.id)}
+								{@const pct = pl.total_entries > 0 ? Math.round((pl.downloaded_count / pl.total_entries) * 100) : 0}
 								<div
-									class="flex items-center gap-4 rounded-lg border border-border p-4 hover:bg-accent/50 transition-colors cursor-pointer group"
+									class="group rounded-xl border border-border/40 bg-card hover:bg-muted/20 transition-all cursor-pointer overflow-hidden"
 									role="button"
 									tabindex="0"
 									onclick={() => openPlaylist(pl)}
 									onkeydown={(e) => { if (e.key === 'Enter') openPlaylist(pl); }}
 								>
-									<div class="flex items-center justify-center size-12 rounded-lg bg-muted shrink-0">
-										<ListMusic class="size-6 text-muted-foreground" />
-									</div>
-									<div class="flex-1 min-w-0">
-										<div class="flex items-center gap-2">
-											<p class="font-medium truncate">{pl.name}</p>
-											<Badge variant={platformColor(pl.source_platform ?? 'other')} class="text-xs shrink-0">
-												{platformLabel(pl.source_platform ?? 'other')}
-											</Badge>
-											{#if pl.active_count > 0}
-												<Badge variant="secondary" class="text-xs shrink-0">
-													{pl.active_count} active
-												</Badge>
-											{/if}
-											{#if pl.new_count > 0}
-												<Badge variant="default" class="text-xs shrink-0">
-													{pl.new_count} new
-												</Badge>
-											{/if}
-										</div>
-										<div class="flex items-center gap-3 mt-1">
-											<span class="text-xs text-muted-foreground">
-												{pl.total_entries} tracks
-											</span>
-											<span class="text-xs text-muted-foreground">
-												{pl.downloaded_count} downloaded
-											</span>
-											<span class="text-xs text-muted-foreground flex items-center gap-1">
-												<Clock class="size-3" />
-												{timeAgo(pl.last_synced_at)}
-											</span>
-										</div>
-									</div>
-									<div class="flex items-center gap-2 shrink-0">
-										{#if pl.active_count > 0}
-											<Button
-												variant="destructive"
-												size="sm"
-												onclick={(e) => { e.stopPropagation(); handleCancelAll(pl.id); }}
-											>
-												<Square class="size-3.5" />
-												Stop {pl.active_count}
-											</Button>
+									<!-- Cover art -->
+									<div class="aspect-[16/10] bg-muted/40 relative overflow-hidden">
+										{#if pl.cover_art_path}
+											<img
+												src={assetUrl(pl.cover_art_path)}
+												alt={pl.name}
+												class="size-full object-cover group-hover:scale-105 transition-transform duration-300"
+												loading="lazy"
+											/>
+										{:else}
+											<div class="size-full bg-gradient-to-br from-muted/80 to-muted/20 flex items-center justify-center">
+												<ListMusic class="size-10 text-muted-foreground/20" />
+											</div>
 										{/if}
+										<!-- Overlay badges -->
+										{#if pl.new_count > 0}
+											<div class="absolute top-2 right-2">
+												<span class="inline-flex items-center gap-1 rounded-full bg-primary px-2 py-0.5 text-[11px] font-semibold text-primary-foreground shadow-sm">
+													{pl.new_count} new
+												</span>
+											</div>
+										{/if}
+										{#if pl.active_count > 0}
+											<div class="absolute top-2 left-2">
+												<span class="inline-flex items-center gap-1 rounded-full bg-black/60 backdrop-blur-sm px-2 py-0.5 text-[11px] text-white">
+													<Loader2 class="size-3 animate-spin" />
+													{pl.active_count}
+												</span>
+											</div>
+										{/if}
+										<!-- Progress bar at bottom of image -->
+										{#if pct > 0 && pct < 100}
+											<div class="absolute bottom-0 left-0 right-0 h-1 bg-black/30">
+												<div class="h-full bg-primary transition-all" style="width: {pct}%"></div>
+											</div>
+										{:else if pct === 100}
+											<div class="absolute bottom-0 left-0 right-0 h-1 bg-green-500"></div>
+										{/if}
+									</div>
+									<!-- Card body -->
+									<div class="p-3 space-y-1.5">
+										<div class="flex items-start justify-between gap-2">
+											<p class="text-sm font-medium leading-snug line-clamp-2">{pl.name}</p>
+											<!-- Hover actions -->
+											<div class="flex items-center gap-0.5 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity -mt-0.5 -mr-1">
+												<Button
+													variant="ghost"
+													size="icon-sm"
+													class="size-6"
+													onclick={(e) => { e.stopPropagation(); handleSync(pl.id); }}
+													disabled={syncingIds.has(pl.id)}
+												>
+													<RefreshCw class="size-3 {syncingIds.has(pl.id) ? 'animate-spin' : ''}" />
+												</Button>
+												<Button
+													variant="ghost"
+													size="icon-sm"
+													class="size-6 text-muted-foreground hover:text-destructive"
+													onclick={(e) => { e.stopPropagation(); handleRemovePlaylist(pl.id); }}
+												>
+													<Trash2 class="size-3" />
+												</Button>
+											</div>
+										</div>
+										<div class="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+											<!-- Platform dot -->
+											<span class="size-1.5 rounded-full shrink-0 {
+												pl.source_platform === 'youtube' ? 'bg-red-400' :
+												pl.source_platform === 'soundcloud' ? 'bg-orange-400' :
+												pl.source_platform === 'spotify' ? 'bg-green-400' :
+												pl.source_platform === 'bandcamp' ? 'bg-cyan-400' :
+												'bg-muted-foreground/40'
+											}"></span>
+											<span>{pl.downloaded_count}/{pl.total_entries} tracks</span>
+											{#if pl.last_synced_at}
+												<span class="opacity-40">&middot;</span>
+												<span>{timeAgo(pl.last_synced_at)}</span>
+											{/if}
+										</div>
+										<!-- Download CTA -->
 										{#if pl.new_count > 0}
 											<Button
-												variant="default"
 												size="sm"
+												class="w-full gap-1.5 h-7 text-xs mt-1"
 												onclick={(e) => { e.stopPropagation(); handleDownloadAllNew(pl.id); }}
 											>
-												<ArrowDownToLine class="size-3.5" />
-												{pl.new_count}
+												<ArrowDownToLine class="size-3" />
+												Download {pl.new_count} new
 											</Button>
 										{/if}
-										<Button
-											variant="ghost"
-											size="sm"
-											onclick={(e) => { e.stopPropagation(); handleSync(pl.id); }}
-											disabled={syncingIds.has(pl.id)}
-										>
-											<RefreshCw class="size-3.5 {syncingIds.has(pl.id) ? 'animate-spin' : ''}" />
-										</Button>
-										<Button
-											variant="ghost"
-											size="sm"
-											class="text-destructive hover:text-destructive"
-											onclick={(e) => { e.stopPropagation(); handleRemovePlaylist(pl.id); }}
-										>
-											<Trash2 class="size-3.5" />
-										</Button>
-										<ChevronRight class="size-4 text-muted-foreground group-hover:text-foreground transition-colors" />
 									</div>
 								</div>
 							{/each}
 						</div>
+						<!-- Single-track items collapsed into a compact list -->
+						{@const singles = playlists.filter(pl => pl.total_entries <= 1)}
+						{#if singles.length > 0}
+							<div class="space-y-1.5">
+								<p class="text-xs font-medium uppercase tracking-wider text-muted-foreground/50 px-1">
+									Singles ({singles.length})
+								</p>
+								<div class="rounded-lg border border-border/30 divide-y divide-border/20 overflow-hidden">
+									{#each singles as pl (pl.id)}
+										<div
+											class="flex items-center gap-3 px-3 py-2 hover:bg-muted/20 transition-colors cursor-pointer group text-sm"
+											role="button"
+											tabindex="0"
+											onclick={() => openPlaylist(pl)}
+											onkeydown={(e) => { if (e.key === 'Enter') openPlaylist(pl); }}
+										>
+											<span class="size-1.5 rounded-full shrink-0 {
+												pl.source_platform === 'youtube' ? 'bg-red-400' :
+												pl.source_platform === 'soundcloud' ? 'bg-orange-400' :
+												pl.source_platform === 'spotify' ? 'bg-green-400' :
+												pl.source_platform === 'bandcamp' ? 'bg-cyan-400' :
+												'bg-muted-foreground/40'
+											}"></span>
+											<span class="truncate flex-1">{pl.name}</span>
+											{#if pl.downloaded_count > 0}
+												<CheckCircle2 class="size-3.5 text-green-500/60 shrink-0" />
+											{:else if pl.new_count > 0}
+												<Button
+													variant="ghost"
+													size="icon-sm"
+													class="size-6 shrink-0"
+													onclick={(e) => { e.stopPropagation(); handleDownloadAllNew(pl.id); }}
+												>
+													<ArrowDownToLine class="size-3" />
+												</Button>
+											{/if}
+											<Button
+												variant="ghost"
+												size="icon-sm"
+												class="size-6 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-destructive"
+												onclick={(e) => { e.stopPropagation(); handleRemovePlaylist(pl.id); }}
+											>
+												<Trash2 class="size-3" />
+											</Button>
+										</div>
+									{/each}
+								</div>
+							</div>
+						{/if}
 					{/if}
 				{/if}
 			</Tabs.Content>
 
 			<!-- ==================== DOWNLOADS TAB ==================== -->
-			<Tabs.Content value="downloads" class="space-y-4 mt-4">
+			<Tabs.Content value="downloads" class="space-y-5 mt-4">
 				<!-- URL Input -->
 				<div class="flex gap-2 max-w-2xl">
 					<div class="relative flex-1">
@@ -980,7 +1100,7 @@
 							onkeydown={handleKeydown}
 						/>
 					</div>
-					<Button onclick={handleSubmit} disabled={!urlInput.trim() || submitting}>
+					<Button onclick={handleSubmit} disabled={!urlInput.trim() || submitting} class="gap-1.5">
 						{#if submitting}
 							<Loader2 class="size-4 animate-spin" />
 						{:else}
@@ -990,178 +1110,257 @@
 					</Button>
 				</div>
 
-				<!-- Active Downloads (grouped by album when applicable) -->
+				<!-- Active Downloads -->
 				{#if activeDownloads.length > 0}
 					<div class="space-y-3">
-						<h2 class="text-lg font-semibold">Active ({activeDownloads.length})</h2>
+						<h2 class="text-sm font-semibold uppercase tracking-wider text-muted-foreground">
+							Active ({activeDownloads.length})
+						</h2>
 						{#each groupedActiveDownloads as group}
 							{#if group.albumId}
 								<!-- Album group -->
-								<div class="rounded-lg border border-border overflow-hidden">
-									<div class="flex items-center gap-3 px-4 py-2.5 bg-muted/40 border-b border-border">
+								<div class="rounded-xl border border-border/60 overflow-hidden">
+									<div class="flex items-center gap-3 px-4 py-2.5 bg-muted/30 border-b border-border/40">
 										<Disc class="size-4 text-muted-foreground shrink-0" />
 										<span class="text-sm font-medium truncate">{group.albumTitle}</span>
 										<Badge variant="secondary" class="text-xs shrink-0 ml-auto">
 											{group.downloads.length} track{group.downloads.length !== 1 ? 's' : ''}
 										</Badge>
 									</div>
-									<div class="divide-y divide-border">
-										{#each group.downloads.slice(0, 20) as dl (dl.id)}
-											<div class="flex items-center gap-3 px-4 py-3">
-												<div class="shrink-0">
+									<!-- Album group table header -->
+									<div class="border-b border-border/30 bg-muted/15 text-[10px] text-muted-foreground/70 uppercase tracking-wider flex items-center px-4 py-1.5">
+										<div class="w-7"></div>
+										<div class="flex-1 pl-3">Title</div>
+										<div class="w-24 text-center">Status</div>
+										<div class="w-8"></div>
+									</div>
+									<div class="divide-y divide-border/20">
+										{#each group.downloads.slice(0, 30) as dl (dl.id)}
+											<div class="flex items-center px-4 py-2.5 hover:bg-muted/20 transition-colors group">
+												<!-- Status icon -->
+												<div class="w-7 flex items-center justify-center shrink-0">
 													{#if dl.status === 'downloading'}
-														<Loader2 class="size-4 animate-spin text-muted-foreground" />
+														<Loader2 class="size-3.5 animate-spin text-blue-400" />
 													{:else if dl.status === 'processing'}
-														<Loader2 class="size-4 animate-spin text-green-500" />
+														<Loader2 class="size-3.5 animate-spin text-green-500" />
 													{:else}
-														<Clock class="size-4 text-muted-foreground" />
+														<Clock class="size-3.5 text-muted-foreground/40" />
 													{/if}
 												</div>
-												<div class="flex-1 min-w-0">
-													<p class="text-sm truncate">{dl.title || dl.url}</p>
-													<div class="flex items-center gap-2 mt-0.5">
+												<!-- Title + progress -->
+												<div class="flex-1 min-w-0 pl-3">
+													<div class="flex items-center gap-2">
+														<p class="text-sm truncate">{dl.title || dl.url}</p>
 														{#if dl.artist}
-															<span class="text-xs text-muted-foreground truncate">{dl.artist}</span>
-														{/if}
-														{#if dl.status === 'downloading'}
-															<span class="text-xs text-muted-foreground">{Math.round(dl.progress)}%</span>
-														{:else if dl.status === 'processing'}
-															<span class="text-xs text-muted-foreground">Importing...</span>
-														{:else}
-															<span class="text-xs text-muted-foreground">Queued</span>
+															<span class="text-xs text-muted-foreground/60 truncate shrink-0">{dl.artist}</span>
 														{/if}
 													</div>
 													{#if dl.status === 'downloading'}
-														<Progress value={dl.progress} class="mt-1.5 h-1" />
+														<div class="flex items-center gap-2 mt-1">
+															<Progress value={dl.progress} class="h-1 flex-1" />
+															<span class="text-[10px] text-blue-400 tabular-nums shrink-0">{Math.round(dl.progress)}%</span>
+														</div>
 													{/if}
 												</div>
-												<Badge variant={platformColor(dl.platform)} class="text-xs shrink-0">
-													{platformLabel(dl.platform)}
-												</Badge>
-												<Button variant="ghost" size="sm" onclick={() => handleCancel(dl.id)}>
-													<X class="size-4" />
-												</Button>
+												<!-- Status -->
+												<div class="w-24 flex justify-center">
+													{#if dl.status === 'downloading'}
+														<Badge variant="outline" class="text-[10px] text-blue-400 border-blue-400/30">downloading</Badge>
+													{:else if dl.status === 'processing'}
+														<Badge variant="outline" class="text-[10px] text-green-500 border-green-500/30">importing</Badge>
+													{:else}
+														<Badge variant="outline" class="text-[10px] text-muted-foreground/60">queued</Badge>
+													{/if}
+												</div>
+												<!-- Cancel -->
+												<div class="w-8 flex justify-center">
+													<Button
+														variant="ghost"
+														size="icon-sm"
+														class="size-6 opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground"
+														onclick={() => handleCancel(dl.id)}
+													>
+														<X class="size-3.5" />
+													</Button>
+												</div>
 											</div>
 										{/each}
-										{#if group.downloads.length > 20}
-											<p class="text-xs text-muted-foreground text-center py-2">
-												and {group.downloads.length - 20} more queued...
-											</p>
+										{#if group.downloads.length > 30}
+											<div class="text-xs text-muted-foreground/50 text-center py-2.5 bg-muted/10">
+												+{group.downloads.length - 30} more queued
+											</div>
 										{/if}
 									</div>
 								</div>
 							{:else}
-								<!-- Ungrouped downloads -->
-								<div class="space-y-1">
-									{#each group.downloads.slice(0, 20) as dl (dl.id)}
-										<div class="flex items-center gap-3 rounded-lg border border-border p-3 hover:bg-accent/50 transition-colors">
-											<div class="shrink-0">
-												{#if dl.status === 'downloading'}
-													<Loader2 class="size-4 animate-spin text-muted-foreground" />
-												{:else if dl.status === 'processing'}
-													<Loader2 class="size-4 animate-spin text-green-500" />
-												{:else}
-													<Clock class="size-4 text-muted-foreground" />
-												{/if}
-											</div>
-											<div class="flex-1 min-w-0">
-												<p class="text-sm truncate">{dl.title || dl.url}</p>
-												<div class="flex items-center gap-2 mt-0.5">
-													{#if dl.artist}
-														<span class="text-xs text-muted-foreground truncate">{dl.artist}</span>
-													{/if}
+								<!-- Ungrouped downloads table -->
+								<div class="rounded-xl border border-border/60 overflow-hidden">
+									<div class="divide-y divide-border/20">
+										{#each group.downloads.slice(0, 30) as dl (dl.id)}
+											<div class="flex items-center px-4 py-2.5 hover:bg-muted/20 transition-colors group">
+												<!-- Status icon -->
+												<div class="w-7 flex items-center justify-center shrink-0">
 													{#if dl.status === 'downloading'}
-														<span class="text-xs text-muted-foreground">{Math.round(dl.progress)}%</span>
+														<Loader2 class="size-3.5 animate-spin text-blue-400" />
 													{:else if dl.status === 'processing'}
-														<span class="text-xs text-muted-foreground">Importing...</span>
+														<Loader2 class="size-3.5 animate-spin text-green-500" />
 													{:else}
-														<span class="text-xs text-muted-foreground">Queued</span>
+														<Clock class="size-3.5 text-muted-foreground/40" />
 													{/if}
 												</div>
-												{#if dl.status === 'downloading'}
-													<Progress value={dl.progress} class="mt-1.5 h-1" />
-												{/if}
+												<!-- Title + progress -->
+												<div class="flex-1 min-w-0 pl-3">
+													<div class="flex items-center gap-2">
+														<p class="text-sm truncate">{dl.title || dl.url}</p>
+														{#if dl.artist}
+															<span class="text-xs text-muted-foreground/60 truncate shrink-0">{dl.artist}</span>
+														{/if}
+													</div>
+													{#if dl.status === 'downloading'}
+														<div class="flex items-center gap-2 mt-1">
+															<Progress value={dl.progress} class="h-1 flex-1" />
+															<span class="text-[10px] text-blue-400 tabular-nums shrink-0">{Math.round(dl.progress)}%</span>
+														</div>
+													{/if}
+												</div>
+												<!-- Platform -->
+												<div class="w-24 flex justify-center">
+													<Badge variant={platformColor(dl.platform)} class="text-[10px] shrink-0">
+														{platformLabel(dl.platform)}
+													</Badge>
+												</div>
+												<!-- Status -->
+												<div class="w-24 flex justify-center">
+													{#if dl.status === 'downloading'}
+														<Badge variant="outline" class="text-[10px] text-blue-400 border-blue-400/30">downloading</Badge>
+													{:else if dl.status === 'processing'}
+														<Badge variant="outline" class="text-[10px] text-green-500 border-green-500/30">importing</Badge>
+													{:else}
+														<Badge variant="outline" class="text-[10px] text-muted-foreground/60">queued</Badge>
+													{/if}
+												</div>
+												<!-- Cancel -->
+												<div class="w-8 flex justify-center">
+													<Button
+														variant="ghost"
+														size="icon-sm"
+														class="size-6 opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground"
+														onclick={() => handleCancel(dl.id)}
+													>
+														<X class="size-3.5" />
+													</Button>
+												</div>
 											</div>
-											<Badge variant={platformColor(dl.platform)} class="text-xs shrink-0">
-												{platformLabel(dl.platform)}
-											</Badge>
-											<Button variant="ghost" size="sm" onclick={() => handleCancel(dl.id)}>
-												<X class="size-4" />
-											</Button>
+										{/each}
+									</div>
+									{#if group.downloads.length > 30}
+										<div class="text-xs text-muted-foreground/50 text-center py-2.5 border-t border-border/20 bg-muted/10">
+											+{group.downloads.length - 30} more queued
 										</div>
-									{/each}
+									{/if}
 								</div>
-								{#if group.downloads.length > 20}
-									<p class="text-xs text-muted-foreground text-center py-2">
-										and {group.downloads.length - 20} more queued...
-									</p>
-								{/if}
 							{/if}
 						{/each}
 					</div>
 				{/if}
 
-				<!-- Completed -->
+				<!-- Completed / Recent -->
 				{#if allCompletedDownloads.length > 0}
 					<div class="space-y-3">
-						<h2 class="text-lg font-semibold">Recent ({allCompletedDownloads.length})</h2>
-						<div class="space-y-1">
-							{#each completedDownloads as dl (dl.id)}
-								<div class="flex items-center gap-3 rounded-lg border border-border p-3 hover:bg-accent/50 transition-colors">
-									<div class="shrink-0">
-										{#if dl.status === 'completed'}
-											<CheckCircle2 class="size-4 text-green-500" />
-										{:else if dl.status === 'failed'}
-											<XCircle class="size-4 text-destructive" />
-										{:else}
-											<XCircle class="size-4 text-muted-foreground" />
-										{/if}
-									</div>
-									<div class="flex-1 min-w-0">
-										<p class="text-sm truncate">{dl.title || dl.url}</p>
-										<div class="flex items-center gap-2 mt-0.5">
-											{#if dl.artist}
-												<span class="text-xs text-muted-foreground truncate">{dl.artist}</span>
-											{/if}
-											{#if dl.status === 'failed' && dl.error_message}
-												<span class="text-xs text-destructive truncate">{dl.error_message}</span>
+						<h2 class="text-sm font-semibold uppercase tracking-wider text-muted-foreground">
+							Recent ({allCompletedDownloads.length})
+						</h2>
+						<div class="rounded-xl border border-border/60 overflow-hidden">
+							<!-- Table header -->
+							<div class="border-b border-border/40 bg-muted/30 text-[10px] text-muted-foreground/70 uppercase tracking-wider flex items-center px-4 py-2">
+								<div class="w-7"></div>
+								<div class="flex-1 pl-3">Title</div>
+								<div class="w-20 text-center hidden sm:block">Format</div>
+								<div class="w-24 text-center">Platform</div>
+								<div class="w-24 text-center">Status</div>
+								<div class="w-8"></div>
+							</div>
+							<div class="divide-y divide-border/20">
+								{#each completedDownloads as dl (dl.id)}
+									<div class="flex items-center px-4 py-2.5 hover:bg-muted/20 transition-colors group">
+										<!-- Status icon -->
+										<div class="w-7 flex items-center justify-center shrink-0">
+											{#if dl.status === 'completed'}
+												<CheckCircle2 class="size-4 text-green-500" />
+											{:else if dl.status === 'failed'}
+												<XCircle class="size-4 text-destructive" />
 											{:else}
-												<span class="text-xs text-muted-foreground">{dl.format.toUpperCase()}</span>
+												<X class="size-4 text-muted-foreground/30" />
+											{/if}
+										</div>
+										<!-- Title & artist -->
+										<div class="flex-1 min-w-0 pl-3">
+											<p class="text-sm truncate">{dl.title || dl.url}</p>
+											<div class="flex items-center gap-2 mt-0.5">
+												{#if dl.artist}
+													<span class="text-xs text-muted-foreground/60 truncate">{dl.artist}</span>
+												{/if}
+												{#if dl.status === 'failed' && dl.error_message}
+													<span class="text-xs text-destructive/80 truncate">{dl.error_message}</span>
+												{/if}
+											</div>
+										</div>
+										<!-- Format -->
+										<div class="w-20 text-center hidden sm:block">
+											{#if dl.status !== 'failed'}
+												<span class="text-[10px] text-muted-foreground/50 font-mono uppercase">{dl.format}</span>
+											{:else}
+												<span class="text-[10px] text-muted-foreground/30">--</span>
+											{/if}
+										</div>
+										<!-- Platform -->
+										<div class="w-24 flex justify-center">
+											<Badge variant={platformColor(dl.platform)} class="text-[10px]">
+												{platformLabel(dl.platform)}
+											</Badge>
+										</div>
+										<!-- Status -->
+										<div class="w-24 flex justify-center">
+											<Badge
+												variant="outline"
+												class="text-[10px] capitalize
+													{dl.status === 'completed' ? 'text-green-500 border-green-500/30' : ''}
+													{dl.status === 'failed' ? 'text-destructive border-destructive/30' : ''}
+													{dl.status === 'cancelled' ? 'text-muted-foreground/50 border-border/40' : ''}"
+											>
+												{dl.status}
+											</Badge>
+										</div>
+										<!-- Retry -->
+										<div class="w-8 flex justify-center">
+											{#if dl.status === 'failed'}
+												<Button
+													variant="ghost"
+													size="icon-sm"
+													class="size-6 text-muted-foreground hover:text-foreground"
+													onclick={() => handleRetry(dl.id)}
+												>
+													<RotateCcw class="size-3" />
+												</Button>
 											{/if}
 										</div>
 									</div>
-									<Badge variant={platformColor(dl.platform)} class="text-xs shrink-0">
-										{platformLabel(dl.platform)}
-									</Badge>
-									{#if dl.status === 'failed'}
-										<Button variant="ghost" size="sm" onclick={() => handleRetry(dl.id)}>
-											<RotateCcw class="size-4" />
-										</Button>
-									{/if}
-								</div>
-							{/each}
+								{/each}
+							</div>
 						</div>
 
 						{#if completedTotalPages > 1}
-							<div class="flex items-center justify-center gap-2 pt-2">
-								<Button
-									variant="outline"
-									size="sm"
-									disabled={completedPage === 0}
-									onclick={() => completedPage--}
-								>
+							<div class="flex items-center justify-center gap-3 pt-2">
+								<Button variant="outline" size="sm" disabled={completedPage === 0} onclick={() => completedPage--} class="gap-1">
+									<ChevronLeft class="size-4" />
 									Previous
 								</Button>
-								<span class="text-sm text-muted-foreground">
-									Page {completedPage + 1} of {completedTotalPages}
+								<span class="text-sm text-muted-foreground tabular-nums">
+									{completedPage + 1} / {completedTotalPages}
 								</span>
-								<Button
-									variant="outline"
-									size="sm"
-									disabled={completedPage >= completedTotalPages - 1}
-									onclick={() => completedPage++}
-								>
+								<Button variant="outline" size="sm" disabled={completedPage >= completedTotalPages - 1} onclick={() => completedPage++} class="gap-1">
 									Next
+									<ChevronRight class="size-4" />
 								</Button>
 							</div>
 						{/if}
@@ -1170,9 +1369,14 @@
 
 				<!-- Empty state -->
 				{#if activeDownloads.length === 0 && allCompletedDownloads.length === 0}
-					<div class="flex flex-col items-center justify-center h-32 rounded-lg border border-dashed border-border gap-2">
-						<Download class="size-6 text-muted-foreground" />
-						<p class="text-muted-foreground text-sm">Paste a URL above to start downloading</p>
+					<div class="flex flex-col items-center justify-center py-20 rounded-xl border border-dashed border-border/40 gap-5">
+						<div class="size-16 rounded-2xl bg-muted/30 flex items-center justify-center">
+							<Download class="size-8 text-muted-foreground/30" />
+						</div>
+						<div class="text-center space-y-1.5 max-w-sm">
+							<p class="font-medium">No downloads yet</p>
+							<p class="text-muted-foreground/50 text-sm leading-relaxed">Paste a URL above to download a single track or video</p>
+						</div>
 					</div>
 				{/if}
 			</Tabs.Content>
@@ -1180,86 +1384,102 @@
 			<!-- ==================== HISTORY TAB ==================== -->
 			<Tabs.Content value="history" class="space-y-4 mt-4">
 				{#if !historyLoaded}
-					<div class="flex justify-center p-8">
+					<div class="flex justify-center p-12">
 						<Loader2 class="size-6 animate-spin text-muted-foreground" />
 					</div>
 				{:else}
 					<div class="flex items-center justify-between">
-						<p class="text-sm text-muted-foreground">{historyTotal} total downloads</p>
+						<p class="text-sm text-muted-foreground">{historyTotal} total download{historyTotal !== 1 ? 's' : ''}</p>
 						{#if history.length > 0}
-							<Button variant="ghost" size="sm" onclick={handleClearHistory}>
-								<Trash2 class="size-4" />
+							<Button variant="ghost" size="sm" onclick={handleClearHistory} class="gap-1.5 text-muted-foreground hover:text-destructive">
+								<Trash2 class="size-3.5" />
 								Clear history
 							</Button>
 						{/if}
 					</div>
 
 					{#if history.length === 0}
-						<div class="flex flex-col items-center justify-center h-32 rounded-lg border border-dashed border-border gap-2">
-							<Clock class="size-6 text-muted-foreground" />
-							<p class="text-muted-foreground text-sm">No download history</p>
+						<div class="flex flex-col items-center justify-center py-20 rounded-xl border border-dashed border-border/40 gap-5">
+							<div class="size-16 rounded-2xl bg-muted/30 flex items-center justify-center">
+								<Clock class="size-8 text-muted-foreground/30" />
+							</div>
+							<p class="text-muted-foreground/60">No download history</p>
 						</div>
 					{:else}
-						<div class="space-y-3">
-							<div class="space-y-1">
+						<div class="rounded-xl border border-border/60 overflow-hidden">
+							<!-- Table header -->
+							<div class="border-b border-border/40 bg-muted/30 text-[10px] text-muted-foreground/70 uppercase tracking-wider flex items-center px-4 py-2">
+								<div class="w-7"></div>
+								<div class="flex-1 pl-3">Title</div>
+								<div class="w-28 text-center hidden sm:block">Date</div>
+								<div class="w-24 text-center">Platform</div>
+								<div class="w-24 text-center">Status</div>
+							</div>
+							<div class="divide-y divide-border/20">
 								{#each history as dl (dl.id)}
-									<div class="flex items-center gap-3 rounded-lg border border-border p-3 hover:bg-accent/50 transition-colors">
-										<div class="shrink-0">
+									<div class="flex items-center px-4 py-2.5 hover:bg-muted/20 transition-colors">
+										<!-- Status icon -->
+										<div class="w-7 flex items-center justify-center shrink-0">
 											{#if dl.status === 'completed'}
 												<CheckCircle2 class="size-4 text-green-500" />
 											{:else if dl.status === 'failed'}
 												<XCircle class="size-4 text-destructive" />
 											{:else if dl.status === 'cancelled'}
-												<XCircle class="size-4 text-muted-foreground" />
+												<X class="size-4 text-muted-foreground/30" />
 											{:else}
-												<Loader2 class="size-4 text-muted-foreground" />
+												<Clock class="size-4 text-muted-foreground/40" />
 											{/if}
 										</div>
-										<div class="flex-1 min-w-0">
+										<!-- Title & artist -->
+										<div class="flex-1 min-w-0 pl-3">
 											<p class="text-sm truncate">{dl.title || dl.url}</p>
-											<div class="flex items-center gap-2 mt-0.5">
-												{#if dl.artist}
-													<span class="text-xs text-muted-foreground truncate">{dl.artist}</span>
-													<span class="text-xs text-muted-foreground">&middot;</span>
-												{/if}
-												<span class="text-xs text-muted-foreground">{formatDate(dl.created_at)}</span>
-											</div>
+											{#if dl.artist}
+												<p class="text-xs text-muted-foreground/60 truncate mt-0.5">{dl.artist}</p>
+											{/if}
 										</div>
-										<Badge variant={platformColor(dl.platform)} class="text-xs shrink-0">
-											{platformLabel(dl.platform)}
-										</Badge>
-										<Badge variant="outline" class="text-xs shrink-0">
-											{dl.status}
-										</Badge>
+										<!-- Date -->
+										<div class="w-28 text-center hidden sm:block">
+											<span class="text-xs text-muted-foreground/50">{formatDate(dl.created_at)}</span>
+										</div>
+										<!-- Platform -->
+										<div class="w-24 flex justify-center">
+											<Badge variant={platformColor(dl.platform)} class="text-[10px]">
+												{platformLabel(dl.platform)}
+											</Badge>
+										</div>
+										<!-- Status -->
+										<div class="w-24 flex justify-center">
+											<Badge
+												variant="outline"
+												class="text-[10px] capitalize
+													{dl.status === 'completed' ? 'text-green-500 border-green-500/30' : ''}
+													{dl.status === 'failed' ? 'text-destructive border-destructive/30' : ''}
+													{dl.status === 'cancelled' ? 'text-muted-foreground/50 border-border/40' : ''}"
+											>
+												{dl.status}
+											</Badge>
+										</div>
 									</div>
 								{/each}
 							</div>
-
-							{#if historyTotal > historyPageSize}
-								{@const totalPages = Math.ceil(historyTotal / historyPageSize)}
-								<div class="flex items-center justify-center gap-2 pt-2 border-t">
-									<Button
-										variant="outline"
-										size="sm"
-										onclick={prevHistoryPage}
-										disabled={historyPage === 0}
-									>
-										Previous
-									</Button>
-									<span class="text-sm text-muted-foreground">
-										Page {historyPage + 1} of {totalPages}
-									</span>
-									<Button
-										variant="outline"
-										size="sm"
-										onclick={nextHistoryPage}
-										disabled={historyPage >= totalPages - 1}
-									>
-										Next
-									</Button>
-								</div>
-							{/if}
 						</div>
+
+						{#if historyTotal > historyPageSize}
+							{@const totalPages = Math.ceil(historyTotal / historyPageSize)}
+							<div class="flex items-center justify-center gap-3 pt-2">
+								<Button variant="outline" size="sm" onclick={prevHistoryPage} disabled={historyPage === 0} class="gap-1">
+									<ChevronLeft class="size-4" />
+									Previous
+								</Button>
+								<span class="text-sm text-muted-foreground tabular-nums">
+									{historyPage + 1} / {totalPages}
+								</span>
+								<Button variant="outline" size="sm" onclick={nextHistoryPage} disabled={historyPage >= totalPages - 1} class="gap-1">
+									Next
+									<ChevronRight class="size-4" />
+								</Button>
+							</div>
+						{/if}
 					{/if}
 				{/if}
 			</Tabs.Content>

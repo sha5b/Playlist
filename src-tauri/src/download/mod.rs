@@ -185,7 +185,13 @@ impl DownloadManager {
         tokio::spawn(async move {
             let handle = tokio::spawn(async move {
                 // Wait for a concurrency slot (limits parallel yt-dlp processes)
-                let _permit = semaphore.acquire().await.expect("Semaphore closed");
+                let _permit = match semaphore.acquire().await {
+                    Ok(p) => p,
+                    Err(e) => {
+                        log::error!("Download semaphore closed unexpectedly: {}", e);
+                        return;
+                    }
+                };
                 run_download(db, app_handle, download_id, download_dir, ytdlp_binary, ffmpeg_dir, cookies_from_browser, sources)
                     .await;
                 active_tasks.lock().await.remove(&download_id);

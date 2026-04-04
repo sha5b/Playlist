@@ -19,16 +19,16 @@
         "minHeight": 500,
         "resizable": true,
         "fullscreen": false,
-        "decorations": true,
+        "decorations": false,
         "center": true,
         "dragDropEnabled": false
       }
     ],
     "security": {
-      "csp": null,
+      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: https:; connect-src ipc: http://ipc.localhost",
       "assetProtocol": {
         "enable": true,
-        "scope": ["**", "$APPDATA/**", "$APPDATA/covers/**", "$APPDATA/downloads/**", "$APPDATA/music_videos/**"]
+        "scope": ["$APPDATA/**", "$APPDATA/covers/**", "$APPDATA/downloads/**", "$APPDATA/music_videos/**"]
       }
     }
   },
@@ -40,7 +40,8 @@
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.icns",
-      "icons/icon.ico"
+      "icons/icon.ico",
+      "icons/icon.png"
     ],
     "windows": {
       "nsis": {

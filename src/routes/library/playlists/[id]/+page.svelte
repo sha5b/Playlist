@@ -7,7 +7,7 @@
 	import { player } from '$lib/stores/player.svelte';
 	import { formatDurationLong, assetUrl, shuffleArray, platformLabel, platformColor, timeAgo } from '$lib/utils/format';
 	import { Badge } from '$lib/components/ui/badge';
-	import { ArrowLeft, ListMusic, Play, Shuffle, Trash2, Loader2, ExternalLink } from 'lucide-svelte';
+	import { ArrowLeft, ListMusic, Play, Shuffle, Trash2, Loader2, ExternalLink, RefreshCw, Clock, ChevronLeft, ChevronRight } from 'lucide-svelte';
 	import { toast } from 'svelte-sonner';
 	import * as AlertDialog from '$lib/components/ui/alert-dialog';
 	import type { Playlist, TrackPage, Track } from '$lib/types';
@@ -86,10 +86,11 @@
 	}
 </script>
 
-<div class="flex flex-col flex-1 min-h-0 gap-4">
+<div class="flex flex-col flex-1 min-h-0 gap-6">
+	<!-- Back navigation -->
 	<a
 		href="/library/playlists"
-		class="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground transition-colors shrink-0"
+		class="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors shrink-0 w-fit"
 	>
 		<ArrowLeft class="size-4" />
 		Playlists
@@ -100,8 +101,10 @@
 			<Loader2 class="size-6 animate-spin text-muted-foreground" />
 		</div>
 	{:else if playlist}
-		<div class="flex gap-6 items-end shrink-0">
-			<div class="size-48 rounded-lg bg-muted flex items-center justify-center overflow-hidden shrink-0 shadow-lg">
+		<!-- Header -->
+		<div class="flex gap-6 items-start shrink-0">
+			<!-- Cover art -->
+			<div class="size-52 rounded-xl bg-muted flex items-center justify-center overflow-hidden shrink-0 shadow-lg ring-1 ring-white/5">
 				{#if playlist.cover_art_path}
 					<img
 						src={assetUrl(playlist.cover_art_path)}
@@ -109,11 +112,16 @@
 						class="size-full object-cover"
 					/>
 				{:else}
-					<ListMusic class="size-16 text-muted-foreground" />
+					<div class="size-full bg-gradient-to-br from-muted to-muted/40 flex items-center justify-center">
+						<ListMusic class="size-16 text-muted-foreground/40" />
+					</div>
 				{/if}
 			</div>
-			<div class="space-y-2">
-				<div class="flex items-center gap-2">
+
+			<!-- Info -->
+			<div class="space-y-3 py-2 min-w-0 flex-1">
+				<!-- Type label + badges -->
+				<div class="flex items-center gap-2 flex-wrap">
 					<p class="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Playlist</p>
 					{#if playlist.source_platform}
 						<Badge variant={platformColor(playlist.source_platform)} class="text-xs">
@@ -121,46 +129,66 @@
 						</Badge>
 					{/if}
 					{#if playlist.is_synced}
-						<Badge variant="outline" class="text-xs">Synced</Badge>
+						<Badge variant="outline" class="text-xs gap-1">
+							<RefreshCw class="size-2.5" />
+							Synced
+						</Badge>
 					{/if}
 				</div>
-				<h1 class="text-3xl font-bold tracking-tight">{playlist.name}</h1>
+
+				<!-- Title -->
+				<h1 class="text-4xl font-bold tracking-tight leading-tight">{playlist.name}</h1>
+
+				<!-- Description -->
 				{#if playlist.description}
-					<p class="text-sm text-muted-foreground">{playlist.description}</p>
+					<p class="text-sm text-muted-foreground/80 leading-relaxed max-w-xl">{playlist.description}</p>
 				{/if}
-				<p class="text-sm text-muted-foreground">
-					{trackPage ? trackPage.total : 0} track{(trackPage?.total ?? 0) !== 1 ? 's' : ''}
+
+				<!-- Metadata row -->
+				<div class="flex items-center gap-3 text-sm text-muted-foreground flex-wrap">
+					<span class="font-medium text-foreground/80">
+						{trackPage ? trackPage.total : 0} track{(trackPage?.total ?? 0) !== 1 ? 's' : ''}
+					</span>
 					{#if playlist.total_duration_ms > 0}
-						&middot; {formatDurationLong(playlist.total_duration_ms)}
+						<span class="opacity-40">&middot;</span>
+						<span class="flex items-center gap-1">
+							<Clock class="size-3.5" />
+							{formatDurationLong(playlist.total_duration_ms)}
+						</span>
 					{/if}
 					{#if playlist.last_synced_at}
-						&middot; Synced {timeAgo(playlist.last_synced_at)}
+						<span class="opacity-40">&middot;</span>
+						<span>Synced {timeAgo(playlist.last_synced_at)}</span>
 					{/if}
-				</p>
+				</div>
+
+				<!-- Source link -->
 				{#if playlist.source_url}
 					<a
 						href={playlist.source_url}
 						target="_blank"
 						rel="noopener noreferrer"
-						class="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
+						class="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
 					>
 						<ExternalLink class="size-3" />
-						Source
+						View source
 					</a>
 				{/if}
-				<div class="flex gap-2 pt-2">
-					<Button onclick={playAll} disabled={!trackPage || trackPage.tracks.length === 0}>
+
+				<!-- Actions -->
+				<div class="flex items-center gap-2 pt-1">
+					<Button onclick={playAll} disabled={!trackPage || trackPage.tracks.length === 0} class="gap-2 rounded-full px-6">
 						<Play class="size-4" fill="currentColor" />
 						Play
 					</Button>
-					<Button variant="outline" onclick={shuffleAll} disabled={!trackPage || trackPage.tracks.length === 0}>
+					<Button variant="outline" onclick={shuffleAll} disabled={!trackPage || trackPage.tracks.length === 0} class="gap-2 rounded-full px-5">
 						<Shuffle class="size-4" />
 						Shuffle
 					</Button>
 					<AlertDialog.Root bind:open={deleteOpen}>
 						<AlertDialog.Trigger>
 							{#snippet child({ props })}
-								<Button variant="outline" class="text-destructive hover:text-destructive" {...props}>
+								<Button variant="ghost" size="icon" class="text-muted-foreground hover:text-destructive rounded-full" {...props}>
 									<Trash2 class="size-4" />
 								</Button>
 							{/snippet}
@@ -169,7 +197,7 @@
 							<AlertDialog.Header>
 								<AlertDialog.Title>Delete Playlist</AlertDialog.Title>
 								<AlertDialog.Description>
-									Are you sure you want to delete "{playlist?.name}"? This cannot be undone.
+									Are you sure you want to delete "{playlist?.name}"? This action cannot be undone.
 								</AlertDialog.Description>
 							</AlertDialog.Header>
 							<AlertDialog.Footer>
@@ -182,34 +210,45 @@
 			</div>
 		</div>
 
+		<!-- Track list -->
 		{#if trackPage}
 			<TrackTable tracks={trackPage.tracks} ondelete={handleRemoveTrack} />
 
 			{#if totalPages > 1}
-				<div class="flex items-center justify-center gap-2 shrink-0 pb-2">
+				<div class="flex items-center justify-center gap-3 shrink-0 pb-2">
 					<Button
 						variant="outline"
 						size="sm"
 						disabled={currentPage === 0}
 						onclick={() => { currentPage--; loadTracks(); }}
+						class="gap-1"
 					>
+						<ChevronLeft class="size-4" />
 						Previous
 					</Button>
-					<span class="text-sm text-muted-foreground">
-						Page {currentPage + 1} of {totalPages}
+					<span class="text-sm text-muted-foreground tabular-nums px-2">
+						{currentPage + 1} / {totalPages}
 					</span>
 					<Button
 						variant="outline"
 						size="sm"
 						disabled={currentPage >= totalPages - 1}
 						onclick={() => { currentPage++; loadTracks(); }}
+						class="gap-1"
 					>
 						Next
+						<ChevronRight class="size-4" />
 					</Button>
 				</div>
 			{/if}
 		{/if}
 	{:else}
-		<p class="text-muted-foreground">Playlist not found.</p>
+		<div class="flex flex-col items-center justify-center py-24 gap-3">
+			<ListMusic class="size-10 text-muted-foreground/40" />
+			<p class="text-muted-foreground">Playlist not found</p>
+			<Button variant="outline" size="sm" onclick={() => goto('/library/playlists')}>
+				Back to playlists
+			</Button>
+		</div>
 	{/if}
 </div>

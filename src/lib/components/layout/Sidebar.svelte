@@ -34,15 +34,7 @@
 </script>
 
 <aside class="flex h-full flex-col bg-sidebar text-sidebar-foreground border-r border-sidebar-border transition-all duration-200 {collapsed ? 'w-16' : 'w-60'}">
-	<div class="flex h-14 items-center {collapsed ? 'justify-center px-2' : 'justify-between px-5'}">
-		{#if !collapsed}
-			<div class="flex items-center gap-2">
-				<div class="flex size-7 items-center justify-center rounded-lg bg-primary text-primary-foreground text-sm font-bold">
-					P
-				</div>
-				<span class="text-lg font-semibold tracking-tight">Playlist</span>
-			</div>
-		{/if}
+	<div class="flex h-10 items-center {collapsed ? 'justify-center px-2' : 'justify-end px-3'}">
 		<Button
 			variant="ghost"
 			size="icon-sm"

@@ -81,6 +81,10 @@ export async function getRandomTracks(excludeIds: number[] = [], limit = 1): Pro
 	return invoke('player_random_tracks', { excludeIds, limit });
 }
 
+export async function recordPlay(trackId: number): Promise<void> {
+	return invoke('player_record_play', { trackId });
+}
+
 export async function getAudioDevices(): Promise<[string, boolean][]> {
 	return invoke('player_get_audio_devices');
 }

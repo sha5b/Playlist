@@ -33,7 +33,24 @@
       "Bash(~/.local/share/com.playlist.app/bin/yt-dlp --ignore-config --extractor-args \"youtube:player_client=web\" --list-formats \"https://www.youtube.com/watch?v=5lkU-bCwoT0\" --no-warnings)",
       "Bash(~/.local/share/com.playlist.app/bin/yt-dlp --ignore-config --extract-audio --audio-format mp3 --audio-quality 0 --no-playlist --no-warnings -o \"/tmp/test_dl.%\\(ext\\)s\" \"https://www.youtube.com/watch?v=5lkU-bCwoT0\")",
       "Bash(~/.local/share/com.playlist.app/bin/yt-dlp --ignore-config --extract-audio --audio-format mp3 --audio-quality 0 --no-playlist --no-warnings --cookies-from-browser firefox -o \"/tmp/test_dl2.%\\(ext\\)s\" \"https://www.youtube.com/watch?v=5lkU-bCwoT0\")",
-      "Bash(npm run:*)"
+      "Bash(npm run:*)",
+      "Bash(grep -rn '$effect.*init\\(\\)\\\\|player.init\\(\\)\\\\|depsStore.init\\(\\)\\\\|libraryStore.init\\(\\)' /home/sha5b/Documents/GitHub/Playlist/src '--include=*.svelte')",
+      "Bash(grep -r \"fn set_icon\" /home/sha5b/.cargo/registry/src/*/tauri-*/src/)",
+      "Bash(grep -r \"fn set_icon\" /home/sha5b/.cargo/registry/src/*/tauri-*/src/webview/webview_window.rs)",
+      "Bash(cargo clippy:*)",
+      "Bash(npx svelte-check:*)",
+      "WebSearch",
+      "Bash(rpm -qa)",
+      "Bash(dpkg -l)",
+      "Bash(pkg-config --libs ayatana-appindicator3-0.1)",
+      "Bash(pkg-config --libs appindicator3-0.1)",
+      "Bash(gnome-extensions list:*)",
+      "Bash(dnf list:*)",
+      "Bash(busctl --user call org.freedesktop.portal.Desktop /org/freedesktop/portal/desktop org.freedesktop.DBus.Properties Get ss org.freedesktop.impl.portal.Background version)",
+      "Bash(gdbus introspect:*)",
+      "Bash(cargo doc:*)",
+      "Bash(update-desktop-database ~/.local/share/applications/)",
+      "Bash(identify /home/sha5b/Documents/GitHub/Playlist/src-tauri/icons/icon.png)"
     ]
   }
 }

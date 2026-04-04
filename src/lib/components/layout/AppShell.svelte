@@ -1,4 +1,5 @@
 <script lang="ts">
+	import Titlebar from './Titlebar.svelte';
 	import Sidebar from './Sidebar.svelte';
 	import NowPlayingBar from './NowPlayingBar.svelte';
 	import QueuePanel from './QueuePanel.svelte';
@@ -24,7 +25,7 @@
 	});
 
 	function handleKeydown(e: KeyboardEvent) {
-		if (e.ctrlKey && e.shiftKey && e.key === 'D') {
+		if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'D') {
 			e.preventDefault();
 			debugOpen = !debugOpen;
 		}
@@ -34,6 +35,7 @@
 <svelte:window onkeydown={handleKeydown} />
 
 <div class="flex h-dvh w-dvw flex-col">
+	<Titlebar />
 	<div class="flex flex-1 min-h-0">
 		<Sidebar />
 		<main class="flex-1 flex flex-col min-h-0 overflow-hidden p-6">

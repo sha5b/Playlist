@@ -71,6 +71,15 @@
 	let totalHeight = $derived(displayRows.length * ROW_HEIGHT);
 	let offsetY = $derived(startIndex * ROW_HEIGHT);
 
+	// Reset scroll to top when tracks data changes (e.g. sorting, page change)
+	$effect(() => {
+		tracks;
+		if (scrollContainer) {
+			scrollContainer.scrollTop = 0;
+			scrollTop = 0;
+		}
+	});
+
 	function onScroll() {
 		if (scrollContainer) {
 			scrollTop = scrollContainer.scrollTop;

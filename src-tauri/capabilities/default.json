@@ -12,8 +12,7 @@
         { "path": "$APPDATA/**" },
         { "path": "$APPDATA/covers/**" },
         { "path": "$APPDATA/downloads/**" },
-        { "path": "$APPDATA/music_videos/**" },
-        { "path": "**" }
+        { "path": "$APPDATA/music_videos/**" }
       ]
     },
     "fs:allow-write-file",
@@ -31,6 +30,14 @@
     "window-state:default",
     "window-state:allow-restore-state",
     "window-state:allow-save-window-state",
-    "core:tray:default"
+    "core:tray:default",
+    "core:window:allow-minimize",
+    "core:window:allow-toggle-maximize",
+    "core:window:allow-hide",
+    "core:window:allow-is-maximized",
+    "core:window:allow-start-dragging",
+    "core:window:allow-show",
+    "core:window:allow-set-focus",
+    "core:window:allow-close"
   ]
 }

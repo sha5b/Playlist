@@ -10,6 +10,30 @@ use tauri::menu::{MenuBuilder, MenuItemBuilder};
 use tauri::tray::TrayIconBuilder;
 use tauri::{Emitter, Manager};
 
+/// Request background status via the XDG Desktop Portal so the app
+/// appears in GNOME's "Background Apps" indicator with a way to quit.
+#[cfg(target_os = "linux")]
+async fn request_background_status() -> Result<(), Box<dyn std::error::Error>> {
+    use zbus::zvariant::{OwnedValue, Value};
+
+    let connection = zbus::Connection::session().await?;
+    let proxy = zbus::Proxy::new(
+        &connection,
+        "org.freedesktop.portal.Desktop",
+        "/org/freedesktop/portal/desktop",
+        "org.freedesktop.portal.Background",
+    )
+    .await?;
+
+    let mut options: std::collections::HashMap<&str, Value<'_>> = std::collections::HashMap::new();
+    options.insert("reason", Value::from("Music playback continues in the background"));
+    options.insert("autostart", Value::from(false));
+
+    let _reply: OwnedValue = proxy.call("RequestBackground", &("", options)).await?;
+    log::info!("Registered with XDG Background portal");
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -42,10 +66,16 @@ pub fn run() {
             let app_data_dir = app
                 .path()
                 .app_data_dir()
-                .expect("Failed to get app data directory");
+                .map_err(|e| {
+                    log::error!("Failed to get app data directory: {}", e);
+                    e
+                })?;
 
             let pool = db::init_db(&app_data_dir)
-                .expect("Failed to initialize database");
+                .map_err(|e| {
+                    log::error!("Failed to initialize database: {}", e);
+                    Box::<dyn std::error::Error>::from(format!("Database initialization failed: {}", e))
+                })?;
 
             app.manage(Arc::new(pool));
 
@@ -70,7 +100,10 @@ pub fn run() {
             // Initialize download manager with its own DB connection
             // so downloads don't block UI/player queries on the main connection.
             let dl_conn = db::open_download_conn(&app_data_dir)
-                .expect("Failed to open download DB connection");
+                .map_err(|e| {
+                    log::error!("Failed to open download DB connection: {}", e);
+                    Box::<dyn std::error::Error>::from(format!("Download DB connection failed: {}", e))
+                })?;
             let dl_db = Arc::new(std::sync::Mutex::new(dl_conn));
             let dl_manager = Arc::new(download::DownloadManager::new(dl_db, app.handle().clone()));
             dl_manager.resume_interrupted();
@@ -92,20 +125,14 @@ pub fn run() {
                 .item(&quit)
                 .build()?;
 
-            let tray_icon = Image::from_path("icons/32x32.png")
-                .or_else(|_| Image::from_path("icons/icon.png"))
-                .unwrap_or_else(|_| Image::from_bytes(include_bytes!("../icons/icon.png")).expect("bundled icon"));
+            let tray_icon = Image::from_bytes(include_bytes!("../icons/icon.png"))
+                .expect("bundled icon must be valid");
 
-            // Hide window to tray on close instead of quitting
-            {
-                let window = app.get_webview_window("main").unwrap();
-                let window_clone = window.clone();
-                window.on_window_event(move |event| {
-                    if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                        api.prevent_close();
-                        let _ = window_clone.hide();
-                    }
-                });
+            // Set window icon on Linux (dev mode shows generic icon otherwise).
+            if let Some(window) = app.get_webview_window("main") {
+                if let Ok(icon) = Image::from_bytes(include_bytes!("../icons/icon.png")) {
+                    let _ = window.set_icon(icon);
+                }
             }
 
             // Store tray icon in managed state so it lives for the app's lifetime.
@@ -187,6 +214,15 @@ pub fn run() {
                 });
             }
 
+            // On Linux, register with XDG Background portal so the app
+            // appears in GNOME's "Background Apps" indicator when minimized.
+            #[cfg(target_os = "linux")]
+            {
+                tauri::async_runtime::spawn(async {
+                    let _ = request_background_status().await;
+                });
+            }
+
             log::info!("Playlist app initialized successfully");
             Ok(())
         })
@@ -202,6 +238,8 @@ pub fn run() {
             // Albums
             commands::library_get_albums,
             commands::library_get_album,
+            commands::library_get_recently_played_albums,
+            commands::library_get_recently_added_albums,
             // Artists
             commands::library_get_artists,
             commands::library_get_artist,
@@ -280,6 +318,7 @@ pub fn run() {
             commands::player::player_random_tracks,
             commands::player::player_get_audio_devices,
             commands::player::player_set_audio_device,
+            commands::player::player_record_play,
             // Metadata enrichment
             commands::enrich_track,
             commands::enrich_album,
@@ -292,6 +331,7 @@ pub fn run() {
             // Album download status
             commands::library_get_album_download_status,
             commands::library_get_albums_download_status,
+            commands::library_export,
             // Artist enrichment
             commands::enrich_artist,
             commands::library_get_artist_missing_albums,

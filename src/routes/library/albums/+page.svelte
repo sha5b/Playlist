@@ -22,7 +22,7 @@
 	async function load() {
 		loading = true;
 		try {
-			const [data, count] = await getAlbums(0, 200, search.query || undefined);
+			const [data, count] = await getAlbums(0, 10000, search.query || undefined);
 			albums = data;
 			total = count;
 			// Load download statuses for all albums

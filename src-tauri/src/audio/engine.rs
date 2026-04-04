@@ -3,6 +3,11 @@ use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, Sender};
+
+/// How often the audio thread polls for commands (ms)
+const CMD_POLL_INTERVAL_MS: u64 = 250;
+/// How often to check if the default audio device changed (secs)
+const DEVICE_CHECK_INTERVAL_SECS: u64 = 2;
 use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink, Source};
 use serde::{Deserialize, Serialize};
 
@@ -130,12 +135,17 @@ impl AudioEngine {
                 {
                     use windows_sys::Win32::System::Threading::*;
                     unsafe {
-                        SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
+                        if SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST) == 0 {
+                            log::warn!("[audio] Failed to set Windows thread priority");
+                        }
                     }
                 }
                 #[cfg(unix)]
                 {
-                    unsafe { libc::nice(-5); }
+                    let ret = unsafe { libc::nice(-5) };
+                    if ret == -1 {
+                        log::warn!("[audio] Failed to set Unix thread priority (nice), may need elevated permissions");
+                    }
                 }
                 Self::audio_thread(cmd_rx, shared_clone, event_callback, ffmpeg_clone);
             })
@@ -249,9 +259,8 @@ impl AudioEngine {
     /// something new.  New sinks start un-paused.
     fn make_sink(stream_handle: &OutputStreamHandle, volume: f32) -> Sink {
         let sink = Sink::try_new(stream_handle).unwrap_or_else(|e| {
-            // This should never fail if the output stream handle is valid.
-            // If it does, audio is fundamentally broken and we cannot recover.
-            panic!("Failed to create audio sink (audio output unavailable): {}", e);
+            log::error!("[audio] Failed to create audio sink: {}. Audio device may have been disconnected.", e);
+            panic!("Audio output unavailable: {}", e);
         });
         sink.set_volume(volume);
         sink
@@ -322,7 +331,7 @@ impl AudioEngine {
         log::info!("[audio] Audio thread ready, waiting for commands");
 
         loop {
-            match cmd_rx.recv_timeout(Duration::from_millis(250)) {
+            match cmd_rx.recv_timeout(Duration::from_millis(CMD_POLL_INTERVAL_MS)) {
                 Ok(cmd) => {
                     match cmd {
                         PlayerCommand::Play { tracks, start_index, source } => {
@@ -465,21 +474,13 @@ impl AudioEngine {
                         }
                         PlayerCommand::Prev => {
                             log::info!("[audio] Prev");
-                            let current_pos = accumulated_ms
-                                + play_start.as_ref().map(|s| s.elapsed().as_millis() as u64).unwrap_or(0);
-                            if current_pos > 3000 {
-                                // More than 3s in — restart current track
-                                preloaded = None;
-                                Self::play_current(&mut sink, &stream_handle, &shared, &emit, &mut current_duration_ms, &mut play_start, &mut accumulated_ms, &mut is_playing, ffmpeg_path.as_deref());
-                            } else {
-                                let has_prev = shared.write().unwrap().queue.prev().is_some();
-                                preloaded = None;
-                                if has_prev {
-                                    Self::play_current(&mut sink, &stream_handle, &shared, &emit, &mut current_duration_ms, &mut play_start, &mut accumulated_ms, &mut is_playing, ffmpeg_path.as_deref());
-                                } else {
-                                    // At start of queue — restart current
-                                    Self::play_current(&mut sink, &stream_handle, &shared, &emit, &mut current_duration_ms, &mut play_start, &mut accumulated_ms, &mut is_playing, ffmpeg_path.as_deref());
-                                }
+                            // Always go to previous track. If there is no previous
+                            // track in the queue, restart the current one.
+                            let has_prev = shared.write().unwrap().queue.prev().is_some();
+                            preloaded = None;
+                            Self::play_current(&mut sink, &stream_handle, &shared, &emit, &mut current_duration_ms, &mut play_start, &mut accumulated_ms, &mut is_playing, ffmpeg_path.as_deref());
+                            if !has_prev {
+                                log::info!("[audio] No previous track, restarted current");
                             }
                         }
                         PlayerCommand::Seek(seconds) => {
@@ -677,7 +678,7 @@ impl AudioEngine {
                     // Periodically check if the OS default audio device changed
                     // (e.g., Bluetooth headphones connected/disconnected).
                     // Only auto-switch if the user hasn't manually selected a device.
-                    if explicit_device.is_none() && last_device_check.elapsed() >= Duration::from_secs(2) {
+                    if explicit_device.is_none() && last_device_check.elapsed() >= Duration::from_secs(DEVICE_CHECK_INTERVAL_SECS) {
                         last_device_check = Instant::now();
                         let new_default: Option<String> = {
                             use cpal::traits::{DeviceTrait, HostTrait};

@@ -4,8 +4,11 @@
 
 use serde::Deserialize;
 
-// Last.fm shared API key (public, used by many open-source music apps)
-const LASTFM_API_KEY: &str = "8fc89f699e4ff452a53bb4aab795e4e7";
+// Last.fm API key — use env var at compile time, fall back to shared community key
+const LASTFM_API_KEY: &str = match option_env!("LASTFM_API_KEY") {
+    Some(key) => key,
+    None => "8fc89f699e4ff452a53bb4aab795e4e7",
+};
 const LASTFM_BASE: &str = "https://ws.audioscrobbler.com/2.0/";
 
 fn client() -> reqwest::Client {

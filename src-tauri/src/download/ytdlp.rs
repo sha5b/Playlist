@@ -488,8 +488,10 @@ where
         .spawn()
         .map_err(|e| format!("Failed to spawn yt-dlp: {}", e))?;
 
-    let stderr = child.stderr.take().unwrap();
-    let stdout = child.stdout.take().unwrap();
+    let stderr = child.stderr.take()
+        .ok_or_else(|| "Failed to capture yt-dlp stderr".to_string())?;
+    let stdout = child.stdout.take()
+        .ok_or_else(|| "Failed to capture yt-dlp stdout".to_string())?;
 
     // Read both streams concurrently to avoid pipe deadlocks.
     // Throttle progress callbacks to at most once per second to avoid flooding
@@ -617,8 +619,10 @@ where
         .map_err(|e| format!("Failed to spawn yt-dlp: {}", e))?;
 
     // Drain both pipes to avoid deadlock, parse progress from stderr
-    let stderr = child.stderr.take().unwrap();
-    let stdout = child.stdout.take().unwrap();
+    let stderr = child.stderr.take()
+        .ok_or_else(|| "Failed to capture yt-dlp stderr".to_string())?;
+    let stdout = child.stdout.take()
+        .ok_or_else(|| "Failed to capture yt-dlp stdout".to_string())?;
     let stderr_handle = tokio::spawn(async move {
         let mut last_emit = std::time::Instant::now()
             .checked_sub(std::time::Duration::from_secs(2))
