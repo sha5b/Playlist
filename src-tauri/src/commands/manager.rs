@@ -61,7 +61,9 @@ pub fn manager_get_new_entries(
     crate::db::monitored::get_new_entries(&conn, playlist_id).map_err(|e| e.to_string())
 }
 
-/// Add a playlist URL to monitor. Fetches metadata via yt-dlp and stores entries.
+/// Add a playlist URL to monitor. Creates the playlist in DB immediately so it
+/// appears in the UI, then fetches tracks in the background. Emits
+/// `manager-playlist-updated` when tracks are loaded, or `manager-playlist-error` on failure.
 #[tauri::command]
 pub async fn manager_add_playlist(
     db: State<'_, Arc<DbPool>>,
@@ -69,9 +71,35 @@ pub async fn manager_add_playlist(
     app_handle: tauri::AppHandle,
     url: String,
 ) -> Result<MonitoredPlaylist, String> {
+    use tauri::Emitter;
+
     let parsed = crate::download::url_parser::parse_url(&url);
 
-    // Resolve yt-dlp binary
+    // Create playlist in DB immediately so it shows up in the UI
+    let placeholder_name = format!("{} playlist", parsed.platform);
+    let playlist = {
+        let conn = db.lock().map_err(|e| e.to_string())?;
+        crate::db::monitored::create_monitored_playlist(
+            &conn,
+            &placeholder_name,
+            &parsed.platform,
+            &parsed.clean_url,
+            None,
+        )
+        .map_err(|e| e.to_string())?
+    };
+
+    // Return the playlist with counts (will be 0 entries at this point)
+    let result = {
+        let conn = db.lock().map_err(|e| e.to_string())?;
+        crate::db::monitored::get_monitored_playlists(&conn)
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .find(|p| p.id == playlist.id)
+            .ok_or_else(|| "Failed to retrieve created playlist".to_string())?
+    };
+
+    // Resolve yt-dlp binary and settings before spawning
     let bin_dir = crate::download::setup::get_bin_dir(&app_handle);
     let ytdlp_binary = crate::download::setup::resolve_ytdlp(&bin_dir)
         .unwrap_or_else(|| "yt-dlp".to_string());
@@ -81,76 +109,91 @@ pub async fn manager_add_playlist(
         crate::db::settings::get_cookies_browser(&conn)
     };
 
-    // For DRM platforms, use native API (yt-dlp blocks Spotify with DRM error)
-    let drm_platforms = ["spotify", "apple_music", "tidal", "deezer", "amazon_music"];
-    let fetch_result = if drm_platforms.contains(&parsed.platform.as_str()) {
-        log::info!("Using native API for {} playlist (skipping yt-dlp)", parsed.platform);
-        let sources = manager.sources.read().await;
-        sources.fetch_playlist_entries(&parsed.platform, &url)
-            .await
-            .map_err(|e| format!("Native API error: {}", e))?
-    } else {
-        // For non-DRM platforms (YouTube, SoundCloud, etc.), use yt-dlp
-        crate::download::ytdlp::get_playlist_entries(
-            &ytdlp_binary,
-            ffmpeg_dir.as_deref(),
-            &url,
-            cookies_from_browser.as_deref(),
-        )
-        .await?
-    };
+    let db_clone = db.inner().clone();
+    let manager_clone = manager.inner().clone();
+    let app_clone = app_handle.clone();
+    let playlist_id = playlist.id;
 
-    let entries = fetch_result.entries;
+    // Spawn track fetching in the background
+    tokio::spawn(async move {
+        let fetch_result = async {
+            let drm_platforms = ["spotify", "apple_music", "tidal", "deezer", "amazon_music"];
+            let fetch_result = if drm_platforms.contains(&parsed.platform.as_str()) {
+                log::info!("Using native API for {} playlist (skipping yt-dlp)", parsed.platform);
+                let sources = manager_clone.sources.read().await;
+                sources.fetch_playlist_entries(&parsed.platform, &url)
+                    .await
+                    .map_err(|e| format!("Native API error: {}", e))?
+            } else {
+                crate::download::ytdlp::get_playlist_entries(
+                    &ytdlp_binary,
+                    ffmpeg_dir.as_deref(),
+                    &url,
+                    cookies_from_browser.as_deref(),
+                )
+                .await?
+            };
 
-    if entries.is_empty() {
-        return Err("No entries found. Make sure this is a valid playlist URL.".to_string());
-    }
+            let entries = fetch_result.entries;
+            if entries.is_empty() {
+                return Err("No entries found. Make sure this is a valid playlist URL.".to_string());
+            }
 
-    // Use the actual playlist title from yt-dlp, fall back to platform name
-    let playlist_name = fetch_result
-        .playlist_title
-        .filter(|t| !t.is_empty())
-        .unwrap_or_else(|| format!("{} playlist", parsed.platform));
+            // Update playlist name if we got a real one
+            if let Some(name) = fetch_result.playlist_title.as_ref().filter(|t| !t.is_empty()) {
+                let conn = db_clone.lock().map_err(|e| e.to_string())?;
+                conn.execute(
+                    "UPDATE playlists SET name = ?1 WHERE id = ?2",
+                    rusqlite::params![name, playlist_id],
+                ).map_err(|e| e.to_string())?;
+            }
 
-    // Create playlist in DB
-    let playlist = {
-        let conn = db.lock().map_err(|e| e.to_string())?;
-        crate::db::monitored::create_monitored_playlist(
-            &conn,
-            &playlist_name,
-            &parsed.platform,
-            &parsed.clean_url,
-            None,
-        )
-        .map_err(|e| e.to_string())?
-    };
+            let entry_data = map_entries(&entries, "add");
+            {
+                let conn = db_clone.lock().map_err(|e| e.to_string())?;
+                crate::db::monitored::upsert_entries(&conn, playlist_id, &entry_data)
+                    .map_err(|e| e.to_string())?;
+            }
 
-    let entry_data = map_entries(&entries, "add");
+            // Download thumbnails in background
+            {
+                let db_inner = db_clone.clone();
+                let app_inner = app_clone.clone();
+                tokio::spawn(async move {
+                    download_playlist_thumbnails(&db_inner, &app_inner, playlist_id).await;
+                });
+            }
 
-    {
-        let conn = db.lock().map_err(|e| e.to_string())?;
-        crate::db::monitored::upsert_entries(&conn, playlist.id, &entry_data)
-            .map_err(|e| e.to_string())?;
-    }
+            // Get updated playlist with counts
+            let conn = db_clone.lock().map_err(|e| e.to_string())?;
+            let playlists = crate::db::monitored::get_monitored_playlists(&conn)
+                .map_err(|e| e.to_string())?;
+            playlists
+                .into_iter()
+                .find(|p| p.id == playlist_id)
+                .ok_or_else(|| "Failed to retrieve playlist".to_string())
+        }.await;
 
-    // Spawn async task to download thumbnails in the background
-    {
-        let db_clone = db.inner().clone();
-        let app_clone = app_handle.clone();
-        let playlist_id = playlist.id;
-        tokio::spawn(async move {
-            download_playlist_thumbnails(&db_clone, &app_clone, playlist_id).await;
-        });
-    }
+        match fetch_result {
+            Ok(playlist) => {
+                let _ = app_clone.emit("manager-playlist-updated", &playlist);
+            }
+            Err(e) => {
+                log::error!("Background playlist fetch failed: {}", e);
+                // Remove the empty placeholder on failure
+                if let Ok(conn) = db_clone.lock() {
+                    let _ = crate::db::monitored::delete_monitored_playlist(&conn, playlist_id);
+                }
+                let _ = app_clone.emit("manager-playlist-error", serde_json::json!({
+                    "url": url,
+                    "error": e.to_string(),
+                    "playlist_id": playlist_id,
+                }));
+            }
+        }
+    });
 
-    // Return the full monitored playlist with counts
-    let conn = db.lock().map_err(|e| e.to_string())?;
-    let playlists = crate::db::monitored::get_monitored_playlists(&conn)
-        .map_err(|e| e.to_string())?;
-    playlists
-        .into_iter()
-        .find(|p| p.id == playlist.id)
-        .ok_or_else(|| "Failed to retrieve created playlist".to_string())
+    Ok(result)
 }
 
 /// Sync a monitored playlist - fetch latest entries and detect new ones

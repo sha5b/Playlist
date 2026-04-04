@@ -141,9 +141,29 @@
 			unlistenThumbs = fn;
 		});
 
+		let unlistenUpdated: (() => void) | null = null;
+		listen<MonitoredPlaylist>('manager-playlist-updated', (event) => {
+			const updated = event.payload;
+			playlists = playlists.map((p) => (p.id === updated.id ? updated : p));
+			toast.success('Playlist ready', { description: `${updated.name} (${updated.total_entries} tracks)` });
+		}).then((fn) => {
+			unlistenUpdated = fn;
+		});
+
+		let unlistenAddError: (() => void) | null = null;
+		listen<{ url: string; error: string; playlist_id: number }>('manager-playlist-error', (event) => {
+			// Remove the failed placeholder playlist
+			playlists = playlists.filter((p) => p.id !== event.payload.playlist_id);
+			toast.error('Failed to add playlist', { description: event.payload.error });
+		}).then((fn) => {
+			unlistenAddError = fn;
+		});
+
 		return () => {
 			unlistenEntry?.();
 			unlistenThumbs?.();
+			unlistenUpdated?.();
+			unlistenAddError?.();
 		};
 	});
 
@@ -247,7 +267,7 @@
 			const pl = await addPlaylist(url);
 			playlists = [pl, ...playlists];
 			playlistUrlInput = '';
-			toast.success('Playlist added', { description: `${pl.name} (${pl.total_entries} tracks)` });
+			toast.info('Fetching tracks...', { description: 'Importing in the background. You can navigate away.' });
 		} catch (e) {
 			toast.error('Failed to add playlist', { description: String(e) });
 		} finally {
@@ -954,7 +974,7 @@
 					{:else}
 						<!-- Playlist grid -->
 						<div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
-							{#each playlists.filter(pl => pl.total_entries > 1) as pl (pl.id)}
+							{#each playlists as pl (pl.id)}
 								{@const pct = pl.total_entries > 0 ? Math.round((pl.downloaded_count / pl.total_entries) * 100) : 0}
 								<div
 									class="group rounded-xl border border-border/40 bg-card hover:bg-muted/20 transition-all cursor-pointer overflow-hidden"
@@ -965,7 +985,12 @@
 								>
 									<!-- Cover art -->
 									<div class="aspect-[16/10] bg-muted/40 relative overflow-hidden">
-										{#if pl.cover_art_path}
+										{#if pl.total_entries === 0}
+											<div class="size-full bg-gradient-to-br from-muted/80 to-muted/20 flex flex-col items-center justify-center gap-2">
+												<Loader2 class="size-8 text-muted-foreground/40 animate-spin" />
+												<span class="text-[11px] text-muted-foreground/60">Fetching tracks...</span>
+											</div>
+										{:else if pl.cover_art_path}
 											<img
 												src={assetUrl(pl.cover_art_path)}
 												alt={pl.name}
