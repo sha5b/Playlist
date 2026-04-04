@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>com.playlist.app</id>
+
+  <name>Playlist</name>
+  <summary>Own your music library</summary>
+
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+
+  <developer id="com.github.sha5b">
+    <name>sha5b</name>
+  </developer>
+
+  <description>
+    <p>
+      Playlist is a desktop music manager that gives you full control over your music library.
+      Download tracks from YouTube, SoundCloud, and Bandcamp via yt-dlp, organize your collection
+      with rich metadata from MusicBrainz and Last.fm, and play everything locally with no
+      subscriptions or lock-in.
+    </p>
+    <p>Features:</p>
+    <ul>
+      <li>Download audio from YouTube, SoundCloud, Bandcamp, and more</li>
+      <li>Automatic metadata enrichment from MusicBrainz and Last.fm</li>
+      <li>Full local playback with queue, shuffle, and repeat</li>
+      <li>Playlist management and library organization</li>
+      <li>Album art fetching and display</li>
+      <li>System tray integration for background playback</li>
+    </ul>
+  </description>
+
+  <launchable type="desktop-id">com.playlist.app.desktop</launchable>
+
+  <url type="homepage">https://github.com/sha5b/Playlist</url>
+  <url type="bugtracker">https://github.com/sha5b/Playlist/issues</url>
+  <url type="vcs-browser">https://github.com/sha5b/Playlist</url>
+
+  <content_rating type="oars-1.1">
+    <content_attribute id="social-info">mild</content_attribute>
+  </content_rating>
+
+  <supports>
+    <control>pointing</control>
+    <control>keyboard</control>
+  </supports>
+
+  <requires>
+    <display_length compare="ge">800</display_length>
+  </requires>
+
+  <categories>
+    <category>Audio</category>
+    <category>Music</category>
+    <category>Player</category>
+  </categories>
+
+  <releases>
+    <release version="0.3.1" date="2025-03-01">
+      <description>
+        <p>Bug fixes and platform compatibility improvements.</p>
+      </description>
+    </release>
+  </releases>
+
+  <!-- TODO: Add screenshots before Flathub submission -->
+  <!-- <screenshots>
+    <screenshot type="default">
+      <image>https://raw.githubusercontent.com/sha5b/Playlist/main/docs/screenshots/main.png</image>
+      <caption>Main library view</caption>
+    </screenshot>
+  </screenshots> -->
+</component>

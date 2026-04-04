@@ -35,20 +35,41 @@ npx tauri build
 
 Output (`.msi` on Windows, `.dmg` on macOS, `.deb`/`.AppImage` on Linux) is in `src-tauri/target/release/bundle/`.
 
+### Flatpak
+
+A Flatpak manifest is provided at `com.playlist.app.yml` for building and publishing to Flathub.
+
+```sh
+# Generate offline dependency manifests (required for Flatpak builds)
+python3 flatpak-cargo-generator.py src-tauri/Cargo.lock -o cargo-sources.json
+flatpak-node-generator npm package-lock.json -o node-sources.json
+
+# Build the Flatpak locally
+flatpak-builder --force-clean build-dir com.playlist.app.yml
+
+# Test the build
+flatpak-builder --run build-dir com.playlist.app.yml playlist
+```
+
+The Flatpak bundles yt-dlp and uses ffmpeg from the GNOME runtime. System tray support is provided via libayatana-appindicator built as a Flatpak module.
+
 ## Project Structure
 
 ```
-src/                  # SvelteKit frontend (Svelte 5 + shadcn-svelte + Tailwind v4)
-  routes/             # Pages: home, search, library, manager, settings
-  lib/api/            # Typed Tauri invoke() wrappers
-  lib/stores/         # Svelte 5 rune stores
-  lib/components/     # UI components
-src-tauri/            # Rust backend
-  src/db/             # SQLite database (rusqlite, FTS5 search)
-  src/audio/          # Audio playback (rodio + symphonia)
-  src/download/       # Download engine (yt-dlp + ffmpeg)
-  src/metadata/       # Tag reading (lofty)
-  src/commands/       # Tauri IPC command handlers
+src/                        # SvelteKit frontend (Svelte 5 + shadcn-svelte + Tailwind v4)
+  routes/                   # Pages: home, search, library, manager, settings
+  lib/api/                  # Typed Tauri invoke() wrappers
+  lib/stores/               # Svelte 5 rune stores
+  lib/components/           # UI components
+src-tauri/                  # Rust backend
+  src/db/                   # SQLite database (rusqlite, FTS5 search)
+  src/audio/                # Audio playback (rodio + symphonia)
+  src/download/             # Download engine (yt-dlp + ffmpeg)
+  src/metadata/             # Tag reading (lofty)
+  src/commands/             # Tauri IPC command handlers
+  resources/                # Desktop entry and AppStream metainfo for packaging
+  icons/                    # App icons (all sizes for hicolor theme)
+com.playlist.app.yml        # Flatpak manifest
 ```
 
 ## Tech Stack

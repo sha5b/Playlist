@@ -20,6 +20,11 @@ pub struct SetupProgress {
     pub message: String,
 }
 
+/// Check if running inside a Flatpak sandbox
+pub fn is_flatpak() -> bool {
+    Path::new("/.flatpak-info").exists()
+}
+
 pub fn get_bin_dir(app_handle: &tauri::AppHandle) -> PathBuf {
     app_handle
         .path()
@@ -261,6 +266,12 @@ pub async fn ensure_deps(bin_dir: &Path, app_handle: &tauri::AppHandle) -> Resul
 
         #[cfg(all(target_os = "linux", not(target_os = "macos")))]
         {
+            if is_flatpak() {
+                // In Flatpak, ffmpeg should be provided by the runtime or bundled in /app/bin
+                return Err("ffmpeg not found. This is unexpected inside the Flatpak sandbox — \
+                    please report this as a bug at https://github.com/sha5b/Playlist/issues".to_string());
+            }
+
             emit_progress(
                 app_handle,
                 "ffmpeg",

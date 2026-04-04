@@ -50,7 +50,12 @@
       "Bash(gdbus introspect:*)",
       "Bash(cargo doc:*)",
       "Bash(update-desktop-database ~/.local/share/applications/)",
-      "Bash(identify /home/sha5b/Documents/GitHub/Playlist/src-tauri/icons/icon.png)"
+      "Bash(identify /home/sha5b/Documents/GitHub/Playlist/src-tauri/icons/icon.png)",
+      "Bash(convert icon.png -resize 48x48 48x48.png)",
+      "Bash(convert icon.png -resize 64x64 64x64.png)",
+      "Bash(convert icon.png -resize 256x256 256x256.png)",
+      "Bash(desktop-file-validate /home/sha5b/Documents/GitHub/Playlist/src-tauri/resources/com.playlist.app.desktop)",
+      "Bash(appstreamcli validate:*)"
     ]
   }
 }

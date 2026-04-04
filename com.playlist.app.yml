@@ -1,0 +1,125 @@
+app-id: com.playlist.app
+runtime: org.gnome.Platform
+runtime-version: '47'
+sdk: org.gnome.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+  - org.freedesktop.Sdk.Extension.node22
+command: playlist
+
+finish-args:
+  # Display
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --share=ipc
+  # Audio output
+  - --socket=pulseaudio
+  # GPU acceleration for WebKitGTK
+  - --device=dri
+  # Network access for downloads, metadata APIs
+  - --share=network
+  # System tray
+  - --talk-name=org.kde.StatusNotifierWatcher
+  # XDG portals (file picker, background status, notifications)
+  - --talk-name=org.freedesktop.portal.*
+  - --talk-name=org.freedesktop.Notifications
+  # Browser cookie access for yt-dlp (host browsers)
+  - --filesystem=~/.config/google-chrome:ro
+  - --filesystem=~/.config/chromium:ro
+  - --filesystem=~/.mozilla/firefox:ro
+  # Browser cookie access for Flatpak browsers
+  - --filesystem=~/.var/app/org.mozilla.firefox/.mozilla/firefox:ro
+  - --filesystem=~/.var/app/com.google.Chrome/.config/google-chrome:ro
+
+modules:
+  # yt-dlp standalone binary
+  - name: yt-dlp
+    buildsystem: simple
+    build-commands:
+      - install -Dm755 yt-dlp /app/bin/yt-dlp
+    sources:
+      - type: file
+        url: https://github.com/yt-dlp/yt-dlp/releases/download/2025.03.31/yt-dlp_linux
+        sha256: FIXME  # Generate with: sha256sum yt-dlp_linux
+        dest-filename: yt-dlp
+
+  # libayatana-appindicator for system tray support
+  # Dependency chain: libdbusmenu-glib -> libdbusmenu-gtk3 -> libayatana-ido -> libayatana-indicator -> libayatana-appindicator
+  - name: libdbusmenu-glib
+    buildsystem: autotools
+    config-opts:
+      - --with-gtk=3
+      - --disable-dumper
+      - --disable-tests
+      - --disable-vala
+    build-options:
+      env:
+        HAVE_VALGRIND_FALSE: '#'
+        HAVE_VALGRIND_TRUE: ''
+    sources:
+      - type: archive
+        url: https://launchpad.net/libdbusmenu/16.04/16.04.0/+download/libdbusmenu-16.04.0.tar.gz
+        sha256: b9cc4a2acd74509435892823607d966d424bd9ad5d0b00938f27240a1bfa878a
+
+  - name: libayatana-ido
+    buildsystem: cmake-ninja
+    sources:
+      - type: git
+        url: https://github.com/AyatanaIndicators/ayatana-ido.git
+        tag: 0.10.4
+
+  - name: libayatana-indicator
+    buildsystem: cmake-ninja
+    sources:
+      - type: git
+        url: https://github.com/AyatanaIndicators/libayatana-indicator.git
+        tag: 0.9.4
+
+  - name: libayatana-appindicator
+    buildsystem: cmake-ninja
+    config-opts:
+      - -DENABLE_BINDINGS_MONO=NO
+      - -DENABLE_BINDINGS_VALA=NO
+    sources:
+      - type: git
+        url: https://github.com/AyatanaIndicators/libayatana-appindicator.git
+        tag: 0.5.93
+
+  # The Playlist app
+  - name: playlist
+    buildsystem: simple
+    build-options:
+      append-path: /usr/lib/sdk/rust-stable/bin:/usr/lib/sdk/node22/bin
+      env:
+        CARGO_HOME: /run/build/playlist/cargo
+        npm_config_nodedir: /usr/lib/sdk/node22
+    build-commands:
+      # Install npm dependencies and build frontend
+      - npm ci --offline
+      - npm run build
+      # Build Rust backend
+      - cargo build --release --manifest-path src-tauri/Cargo.toml
+      # Install binary
+      - install -Dm755 src-tauri/target/release/playlist /app/bin/playlist
+      # Install desktop file
+      - install -Dm644 src-tauri/resources/com.playlist.app.desktop /app/share/applications/com.playlist.app.desktop
+      # Install metainfo
+      - install -Dm644 src-tauri/resources/com.playlist.app.metainfo.xml /app/share/metainfo/com.playlist.app.metainfo.xml
+      # Install icons
+      - install -Dm644 src-tauri/icons/32x32.png /app/share/icons/hicolor/32x32/apps/com.playlist.app.png
+      - install -Dm644 src-tauri/icons/48x48.png /app/share/icons/hicolor/48x48/apps/com.playlist.app.png
+      - install -Dm644 src-tauri/icons/64x64.png /app/share/icons/hicolor/64x64/apps/com.playlist.app.png
+      - install -Dm644 src-tauri/icons/128x128.png /app/share/icons/hicolor/128x128/apps/com.playlist.app.png
+      - install -Dm644 src-tauri/icons/256x256.png /app/share/icons/hicolor/256x256/apps/com.playlist.app.png
+      - install -Dm644 src-tauri/icons/icon.png /app/share/icons/hicolor/512x512/apps/com.playlist.app.png
+    sources:
+      - type: git
+        url: https://github.com/sha5b/Playlist.git
+        tag: v0.3.1
+      # TODO: Generate these before Flathub submission:
+      #   python3 flatpak-cargo-generator.py src-tauri/Cargo.lock -o cargo-sources.json
+      #   flatpak-node-generator npm package-lock.json -o node-sources.json
+      # - type: file
+      #   path: cargo-sources.json
+      # - type: file
+      #   path: node-sources.json

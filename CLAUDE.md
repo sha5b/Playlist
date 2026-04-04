@@ -49,6 +49,16 @@ Uses shadcn-svelte (in `src/lib/components/ui/`) with Tailwind CSS v4. App layou
 - TypeScript interfaces for data models are in `src/lib/types/`.
 - The app hides to system tray on window close rather than quitting (configured in `lib.rs`).
 - yt-dlp/ffmpeg binaries are resolved from app data directory or PATH (`download/setup.rs`).
+- Flatpak sandbox is detected via `is_flatpak()` in `download/setup.rs` (checks `/.flatpak-info`). When running in Flatpak, `pkexec` privilege escalation is skipped and ffmpeg is expected from the runtime or `/app/bin`.
+
+### Packaging / Flatpak
+
+- Flatpak manifest: `com.playlist.app.yml` (GNOME 47 runtime, SDK extensions for Rust and Node.js)
+- Desktop entry: `src-tauri/resources/com.playlist.app.desktop`
+- AppStream metainfo: `src-tauri/resources/com.playlist.app.metainfo.xml`
+- Icons at multiple sizes in `src-tauri/icons/` (32, 48, 64, 128, 256, 512) — installed to hicolor theme paths by the Flatpak build
+- The Flatpak bundles yt-dlp as a pre-built binary and builds libayatana-appindicator for system tray support
+- Offline dependency manifests (`cargo-sources.json`, `node-sources.json`) must be generated before Flathub submission using `flatpak-builder-tools`
 
 ## Prerequisites
 
