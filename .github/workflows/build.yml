@@ -61,12 +61,23 @@ jobs:
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           echo "Updating version to $VERSION"
-          # Update tauri.conf.json
-          sed -i "s/\"version\": \".*\"/\"version\": \"$VERSION\"/" src-tauri/tauri.conf.json
-          # Update Cargo.toml (only the package version, not dependency versions)
-          sed -i "0,/^version = \".*\"/s//version = \"$VERSION\"/" src-tauri/Cargo.toml
-          # Update package.json
-          sed -i "s/\"version\": \".*\"/\"version\": \"$VERSION\"/" package.json
+          # Update JSON files via Node (avoids BSD/GNU sed differences)
+          node -e "
+            const fs = require('fs');
+            for (const f of ['src-tauri/tauri.conf.json', 'package.json']) {
+              const j = JSON.parse(fs.readFileSync(f, 'utf8'));
+              j.version = '$VERSION';
+              fs.writeFileSync(f, JSON.stringify(j, null, 2) + '\n');
+            }
+          "
+          # Update Cargo.toml (first version = line only)
+          node -e "
+            const fs = require('fs');
+            const f = 'src-tauri/Cargo.toml';
+            let s = fs.readFileSync(f, 'utf8');
+            s = s.replace(/^version = \".*\"/m, 'version = \"$VERSION\"');
+            fs.writeFileSync(f, s);
+          "
           echo "Versions updated:"
           grep '"version"' src-tauri/tauri.conf.json package.json
           grep '^version' src-tauri/Cargo.toml | head -1
