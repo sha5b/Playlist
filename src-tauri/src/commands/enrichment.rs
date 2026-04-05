@@ -1467,6 +1467,183 @@ pub fn metadata_cleanup_duplicate_tracks(
     }))
 }
 
+// ── Mismatch detection ──────────────────────────────────────────────────────
+
+#[derive(Debug, serde::Serialize)]
+pub struct TrackMismatch {
+    pub track_id: i64,
+    pub track_title: String,
+    pub album_title: String,
+    pub album_id: i64,
+    pub reasons: Vec<String>,
+    pub track_genre: Option<String>,
+    pub album_genre: Option<String>,
+    pub track_artist: Option<String>,
+    pub album_artist: Option<String>,
+}
+
+/// Genre families for fuzzy matching — unknown genres are assumed compatible.
+const GENRE_FAMILIES: &[&[&str]] = &[
+    &["hip hop", "hip-hop", "rap", "trap", "gangsta rap", "boom bap", "dirty south", "conscious hip hop", "g-funk", "crunk", "southern hip hop", "west coast hip hop", "east coast hip hop"],
+    &["rock", "hard rock", "alternative rock", "indie rock", "punk rock", "garage rock", "psychedelic rock", "progressive rock", "grunge", "post-punk", "new wave"],
+    &["metal", "heavy metal", "death metal", "black metal", "thrash metal", "doom metal", "metalcore", "nu metal", "power metal", "symphonic metal", "progressive metal", "deathcore"],
+    &["pop", "synth-pop", "dance-pop", "electropop", "indie pop", "dream pop", "art pop", "k-pop", "j-pop", "bubblegum pop", "teen pop"],
+    &["electronic", "edm", "house", "techno", "trance", "dubstep", "drum and bass", "ambient", "idm", "downtempo", "electro"],
+    &["r&b", "rnb", "rhythm and blues", "neo soul", "soul", "funk", "contemporary r&b", "motown", "new jack swing"],
+    &["jazz", "smooth jazz", "bebop", "free jazz", "jazz fusion", "swing", "cool jazz", "acid jazz"],
+    &["classical", "baroque", "romantic", "contemporary classical", "opera", "orchestral", "chamber music", "minimalism"],
+    &["country", "country rock", "alt-country", "bluegrass", "americana", "outlaw country", "country pop"],
+    &["reggae", "dancehall", "dub", "ska", "ragga", "roots reggae", "lovers rock"],
+    &["blues", "delta blues", "electric blues", "chicago blues", "blues rock"],
+    &["latin", "salsa", "reggaeton", "bossa nova", "cumbia", "bachata", "latin pop", "merengue", "latin rock"],
+    &["folk", "indie folk", "folk rock", "acoustic", "singer-songwriter", "traditional folk"],
+];
+
+fn genre_family(genre: &str) -> Option<usize> {
+    let lower = genre.to_lowercase();
+    GENRE_FAMILIES.iter().position(|family| {
+        family.iter().any(|g| lower.contains(g) || g.contains(&*lower))
+    })
+}
+
+fn genres_compatible(a: &str, b: &str) -> bool {
+    match (genre_family(a), genre_family(b)) {
+        (Some(x), Some(y)) => x == y,
+        _ => true, // If we can't classify either, assume compatible
+    }
+}
+
+fn artist_matches(track_artist: &str, album_artist: &str) -> bool {
+    let ta = track_artist.to_lowercase();
+    let aa = album_artist.to_lowercase();
+    if ta == aa { return true; }
+    // Track artist starts with album artist (handles "feat." variations)
+    if ta.starts_with(&aa) { return true; }
+    // Album artist is contained in track artist
+    if ta.contains(&aa) { return true; }
+    // Various Artists compilation
+    if aa == "various artists" || aa == "va" { return true; }
+    false
+}
+
+fn tags_overlap(tags_a: &[String], tags_b: &[String]) -> bool {
+    if tags_a.is_empty() || tags_b.is_empty() { return true; } // Can't compare, assume ok
+    let set_a: std::collections::HashSet<String> = tags_a.iter().map(|t| t.to_lowercase()).collect();
+    tags_b.iter().any(|t| set_a.contains(&t.to_lowercase()))
+}
+
+fn parse_tags(tags_json: &Option<String>) -> Vec<String> {
+    match tags_json {
+        Some(s) => serde_json::from_str(s).unwrap_or_default(),
+        None => vec![],
+    }
+}
+
+/// Detect tracks that don't match their album's genre/artist/tags.
+#[tauri::command]
+pub fn detect_album_mismatches(
+    db: State<'_, Arc<DbPool>>,
+) -> Result<Vec<TrackMismatch>, String> {
+    let conn = crate::db::lock(&db)?;
+
+    // Get all albums that have at least 2 tracks
+    let album_rows: Vec<(i64, String, Option<String>, Option<String>)> = conn.prepare(
+        "SELECT a.id, a.title, a.genre, COALESCE(ar.name, a.album_artist)
+         FROM albums a
+         LEFT JOIN artists ar ON ar.id = a.artist_id
+         INNER JOIN tracks t ON t.album_id = a.id
+         GROUP BY a.id
+         HAVING COUNT(t.id) >= 2"
+    )
+    .map_err(|e| e.to_string())?
+    .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)))
+    .map_err(|e| e.to_string())?
+    .filter_map(|r| r.ok())
+    .collect();
+
+    let mut mismatches = Vec::new();
+
+    for (album_id, album_title, album_genre, album_artist) in &album_rows {
+        // Get all tracks for this album
+        let track_rows: Vec<(i64, String, Option<String>, Option<String>, Option<String>, i64)> = conn.prepare(
+            "SELECT t.id, t.title, t.genre, COALESCE(ar.name, t.album_artist), t.tags, COALESCE(t.metadata_completeness, 0)
+             FROM tracks t
+             LEFT JOIN artists ar ON ar.id = t.artist_id
+             WHERE t.album_id = ?1"
+        )
+        .map_err(|e| e.to_string())?
+        .query_map(params![album_id], |row| Ok((
+            row.get(0)?, row.get(1)?, row.get(2)?,
+            row.get(3)?, row.get(4)?, row.get(5)?,
+        )))
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+
+        // Build consensus tags from all tracks in the album
+        let all_tags: Vec<Vec<String>> = track_rows.iter()
+            .map(|(_, _, _, _, tags, _)| parse_tags(tags))
+            .collect();
+        let consensus_tags: Vec<String> = {
+            let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+            for tags in &all_tags {
+                for tag in tags {
+                    *counts.entry(tag.to_lowercase()).or_insert(0) += 1;
+                }
+            }
+            // Tags appearing in at least 2 tracks or more than 30% of tracks
+            let threshold = std::cmp::max(2, track_rows.len() * 30 / 100);
+            counts.into_iter()
+                .filter(|(_, count)| *count >= threshold)
+                .map(|(tag, _)| tag)
+                .collect()
+        };
+
+        for (track_id, track_title, track_genre, track_artist, track_tags, completeness) in &track_rows {
+            if *completeness < 30 { continue; } // Skip poorly enriched tracks
+
+            let mut reasons = Vec::new();
+
+            // Check 1: Artist mismatch
+            if let (Some(ta), Some(aa)) = (track_artist, album_artist) {
+                if !ta.is_empty() && !aa.is_empty() && !artist_matches(ta, aa) {
+                    reasons.push(format!("Artist '{}' doesn't match album artist '{}'", ta, aa));
+                }
+            }
+
+            // Check 2: Genre mismatch
+            if let (Some(tg), Some(ag)) = (track_genre, album_genre) {
+                if !tg.is_empty() && !ag.is_empty() && !genres_compatible(tg, ag) {
+                    reasons.push(format!("Genre '{}' doesn't match album genre '{}'", tg, ag));
+                }
+            }
+
+            // Check 3: Tag outlier — compare this track's tags with consensus
+            let my_tags = parse_tags(track_tags);
+            if !consensus_tags.is_empty() && !my_tags.is_empty() && !tags_overlap(&my_tags, &consensus_tags) {
+                reasons.push("Track tags have no overlap with album consensus tags".to_string());
+            }
+
+            if !reasons.is_empty() {
+                mismatches.push(TrackMismatch {
+                    track_id: *track_id,
+                    track_title: track_title.clone(),
+                    album_title: album_title.clone(),
+                    album_id: *album_id,
+                    reasons,
+                    track_genre: track_genre.clone(),
+                    album_genre: album_genre.clone(),
+                    track_artist: track_artist.clone(),
+                    album_artist: album_artist.clone(),
+                });
+            }
+        }
+    }
+
+    log::info!("Mismatch detection: found {} mismatched tracks", mismatches.len());
+    Ok(mismatches)
+}
+
 // --- Artist Enrichment ---
 
 #[tauri::command]

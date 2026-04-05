@@ -30,6 +30,8 @@
 		sortBy = '',
 		sortDir = 'asc',
 		onsort,
+		deleteLabel = 'Remove',
+		referrer,
 	}: {
 		tracks: Track[];
 		placeholders?: { track_number: number; disc_number: number; title?: string }[];
@@ -40,6 +42,8 @@
 		sortBy?: string;
 		sortDir?: 'asc' | 'desc';
 		onsort?: (column: string) => void;
+		deleteLabel?: string;
+		referrer?: { type: string; id?: number; label?: string };
 	} = $props();
 
 	// Merge tracks and placeholders, sorted by disc/track number (only when placeholders exist)
@@ -71,12 +75,16 @@
 	let totalHeight = $derived(displayRows.length * ROW_HEIGHT);
 	let offsetY = $derived(startIndex * ROW_HEIGHT);
 
-	// Reset scroll to top when tracks data changes (e.g. sorting, page change)
+	// Reset scroll to top when sort/filter changes (not on every tracks reference change)
+	let scrollKey = $derived(`${sortBy}-${sortDir}-${tracks.length}`);
+	let prevScrollKey = '';
 	$effect(() => {
-		tracks;
-		if (scrollContainer) {
-			scrollContainer.scrollTop = 0;
-			scrollTop = 0;
+		if (scrollKey !== prevScrollKey) {
+			prevScrollKey = scrollKey;
+			if (scrollContainer) {
+				scrollContainer.scrollTop = 0;
+				scrollTop = 0;
+			}
 		}
 	});
 
@@ -109,6 +117,15 @@
 
 	// Track drag state to prevent onclick navigation after a drag
 	let wasDragging = false;
+
+	function songHref(trackId: number): string {
+		if (referrer?.type && referrer?.id != null) {
+			const params = new URLSearchParams({ from: referrer.type, fromId: String(referrer.id) });
+			if (referrer.label) params.set('fromLabel', referrer.label);
+			return `/library/songs/${trackId}?${params.toString()}`;
+		}
+		return `/library/songs/${trackId}`;
+	}
 
 	function rowKey(row: DisplayRow, index: number): string | number {
 		if (row._placeholder) return `p-${row.disc_number}-${row.track_number}`;
@@ -211,8 +228,8 @@
 								class="border-b border-border/50 hover:bg-muted/50 transition-colors cursor-pointer group flex items-center
 									{isCurrentTrack ? 'bg-primary/5' : ''}"
 								style="height: {ROW_HEIGHT}px;"
-								onclick={() => { if (wasDragging) return; if (navigable) goto(`/library/songs/${track.id}`); }}
-								onkeydown={(e) => { if (e.key === 'Enter' && navigable) goto(`/library/songs/${track.id}`); }}
+								onclick={() => { if (wasDragging) return; if (navigable) goto(songHref(track.id)); }}
+								onkeydown={(e) => { if (e.key === 'Enter' && navigable) goto(songHref(track.id)); }}
 							>
 								<div
 									class="w-12 px-4 text-center text-sm tabular-nums
@@ -288,7 +305,7 @@
 														onclick={() => ondelete?.(track)}
 													>
 														<Trash2 class="size-4" />
-														Remove
+														{deleteLabel}
 													</DropdownMenu.Item>
 												{/if}
 											</DropdownMenu.Content>

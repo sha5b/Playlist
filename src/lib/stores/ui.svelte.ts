@@ -7,6 +7,9 @@ if (typeof window !== 'undefined') {
 	if (saved !== null) sidebarCollapsed = saved === 'true';
 }
 
+// In-memory scroll position map for preserving scroll across navigations
+const scrollPositions = new Map<string, number>();
+
 export const ui = {
 	get sidebarCollapsed() {
 		return sidebarCollapsed;
@@ -17,5 +20,13 @@ export const ui = {
 		if (typeof window !== 'undefined') {
 			localStorage.setItem('sidebar-collapsed', String(sidebarCollapsed));
 		}
+	},
+
+	saveScroll(route: string, position: number) {
+		scrollPositions.set(route, position);
+	},
+
+	getScroll(route: string): number {
+		return scrollPositions.get(route) ?? 0;
 	},
 };

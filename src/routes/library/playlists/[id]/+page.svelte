@@ -212,7 +212,7 @@
 
 		<!-- Track list -->
 		{#if trackPage}
-			<TrackTable tracks={trackPage.tracks} ondelete={handleRemoveTrack} />
+			<TrackTable tracks={trackPage.tracks} ondelete={handleRemoveTrack} referrer={playlist ? { type: 'playlist', id: playlist.id, label: playlist.name } : undefined} />
 
 			{#if totalPages > 1}
 				<div class="flex items-center justify-center gap-3 shrink-0 pb-2">

@@ -312,7 +312,7 @@
 
 		<div class="space-y-3">
 			<h2 class="text-lg font-semibold">All Tracks</h2>
-			<TrackTable {tracks} />
+			<TrackTable {tracks} referrer={artist ? { type: 'artist', id: artist.id, label: artist.name } : undefined} />
 		</div>
 	{:else}
 		<p class="text-muted-foreground">Artist not found.</p>

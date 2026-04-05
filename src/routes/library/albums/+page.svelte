@@ -9,6 +9,8 @@
 	import { libraryStore } from '$lib/stores/library.svelte';
 	import { toast } from 'svelte-sonner';
 	import { useSearch } from '$lib/hooks/useSearch.svelte';
+	import { beforeNavigate, afterNavigate } from '$app/navigation';
+	import { ui } from '$lib/stores/ui.svelte';
 	import type { Album } from '$lib/types';
 
 	let albums: Album[] = $state([]);
@@ -16,6 +18,24 @@
 	let loading = $state(true);
 	let downloadStatuses: Record<string, AlbumDownloadStatus> = $state({});
 	let cleaningDuplicates = $state(false);
+	let scrollContainer: HTMLDivElement | undefined = $state();
+
+	beforeNavigate(() => {
+		if (scrollContainer) {
+			ui.saveScroll('/library/albums', scrollContainer.scrollTop);
+		}
+	});
+
+	afterNavigate(() => {
+		if (scrollContainer) {
+			const saved = ui.getScroll('/library/albums');
+			if (saved > 0) {
+				requestAnimationFrame(() => {
+					if (scrollContainer) scrollContainer.scrollTop = saved;
+				});
+			}
+		}
+	});
 
 	const search = useSearch(load);
 
@@ -52,13 +72,17 @@
 		}
 	}
 
+	let lastLoadedVersion = -1;
+
 	$effect(() => {
-		libraryStore.version;
+		const v = libraryStore.version;
+		if (v === lastLoadedVersion) return;
+		lastLoadedVersion = v;
 		load();
 	});
 </script>
 
-<div class="overflow-y-auto overflow-x-hidden space-y-6">
+<div bind:this={scrollContainer} class="overflow-y-auto overflow-x-hidden space-y-6">
 	<div class="flex items-center justify-between">
 		<div>
 			<h1 class="text-3xl font-bold tracking-tight">Albums</h1>
@@ -103,10 +127,12 @@
 		</div>
 	{:else}
 		<div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
-			{#each albums as album}
+			{#each albums as album (album.id)}
+				{@const dlStatus = downloadStatuses[String(album.id)]}
 				<a
 					href="/library/albums/{album.id}"
-					class="group rounded-lg p-2 -m-2 transition-colors hover:bg-muted/30"
+					class="group rounded-lg p-2 -m-2 transition-colors duration-200 hover:bg-muted/30"
+					style="content-visibility: auto; contain-intrinsic-size: auto 220px;"
 					draggable="true"
 					ondragstart={(e) => {
 						if (!e.dataTransfer) return;
@@ -120,19 +146,20 @@
 							<img
 								src={assetUrl(album.cover_art_path)}
 								alt={album.title}
-								class="size-full object-cover group-hover:scale-105 transition-transform"
+								class="size-full object-cover group-hover:scale-105 transition-transform duration-300"
 								loading="lazy"
+								decoding="async"
 							/>
 						{:else}
 							<Disc class="size-12 text-muted-foreground" />
 						{/if}
-						{#if downloadStatuses[String(album.id)]?.status === 'complete'}
+						{#if dlStatus?.status === 'complete'}
 							<div class="absolute top-1.5 right-1.5 flex items-center justify-center size-5 rounded-full bg-green-500 text-white">
 								<Check class="size-3" />
 							</div>
-						{:else if downloadStatuses[String(album.id)]?.status === 'partial'}
+						{:else if dlStatus?.status === 'partial'}
 							<div class="absolute top-1.5 right-1.5 rounded-full bg-yellow-500/90 text-white text-[10px] font-bold px-1.5 py-0.5 leading-none">
-								{downloadStatuses[String(album.id)].total_local}/{downloadStatuses[String(album.id)].total_expected}
+								{dlStatus.total_local}/{dlStatus.total_expected}
 							</div>
 						{/if}
 					</div>
@@ -146,3 +173,4 @@
 		</div>
 	{/if}
 </div>
+

@@ -23,6 +23,18 @@
 
 	const trackId = $derived(Number(page.params.id));
 
+	const fromType = $derived(page.url.searchParams.get('from'));
+	const fromId = $derived(page.url.searchParams.get('fromId'));
+	const fromLabel = $derived(page.url.searchParams.get('fromLabel'));
+
+	const backHref = $derived.by(() => {
+		if (fromType && fromId) {
+			return `/library/${fromType}s/${fromId}`;
+		}
+		return '/library/songs';
+	});
+	const backLabel = $derived(fromLabel ?? 'Songs');
+
 	const parsedTags = $derived.by(() => {
 		if (!track?.tags) return [];
 		try { return JSON.parse(track.tags) as string[]; } catch { return []; }
@@ -131,11 +143,11 @@
 
 <div class="flex-1 min-h-0 overflow-y-auto space-y-6">
 	<a
-		href="/library/songs"
+		href={backHref}
 		class="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground transition-colors"
 	>
 		<ArrowLeft class="size-4" />
-		Songs
+		{backLabel}
 	</a>
 
 	{#if loading}

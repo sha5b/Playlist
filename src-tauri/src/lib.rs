@@ -336,6 +336,7 @@ pub fn run() {
             commands::metadata_delete_all,
             commands::metadata_cleanup_duplicates,
             commands::metadata_cleanup_duplicate_tracks,
+            commands::detect_album_mismatches,
             // Album download status
             commands::library_get_album_download_status,
             commands::library_get_albums_download_status,

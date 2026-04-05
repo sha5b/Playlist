@@ -358,3 +358,15 @@ export interface MetadataScanProgress {
 	total: number;
 	track_title: string;
 }
+
+export interface TrackMismatch {
+	track_id: number;
+	track_title: string;
+	album_title: string;
+	album_id: number;
+	reasons: string[];
+	track_genre: string | null;
+	album_genre: string | null;
+	track_artist: string | null;
+	album_artist: string | null;
+}

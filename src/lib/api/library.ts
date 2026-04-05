@@ -13,6 +13,7 @@ import type {
 	ScanMissingResult,
 	MetadataStats,
 	Download,
+	TrackMismatch,
 } from '$lib/types';
 
 // --- Simple TTL cache for frequently accessed data ---
@@ -306,6 +307,12 @@ export async function cleanupDuplicateTracks(): Promise<TrackCleanupResult> {
 	const result = await invoke('metadata_cleanup_duplicate_tracks');
 	invalidateCache();
 	return result as TrackCleanupResult;
+}
+
+// --- Mismatch Detection ---
+
+export async function detectAlbumMismatches(): Promise<TrackMismatch[]> {
+	return invoke('detect_album_mismatches');
 }
 
 // --- Album Download Status ---

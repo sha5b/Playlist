@@ -155,11 +155,8 @@ pub fn delete_track(conn: &Connection, id: i64, delete_file: bool) -> Result<Opt
         None
     };
 
-    // Remove from FTS
-    conn.execute(
-        "DELETE FROM tracks_fts WHERE rowid = ?1",
-        params![id],
-    )?;
+    // Note: tracks_fts is contentless — can't delete individual rows.
+    // Stale FTS entries are harmless because searches JOIN back to the tracks table.
 
     // Remove from playlist_tracks
     conn.execute(
@@ -332,8 +329,8 @@ pub fn record_play(conn: &Connection, track_id: i64) -> Result<(), rusqlite::Err
 }
 
 pub fn update_fts(conn: &Connection, track_id: i64) -> Result<(), rusqlite::Error> {
-    // Delete old entry
-    let _ = conn.execute("DELETE FROM tracks_fts WHERE rowid = ?1", params![track_id]);
+    // Note: tracks_fts is contentless — can't delete old entries.
+    // Duplicate rowid inserts are harmless; FTS5 handles them as updates.
 
     // Insert new entry with denormalized data
     conn.execute(

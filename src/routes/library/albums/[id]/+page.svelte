@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { page } from '$app/state';
-	import { getAlbum, getAlbumTracks, enrichAlbum, deleteAlbumTracks } from '$lib/api/library';
+	import { getAlbum, getAlbumTracks, enrichAlbum, deleteAlbumTracks, deleteTrack } from '$lib/api/library';
 	import { searchAndDownload, searchAndDownloadBatch } from '$lib/api/downloads';
 	import type { SearchDownloadRequest } from '$lib/api/downloads';
 	import TrackTable from '$lib/components/library/TrackTable.svelte';
@@ -134,6 +134,16 @@
 		}
 	}
 
+	async function handleDeleteTrack(track: Track) {
+		try {
+			await deleteTrack(track.id, true);
+			toast.success(`Deleted "${track.title}"`);
+			if (album) await load(album.id);
+		} catch (e) {
+			toast.error(`Failed to delete track: ${e}`);
+		}
+	}
+
 	// Auto-refresh tracks when downloads complete (so placeholders disappear)
 	onMount(() => {
 		let cleanup: (() => void) | undefined;
@@ -260,7 +270,14 @@
 			</div>
 		</div>
 
-		<TrackTable {tracks} placeholders={missingTracks} ondownload={handleDownloadTrack} />
+		<TrackTable
+			{tracks}
+			placeholders={missingTracks}
+			ondownload={handleDownloadTrack}
+			ondelete={handleDeleteTrack}
+			deleteLabel="Delete from Library"
+			referrer={album ? { type: 'album', id: album.id, label: album.title } : undefined}
+		/>
 	{:else}
 		<p class="text-muted-foreground">Album not found.</p>
 	{/if}
