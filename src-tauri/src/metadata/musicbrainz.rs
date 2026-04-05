@@ -8,7 +8,7 @@ use serde::Deserialize;
 pub const MB_RATE_LIMIT_MS: u64 = 1100;
 
 const MB_BASE: &str = "https://musicbrainz.org/ws/2";
-const USER_AGENT: &str = "Playlist/0.1.0 (https://github.com/sha5b/Playlist)";
+const USER_AGENT: &str = "Playlist/0.6.0 (https://github.com/sha5b/Playlist)";
 
 fn client() -> reqwest::Client {
     reqwest::Client::builder()

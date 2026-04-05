@@ -57,9 +57,9 @@
   </requires>
 
   <releases>
-    <release version="0.5.7" date="2026-04-05">
+    <release version="0.6.0" date="2026-04-05">
       <description>
-        <p>New features and improvements.</p>
+        <p>Improved metadata accuracy, fixed audio playback resilience, and post-download track verification.</p>
       </description>
     </release>
     <release version="0.3.1" date="2025-03-01">
