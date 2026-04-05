@@ -1,7 +1,7 @@
 {
 	"name": "playlist",
 	"private": true,
-	"version": "0.5.7",
+	"version": "0.6.0",
 	"description": "Liberate your music. Own your data. Support artists. Download tracks, discover missing music, sync across devices, and play everything locally.",
 	"author": "sha5b",
 	"license": "MIT",
