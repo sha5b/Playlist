@@ -38,6 +38,11 @@
   <url type="bugtracker">https://github.com/sha5b/Playlist/issues</url>
   <url type="vcs-browser">https://github.com/sha5b/Playlist</url>
 
+  <branding>
+    <color type="primary" scheme_preference="light">#f0efec</color>
+    <color type="primary" scheme_preference="dark">#0f0f0f</color>
+  </branding>
+
   <content_rating type="oars-1.1">
     <content_attribute id="social-info">mild</content_attribute>
   </content_rating>
@@ -66,7 +71,7 @@
 
   <screenshots>
     <screenshot type="default">
-      <image>https://raw.githubusercontent.com/sha5b/Playlist/main/docs/screenshot/main.png</image>
+      <image>https://raw.githubusercontent.com/sha5b/Playlist/v0.4.1/docs/screenshot/main.png</image>
       <caption>Main library view</caption>
     </screenshot>
   </screenshots>

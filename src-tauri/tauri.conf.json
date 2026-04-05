@@ -10,6 +10,7 @@
     "beforeBuildCommand": "npm run build"
   },
   "app": {
+    "enableGTKAppId": true,
     "windows": [
       {
         "title": "Playlist",
@@ -43,8 +44,11 @@
     "homepage": "https://github.com/sha5b/Playlist",
     "icon": [
       "icons/32x32.png",
+      "icons/48x48.png",
+      "icons/64x64.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
+      "icons/256x256.png",
       "icons/icon.icns",
       "icons/icon.ico",
       "icons/icon.png"
@@ -60,25 +64,33 @@
       "deb": {
         "depends": ["libwebkit2gtk-4.1-0", "libgtk-3-0", "libayatana-appindicator3-1", "libasound2"],
         "desktopTemplate": "resources/com.playlist.app.desktop",
+        "postInstallScript": "scripts/postinstall.sh",
+        "postRemoveScript": "scripts/postremove.sh",
         "files": {
           "/usr/share/metainfo/com.playlist.app.metainfo.xml": "resources/com.playlist.app.metainfo.xml",
           "/usr/share/icons/hicolor/32x32/apps/com.playlist.app.png": "icons/32x32.png",
           "/usr/share/icons/hicolor/48x48/apps/com.playlist.app.png": "icons/48x48.png",
           "/usr/share/icons/hicolor/64x64/apps/com.playlist.app.png": "icons/64x64.png",
           "/usr/share/icons/hicolor/128x128/apps/com.playlist.app.png": "icons/128x128.png",
-          "/usr/share/icons/hicolor/256x256/apps/com.playlist.app.png": "icons/256x256.png"
+          "/usr/share/icons/hicolor/256x256/apps/com.playlist.app.png": "icons/256x256.png",
+          "/usr/share/icons/hicolor/512x512/apps/com.playlist.app.png": "icons/icon.png",
+          "/usr/share/icons/hicolor/scalable/apps/com.playlist.app.svg": "icons/com.playlist.app.svg"
         }
       },
       "rpm": {
         "depends": ["webkit2gtk4.1", "gtk3", "libappindicator-gtk3", "alsa-lib"],
         "desktopTemplate": "resources/com.playlist.app.desktop",
+        "postInstallScript": "scripts/postinstall.sh",
+        "postRemoveScript": "scripts/postremove.sh",
         "files": {
           "/usr/share/metainfo/com.playlist.app.metainfo.xml": "resources/com.playlist.app.metainfo.xml",
           "/usr/share/icons/hicolor/32x32/apps/com.playlist.app.png": "icons/32x32.png",
           "/usr/share/icons/hicolor/48x48/apps/com.playlist.app.png": "icons/48x48.png",
           "/usr/share/icons/hicolor/64x64/apps/com.playlist.app.png": "icons/64x64.png",
           "/usr/share/icons/hicolor/128x128/apps/com.playlist.app.png": "icons/128x128.png",
-          "/usr/share/icons/hicolor/256x256/apps/com.playlist.app.png": "icons/256x256.png"
+          "/usr/share/icons/hicolor/256x256/apps/com.playlist.app.png": "icons/256x256.png",
+          "/usr/share/icons/hicolor/512x512/apps/com.playlist.app.png": "icons/icon.png",
+          "/usr/share/icons/hicolor/scalable/apps/com.playlist.app.svg": "icons/com.playlist.app.svg"
         }
       }
     }

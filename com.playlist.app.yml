@@ -112,6 +112,7 @@ modules:
       - install -Dm644 src-tauri/icons/128x128.png /app/share/icons/hicolor/128x128/apps/com.playlist.app.png
       - install -Dm644 src-tauri/icons/256x256.png /app/share/icons/hicolor/256x256/apps/com.playlist.app.png
       - install -Dm644 src-tauri/icons/icon.png /app/share/icons/hicolor/512x512/apps/com.playlist.app.png
+      - install -Dm644 src-tauri/icons/com.playlist.app.svg /app/share/icons/hicolor/scalable/apps/com.playlist.app.svg
     sources:
       - type: git
         url: https://github.com/sha5b/Playlist.git
