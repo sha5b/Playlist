@@ -45,6 +45,7 @@ struct ArtistCredit {
 #[derive(Debug, Deserialize)]
 struct ArtistRef {
     id: String,
+    name: Option<String>,
     #[serde(rename = "sort-name")]
     sort_name: Option<String>,
     #[serde(rename = "type")]
@@ -338,13 +339,88 @@ pub struct AlbumTrackInfo {
 
 // ── Search & enrich functions ──────────────────────────────────────────────
 
+/// Strip Lucene special characters from search terms so field-specific queries
+/// don't break on titles containing parentheses, colons, etc.
+fn strip_lucene_special(s: &str) -> String {
+    s.chars()
+        .filter(|c| !matches!(c, '+' | '-' | '!' | '(' | ')' | '{' | '}' | '[' | ']'
+                                  | '^' | '"' | '~' | '*' | '?' | ':' | '\\' | '/'))
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Normalize a string for fuzzy comparison: lowercase, strip punctuation/whitespace.
+fn normalize_name(s: &str) -> String {
+    s.to_lowercase()
+        .chars()
+        .filter(|c| c.is_alphanumeric() || c.is_whitespace())
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Check if two artist names are a fuzzy match.
+fn artist_matches(query_artist: &str, result_artist: &str) -> bool {
+    let q = normalize_name(query_artist);
+    let r = normalize_name(result_artist);
+    if q.is_empty() || r.is_empty() {
+        return false;
+    }
+    // Exact match or one contains the other (handles "Artist" vs "Artist feat. X")
+    q == r || r.contains(&q) || q.contains(&r)
+}
+
+/// Pick the best recording from search results by verifying the artist name matches.
+fn best_recording<'a>(recordings: &'a [RecordingHit], artist: Option<&str>) -> Option<&'a RecordingHit> {
+    if recordings.is_empty() {
+        return None;
+    }
+    if let Some(query_artist) = artist {
+        // Prefer a result whose artist matches the query
+        for rec in recordings {
+            if let Some(ac) = rec.artist_credit.as_ref().and_then(|v| v.first()) {
+                if let Some(ref name) = ac.artist.name {
+                    if artist_matches(query_artist, name) {
+                        return Some(rec);
+                    }
+                }
+            }
+        }
+    }
+    // Fallback: first result (same as before, but only when no artist match found)
+    Some(&recordings[0])
+}
+
+/// Pick the best release from search results by verifying the artist name matches.
+fn best_release<'a>(releases: &'a [ReleaseHit], artist: Option<&str>) -> Option<&'a ReleaseHit> {
+    if releases.is_empty() {
+        return None;
+    }
+    if let Some(query_artist) = artist {
+        for rel in releases {
+            if let Some(ac) = rel.artist_credit.as_ref().and_then(|v| v.first()) {
+                if let Some(ref name) = ac.artist.name {
+                    if artist_matches(query_artist, name) {
+                        return Some(rel);
+                    }
+                }
+            }
+        }
+    }
+    Some(&releases[0])
+}
+
 /// Search MusicBrainz for a recording and return enrichment data.
 pub async fn enrich_track(title: &str, artist: Option<&str>) -> Result<TrackEnrichment, String> {
-    // Simple search: just artist + title as plain keywords (most robust for all scripts)
+    // Use field-specific Lucene query when artist is known for better precision.
+    // No phrase quotes — allows fuzzy word matching within each field.
     let query = if let Some(art) = artist {
-        format!("{} {}", art, title)
+        format!("recording:({}) AND artist:({})", strip_lucene_special(title), strip_lucene_special(art))
     } else {
-        title.to_string()
+        strip_lucene_special(title)
     };
 
     let url = format!("{}/recording/?query={}&fmt=json&limit=5", MB_BASE, urlencoding(&query));
@@ -359,7 +435,8 @@ pub async fn enrich_track(title: &str, artist: Option<&str>) -> Result<TrackEnri
         .map_err(|e| format!("Failed to parse MusicBrainz response: {}", e))?;
 
     let recordings = resp.recordings.unwrap_or_default();
-    let hit = recordings.first().ok_or_else(|| "No MusicBrainz results found".to_string())?;
+    let hit = best_recording(&recordings, artist)
+        .ok_or_else(|| "No MusicBrainz results found".to_string())?;
 
     let mut enrichment = TrackEnrichment {
         musicbrainz_id: Some(hit.id.clone()),
@@ -426,11 +503,12 @@ pub async fn enrich_track(title: &str, artist: Option<&str>) -> Result<TrackEnri
 
 /// Search MusicBrainz for a release (album) and return enrichment data including full tracklist.
 pub async fn enrich_album(title: &str, artist: Option<&str>) -> Result<AlbumEnrichment, String> {
-    // Simple search: just artist + title as plain keywords
+    // Use field-specific Lucene query when artist is known for better precision.
+    // No phrase quotes — allows fuzzy word matching within each field.
     let query = if let Some(art) = artist {
-        format!("{} {}", art, title)
+        format!("release:({}) AND artist:({})", strip_lucene_special(title), strip_lucene_special(art))
     } else {
-        title.to_string()
+        strip_lucene_special(title)
     };
 
     let url = format!(
@@ -448,7 +526,8 @@ pub async fn enrich_album(title: &str, artist: Option<&str>) -> Result<AlbumEnri
         .map_err(|e| format!("Failed to parse MusicBrainz response: {}", e))?;
 
     let releases = resp.releases.unwrap_or_default();
-    let hit = releases.first().ok_or_else(|| "No MusicBrainz results found".to_string())?;
+    let hit = best_release(&releases, artist)
+        .ok_or_else(|| "No MusicBrainz results found".to_string())?;
 
     let mut enrichment = AlbumEnrichment {
         musicbrainz_id: Some(hit.id.clone()),

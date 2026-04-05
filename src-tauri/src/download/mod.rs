@@ -1037,7 +1037,7 @@ async fn handle_download_success(
     let dl_meta = {
         let dl_row = if let Ok(conn) = db.lock() {
             conn.query_row(
-                "SELECT title, artist, url, target_album_id, target_artist_id, target_isrc, target_disc_number, target_track_number FROM downloads WHERE id = ?1",
+                "SELECT title, artist, url, target_album_id, target_artist_id, target_isrc, target_disc_number, target_track_number, target_duration_ms FROM downloads WHERE id = ?1",
                 rusqlite::params![download_id],
                 |row| Ok((
                     row.get::<_, Option<String>>(0)?,
@@ -1048,14 +1048,15 @@ async fn handle_download_success(
                     row.get::<_, Option<String>>(5)?,
                     row.get::<_, Option<i64>>(6)?,
                     row.get::<_, Option<i64>>(7)?,
+                    row.get::<_, Option<i64>>(8)?,
                 )),
             ).ok()
         } else {
             None
         };
-        let (title, artist, source_url, target_album_id, target_artist_id, target_isrc, target_disc_number, target_track_number) = match dl_row {
-            Some((t, a, u, alb, art, isrc, disc, track)) => (t, a, Some(u), alb, art, isrc, disc, track),
-            None => (None, None, None, None, None, None, None, None),
+        let (title, artist, source_url, target_album_id, target_artist_id, target_isrc, target_disc_number, target_track_number, target_duration_ms) = match dl_row {
+            Some((t, a, u, alb, art, isrc, disc, track, dur)) => (t, a, Some(u), alb, art, isrc, disc, track, dur),
+            None => (None, None, None, None, None, None, None, None, None),
         };
         DownloadMeta {
             title,
@@ -1076,6 +1077,7 @@ async fn handle_download_success(
             isrc: ytdlp_info.as_ref().and_then(|i| i.isrc.clone()).or(target_isrc),
             target_disc_number,
             target_track_number,
+            target_duration_ms,
         }
     };
     let track_id = import_downloaded_file(db, app_handle, file_path, &dl_meta).await;
@@ -1164,6 +1166,7 @@ struct DownloadMeta {
     isrc: Option<String>,
     target_disc_number: Option<i64>,
     target_track_number: Option<i64>,
+    target_duration_ms: Option<i64>,
 }
 
 async fn import_downloaded_file(
@@ -1193,11 +1196,29 @@ async fn import_downloaded_file(
         }
     }).await.ok()?;
 
+    // Post-download verification: if this is an album track download with a known expected
+    // duration, check the actual file duration against it. If they differ by more than 10
+    // seconds, the downloaded file is likely the wrong track — demote it to a standalone
+    // download so it doesn't get assigned to the album with incorrect metadata.
+    let mut is_album_download = dl_meta.target_album_id.is_some();
+    if is_album_download {
+        if let (Some(expected_ms), Some(actual_ms)) = (dl_meta.target_duration_ms, tag_data.duration_ms) {
+            let diff_ms = (expected_ms - actual_ms as i64).unsigned_abs();
+            if diff_ms > 10_000 {
+                log::warn!(
+                    "Post-download duration mismatch for '{}': expected {}ms, got {}ms (diff {}ms). \
+                     Demoting to standalone track — likely wrong YouTube result.",
+                    dl_meta.title.as_deref().unwrap_or("?"), expected_ms, actual_ms, diff_ms
+                );
+                is_album_download = false;
+            }
+        }
+    }
+
     // For album track downloads (target_album_id set), use the download metadata as the
     // authoritative source — we know the correct title/artist from MusicBrainz.
     // YouTube file tags contain the video title which is often wrong/noisy.
     // For other downloads, prefer file tags and fall back to download metadata.
-    let is_album_download = dl_meta.target_album_id.is_some();
     let raw_title = if is_album_download {
         dl_meta.title.clone()
             .or(tag_data.title)

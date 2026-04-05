@@ -957,11 +957,12 @@ impl AudioEngine {
                     };
                     *accumulated_ms = 0;
 
-                    // Stop old sink explicitly — dropping only detaches (ghost audio).
-                    // Then create a fresh Sink (rodio 0.20 stop() permanently kills a sink,
-                    // so we must create a new one each time).
+                    // Stop old sink AFTER successful decode — stopping before decode
+                    // would permanently kill the sink (rodio 0.20) and if decode then
+                    // fails, the player is left with a dead sink and can't play anything.
+                    let vol = sink.volume();
                     sink.stop();
-                    *sink = match Self::make_sink(stream_handle, sink.volume()) {
+                    *sink = match Self::make_sink(stream_handle, vol) {
                         Ok(s) => s,
                         Err(e) => {
                             log::error!("[audio] {}", e);

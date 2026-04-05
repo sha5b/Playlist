@@ -39,22 +39,23 @@ pub fn find_or_create(
     album_artist: Option<&str>,
     year: Option<i64>,
 ) -> Result<i64, rusqlite::Error> {
-    // Match by title alone (case-insensitive) — the same album with different
-    // featured artists should not create separate album records.
-    let existing: Option<i64> = conn.query_row(
-        "SELECT id FROM albums WHERE title = ?1 COLLATE NOCASE LIMIT 1",
-        params![title],
-        |row| row.get(0),
-    ).ok();
+    // Match by title + artist_id to avoid merging albums from different artists
+    // that happen to share the same name (e.g. "Greatest Hits").
+    let existing: Option<i64> = if let Some(aid) = artist_id {
+        conn.query_row(
+            "SELECT id FROM albums WHERE title = ?1 COLLATE NOCASE AND artist_id = ?2 LIMIT 1",
+            params![title, aid],
+            |row| row.get(0),
+        ).ok()
+    } else {
+        conn.query_row(
+            "SELECT id FROM albums WHERE title = ?1 COLLATE NOCASE AND artist_id IS NULL LIMIT 1",
+            params![title],
+            |row| row.get(0),
+        ).ok()
+    };
 
     if let Some(id) = existing {
-        // Back-fill artist_id if the existing album doesn't have one yet
-        if artist_id.is_some() {
-            conn.execute(
-                "UPDATE albums SET artist_id = COALESCE(artist_id, ?2) WHERE id = ?1",
-                params![id, artist_id],
-            )?;
-        }
         return Ok(id);
     }
 
