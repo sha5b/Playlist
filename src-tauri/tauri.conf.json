@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Playlist",
-  "version": "0.4.1",
+  "version": "0.5.7",
   "identifier": "com.playlist.app",
   "build": {
     "frontendDist": "../build",

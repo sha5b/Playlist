@@ -65,11 +65,9 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          # Copy README and assets
-          cp "$GITHUB_WORKSPACE/README.md" .
+          # Copy LICENSE and screenshot (README and index.html are maintained in public repo)
           cp "$GITHUB_WORKSPACE/LICENSE" . 2>/dev/null || true
-          mkdir -p src-tauri/icons docs/screenshot
-          cp "$GITHUB_WORKSPACE/src-tauri/icons/icon.png" src-tauri/icons/
+          mkdir -p docs/screenshot icons
           cp "$GITHUB_WORKSPACE/docs/screenshot/main.png" docs/screenshot/
 
           # Commit and push if there are changes
