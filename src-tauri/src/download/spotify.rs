@@ -1,3 +1,10 @@
+/// Known-good persisted-query hash for the `fetchPlaylistContents` Pathfinder
+/// operation, used as a fallback when scraping the hash from the web player's JS
+/// bundles fails (e.g. Spotify serves our HTTP client a page without the bundles).
+/// Spotify rotates these occasionally; discovery is still tried first.
+const FALLBACK_PLAYLIST_HASH: &str =
+    "a65e12194ed5fc443a1cdebed5fabe33ca5b07b987185d63c72483867ad13cb4";
+
 /// Fetch track metadata (title, artist) from Spotify's oEmbed API.
 /// Works for any public Spotify URL without authentication.
 /// Returns (title, artist) parsed from the oEmbed "title" field which is formatted as "Song - Artist".
@@ -510,22 +517,39 @@ pub async fn fetch_playlist_entries(url: &str) -> Result<super::ytdlp::PlaylistF
             let entries_from_embed = entries.len();
 
             // --- Strategy A: Pathfinder (internal GraphQL API) ---
+            // Always attempt Pathfinder: use a freshly-scraped persisted-query hash if
+            // discovery works, otherwise the bundled fallback hash. (Previously, if hash
+            // discovery failed we skipped straight to the v1 API, which Spotify now hard
+            // rate-limits — leaving the playlist stuck at the embed's first ~100 tracks.)
             let mut pathfinder_ok = false;
-            if let Some((op_name, hash)) = discover_pathfinder_hash(&client, item_type, item_id).await {
-                log::info!("[spotify] Trying Pathfinder API with op '{}' (hash: {}...)", op_name, &hash[..16]);
+            let (op_name, hash) = match discover_pathfinder_hash(&client, item_type, item_id).await {
+                Some((op, h)) => (op, h),
+                None => {
+                    log::warn!("[spotify] hash discovery failed; using bundled fallback hash");
+                    ("fetchPlaylistContents".to_string(), FALLBACK_PLAYLIST_HASH.to_string())
+                }
+            };
+            log::info!("[spotify] Pathfinder op '{}' (hash {}...)", op_name, &hash[..16.min(hash.len())]);
+            {
                 let mut offset = entries_from_embed;
                 let page_size = 100; // proven-stable page size for the Pathfinder query
+                let mut fail_streak = 0u32;
 
                 loop {
                     if offset >= total { break; }
 
-                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                    tokio::time::sleep(std::time::Duration::from_millis(700)).await;
 
                     match fetch_pathfinder_page(&client, &token, item_id, &op_name, &hash, offset, page_size).await {
                         Ok(data) => {
+                            // A stale/invalid persisted-query hash returns HTTP 200 with an
+                            // `errors` array (e.g. PersistedQueryNotFound) — stop and let the
+                            // v1 fallback try rather than looping forever.
+                            if data.get("errors").map(|e| !e.is_null()).unwrap_or(false) {
+                                log::warn!("[spotify] Pathfinder query error: {}", data["errors"]);
+                                break;
+                            }
                             let content = &data["data"]["playlistV2"]["content"];
-
-                            // Update total if we didn't have it from embed
                             let pf_total = content["totalCount"].as_u64().map(|t| t as usize);
                             let effective_total = pf_total.unwrap_or(total);
 
@@ -542,19 +566,19 @@ pub async fn fetch_playlist_entries(url: &str) -> Result<super::ytdlp::PlaylistF
                                     offset, batch_len, entries.len(), effective_total
                                 );
                                 offset += batch_len;
+                                fail_streak = 0;
                                 if offset >= effective_total { break; }
                             } else {
-                                // Log the response structure for debugging
-                                let keys: Vec<&str> = data.as_object()
-                                    .map(|o| o.keys().map(|k| k.as_str()).collect())
-                                    .unwrap_or_default();
-                                log::warn!("[spotify] Pathfinder: unexpected response structure, top keys: {:?}", keys);
                                 break;
                             }
                         }
                         Err(e) => {
-                            log::warn!("[spotify] Pathfinder failed at offset {}: {}", offset, e);
-                            break;
+                            // Retry a few times on transient errors before giving up so a
+                            // single hiccup doesn't truncate a large (thousands) playlist.
+                            fail_streak += 1;
+                            log::warn!("[spotify] Pathfinder page at offset {} failed ({}/3): {}", offset, fail_streak, e);
+                            if fail_streak >= 3 { break; }
+                            tokio::time::sleep(std::time::Duration::from_secs(2 * fail_streak as u64)).await;
                         }
                     }
                 }
