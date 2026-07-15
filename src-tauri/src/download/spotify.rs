@@ -333,7 +333,10 @@ fn parse_pathfinder_track(item: &serde_json::Value, cover_url: Option<&str>) -> 
 
     let title = track["name"].as_str()?;
     let uri = track["uri"].as_str().unwrap_or("").to_string();
-    let duration = track["duration"]["totalMilliseconds"].as_f64()
+    // Spotify's current shape uses `trackDuration.totalMilliseconds`; keep the older
+    // `duration`/`duration_ms` as fallbacks.
+    let duration = track["trackDuration"]["totalMilliseconds"].as_f64()
+        .or_else(|| track["duration"]["totalMilliseconds"].as_f64())
         .or_else(|| track["duration_ms"].as_f64())
         .map(|ms| ms / 1000.0);
     let artist = track["artists"]["items"].as_array()
@@ -342,6 +345,12 @@ fn parse_pathfinder_track(item: &serde_json::Value, cover_url: Option<&str>) -> 
         .map(|s| s.to_string());
     let album = track["albumOfTrack"]["name"].as_str()
         .or_else(|| track["album"]["name"].as_str())
+        .map(|s| s.to_string());
+    // Track/disc numbers are top-level on the Track node.
+    let track_number = track["trackNumber"].as_i64();
+    let disc_number = track["discNumber"].as_i64();
+    let isrc = track["playability"]["isrc"].as_str()
+        .or_else(|| track["externalIds"]["isrc"].as_str())
         .map(|s| s.to_string());
 
     Some(super::ytdlp::VideoInfo {
@@ -356,13 +365,13 @@ fn parse_pathfinder_track(item: &serde_json::Value, cover_url: Option<&str>) -> 
         genre: None,
         release_year: None,
         description: None,
-        track_number: None,
-        disc_number: None,
+        track_number,
+        disc_number,
         composer: None,
         language: None,
         tags: None,
         channel_url: None,
-        isrc: None,
+        isrc,
     })
 }
 
@@ -505,7 +514,7 @@ pub async fn fetch_playlist_entries(url: &str) -> Result<super::ytdlp::PlaylistF
             if let Some((op_name, hash)) = discover_pathfinder_hash(&client, item_type, item_id).await {
                 log::info!("[spotify] Trying Pathfinder API with op '{}' (hash: {}...)", op_name, &hash[..16]);
                 let mut offset = entries_from_embed;
-                let page_size = 200; // Pathfinder supports up to 300
+                let page_size = 100; // proven-stable page size for the Pathfinder query
 
                 loop {
                     if offset >= total { break; }
@@ -562,7 +571,6 @@ pub async fn fetch_playlist_entries(url: &str) -> Result<super::ytdlp::PlaylistF
                 let mut offset = entries.len();
                 let api_path = format!("https://api.spotify.com/v1/playlists/{}/tracks", item_id);
                 let mut rate_limit_retries = 0u32;
-                let first_api_offset = offset;
 
                 while offset < total {
                     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
@@ -582,9 +590,12 @@ pub async fn fetch_playlist_entries(url: &str) -> Result<super::ytdlp::PlaylistF
 
                     let status = api_resp.status();
                     if status.as_u16() == 429 {
+                        // Honor Retry-After and back off — don't give up on the first 429
+                        // (Spotify aggressively rate-limits the anonymous token), or the
+                        // playlist would stop at the first embed page (~100 tracks).
                         rate_limit_retries += 1;
-                        if rate_limit_retries > 3 || (rate_limit_retries == 1 && offset == first_api_offset) {
-                            log::warn!("[spotify] v1 API rate limited — stopping at {} tracks", entries.len());
+                        if rate_limit_retries > 6 {
+                            log::warn!("[spotify] v1 API still rate limited after {} retries — stopping at {} tracks", rate_limit_retries, entries.len());
                             break;
                         }
                         let retry_after = api_resp.headers()
@@ -593,8 +604,8 @@ pub async fn fetch_playlist_entries(url: &str) -> Result<super::ytdlp::PlaylistF
                             .and_then(|v| v.parse::<u64>().ok())
                             .unwrap_or(5)
                             .min(30);
-                        let wait = retry_after.max(3 * rate_limit_retries as u64);
-                        log::info!("[spotify] v1 API rate limited at offset {}, waiting {}s ({}/3)", offset, wait, rate_limit_retries);
+                        let wait = retry_after.max(2 * rate_limit_retries as u64);
+                        log::info!("[spotify] v1 API rate limited at offset {}, waiting {}s ({}/6)", offset, wait, rate_limit_retries);
                         tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
                         continue;
                     }
