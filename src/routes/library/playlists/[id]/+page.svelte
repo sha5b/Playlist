@@ -177,11 +177,11 @@
 
 				<!-- Actions -->
 				<div class="flex items-center gap-2 pt-1">
-					<Button onclick={playAll} disabled={!trackPage || trackPage.tracks.length === 0} class="gap-2 rounded-full px-6">
+					<Button onclick={playAll} disabled={!trackPage || trackPage.tracks.length === 0} class="gap-2">
 						<Play class="size-4" fill="currentColor" />
 						Play
 					</Button>
-					<Button variant="outline" onclick={shuffleAll} disabled={!trackPage || trackPage.tracks.length === 0} class="gap-2 rounded-full px-5">
+					<Button variant="outline" onclick={shuffleAll} disabled={!trackPage || trackPage.tracks.length === 0} class="gap-2">
 						<Shuffle class="size-4" />
 						Shuffle
 					</Button>

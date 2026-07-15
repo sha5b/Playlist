@@ -67,6 +67,11 @@ export async function cancelDownload(id: number): Promise<void> {
 	return invoke('download_cancel', { id });
 }
 
+/** Cancel every active/queued download across all playlists. */
+export async function stopAllDownloads(): Promise<void> {
+	return invoke('download_cancel_all');
+}
+
 export async function retryDownload(id: number): Promise<Download> {
 	return invoke('download_retry', { id });
 }

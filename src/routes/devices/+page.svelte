@@ -129,13 +129,18 @@
 		}
 	}
 
+	function isCancelled(e: unknown): boolean {
+		return String(e).toLowerCase().includes('cancel');
+	}
+
 	async function handleSyncPlaylist(playlistId: number) {
 		if (!selectedDevice) return;
 		try {
 			await syncDevice(selectedDevice.device.id, playlistId);
-			toast.success('Sync started');
+			toast.success('Playlist synced');
 		} catch (e) {
-			toast.error('Failed to start sync', { description: String(e) });
+			if (isCancelled(e)) return;
+			toast.error('Failed to sync', { description: String(e) });
 		}
 	}
 
@@ -144,11 +149,12 @@
 		syncingAll = true;
 		try {
 			for (const pl of playlistsWithUnsynced) {
+				// Syncs run sequentially; each call resolves when that playlist finishes.
 				await syncDevice(selectedDevice.device.id, pl.playlist_id);
 			}
-			toast.success('Syncing all playlists');
+			toast.success('All playlists synced');
 		} catch (e) {
-			toast.error('Failed to sync', { description: String(e) });
+			if (!isCancelled(e)) toast.error('Failed to sync', { description: String(e) });
 		} finally {
 			syncingAll = false;
 		}
@@ -192,9 +198,9 @@
 			for (const pl of unsynced) {
 				await syncDevice(deviceId, pl.playlist_id);
 			}
-			toast.success('Sync started');
+			toast.success('Device synced');
 		} catch (e) {
-			toast.error('Failed to sync', { description: String(e) });
+			if (!isCancelled(e)) toast.error('Failed to sync', { description: String(e) });
 		}
 	}
 
@@ -231,8 +237,8 @@
 
 <div class="flex-1 min-h-0 overflow-y-auto space-y-6">
 	<div>
-		<h1 class="text-2xl font-bold tracking-tight">Devices</h1>
-		<p class="text-sm text-muted-foreground/70 mt-0.5">
+		<h1 class="text-3xl font-bold tracking-tight">Devices</h1>
+		<p class="text-muted-foreground mt-1">
 			Sync your music to connected devices
 		</p>
 	</div>
@@ -306,8 +312,8 @@
 						</span>
 					{:else}
 						<span class="relative flex size-2 shrink-0">
-							<span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
-							<span class="relative inline-flex rounded-full size-2 bg-blue-400"></span>
+							<span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-info opacity-75"></span>
+							<span class="relative inline-flex rounded-full size-2 bg-info"></span>
 						</span>
 						<div class="flex-1 min-w-0">
 							<div class="flex items-center justify-between text-sm">

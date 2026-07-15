@@ -8,7 +8,8 @@
 	} from 'lucide-svelte';
 	import { goto } from '$app/navigation';
 	import { player } from '$lib/stores/player.svelte';
-	import { formatDuration, assetUrl } from '$lib/utils/format';
+	import { formatDuration } from '$lib/utils/format';
+	import CoverArt from '$lib/components/shared/CoverArt.svelte';
 	import { processQueueDrop, handleQueueDragOver } from '$lib/utils/queueDrop';
 
 	function handleProgressChange(value: number) {
@@ -72,15 +73,13 @@
 		onkeydown={(e) => { if (hasTrack && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); goto('/playing'); } }}
 	>
 		<div class="size-12 shrink-0 rounded-md bg-muted flex items-center justify-center overflow-hidden">
-			{#if player.currentTrack?.cover_art_path}
-				<img
-					src={assetUrl(player.currentTrack.cover_art_path)}
-					alt=""
-					class="size-full object-cover"
-				/>
-			{:else}
-				<Music class="size-6 text-muted-foreground" strokeWidth={1.5} />
-			{/if}
+			<CoverArt
+				src={player.currentTrack?.cover_art_path}
+				alt=""
+				class="size-full object-cover"
+				iconClass="size-6 text-muted-foreground"
+				icon={Music}
+			/>
 		</div>
 		<div class="min-w-0">
 			<p class="text-sm font-medium truncate text-foreground">

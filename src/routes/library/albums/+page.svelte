@@ -120,7 +120,7 @@
 	{#if loading && albums.length === 0}
 		<CardGridSkeleton />
 	{:else if albums.length === 0}
-		<div class="flex items-center justify-center h-48 rounded-lg border border-dashed border-border">
+		<div class="flex items-center justify-center h-48 rounded-xl border border-dashed border-border/60">
 			<p class="text-muted-foreground text-sm">
 				{search.query ? `No albums matching "${search.query}"` : 'No albums in your library yet'}
 			</p>
@@ -154,11 +154,11 @@
 							<Disc class="size-12 text-muted-foreground" />
 						{/if}
 						{#if dlStatus?.status === 'complete'}
-							<div class="absolute top-1.5 right-1.5 flex items-center justify-center size-5 rounded-full bg-green-500 text-white">
+							<div class="absolute top-1.5 right-1.5 flex items-center justify-center size-5 rounded-full bg-success text-white">
 								<Check class="size-3" />
 							</div>
 						{:else if dlStatus?.status === 'partial'}
-							<div class="absolute top-1.5 right-1.5 rounded-full bg-yellow-500/90 text-white text-[10px] font-bold px-1.5 py-0.5 leading-none">
+							<div class="absolute top-1.5 right-1.5 rounded-full bg-warning/90 text-white text-[10px] font-bold px-1.5 py-0.5 leading-none">
 								{dlStatus.total_local}/{dlStatus.total_expected}
 							</div>
 						{/if}

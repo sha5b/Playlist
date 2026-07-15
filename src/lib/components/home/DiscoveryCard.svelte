@@ -73,7 +73,7 @@
 				<div class="flex gap-2.5 pb-1">
 					{#each tracks as track (track.id)}
 						<button
-							class="flex-shrink-0 w-[130px] group text-left rounded-lg p-1.5 transition-colors hover:bg-muted/40"
+							class="flex-shrink-0 w-[130px] group text-left rounded-lg p-1.5 transition-colors hover:bg-muted/30"
 							onclick={() => playTrack(track.id)}
 							aria-label={`Play ${track.title || 'track'}`}
 						>

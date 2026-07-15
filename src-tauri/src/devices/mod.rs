@@ -7,7 +7,10 @@ use tokio::sync::Mutex;
 
 pub struct DeviceManager {
     app_handle: tauri::AppHandle,
-    active_sync: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// Serializes syncs: a new sync waits for the current one to finish instead of
+    /// cancelling it. This is what makes "Sync all" (a loop of start_sync calls, one
+    /// per playlist) actually sync every playlist rather than only the last.
+    sync_lock: Mutex<()>,
     cancel_token: Arc<AtomicBool>,
 }
 
@@ -15,50 +18,51 @@ impl DeviceManager {
     pub fn new(app_handle: tauri::AppHandle) -> Self {
         Self {
             app_handle,
-            active_sync: Mutex::new(None),
+            sync_lock: Mutex::new(()),
             cancel_token: Arc::new(AtomicBool::new(false)),
         }
     }
 
+    /// Sync one playlist to a device, running to completion. Multiple calls queue behind
+    /// the `sync_lock` and run one at a time. Returns `Err("Sync cancelled")` if the user
+    /// cancelled, so a frontend "sync all" loop can stop the whole batch.
     pub async fn start_sync(
         &self,
         db: Arc<std::sync::Mutex<rusqlite::Connection>>,
         device_id: i64,
         playlist_id: i64,
     ) -> Result<(), String> {
-        let mut handle = self.active_sync.lock().await;
+        // Hold the lock for the whole sync so concurrent requests serialize.
+        let _guard = self.sync_lock.lock().await;
 
-        if handle.is_some() {
-            self.cancel_sync_inner(&mut handle).await;
+        // A cancel requested before this sync started should stop the batch, not be
+        // silently cleared. Only reset the flag once we know we're proceeding fresh.
+        if self.cancel_token.swap(false, Ordering::Relaxed) {
+            return Err("Sync cancelled".to_string());
         }
 
-        self.cancel_token.store(false, Ordering::Relaxed);
         let cancel = self.cancel_token.clone();
         let app = self.app_handle.clone();
-
-        *handle = Some(tokio::spawn(async move {
-            match sync::sync_playlist_to_device(app, db, device_id, playlist_id, cancel).await {
-                Ok(result) => log::info!(
+        match sync::sync_playlist_to_device(app, db, device_id, playlist_id, cancel).await {
+            Ok(result) => {
+                log::info!(
                     "Device sync complete: {} synced, {} failed",
                     result.synced,
                     result.failed,
-                ),
-                Err(e) => log::error!("Device sync failed: {}", e),
+                );
+                if self.cancel_token.load(Ordering::Relaxed) {
+                    return Err("Sync cancelled".to_string());
+                }
+                Ok(())
             }
-        }));
-
-        Ok(())
+            Err(e) => {
+                log::error!("Device sync failed: {}", e);
+                Err(e)
+            }
+        }
     }
 
     pub async fn cancel_sync(&self) {
-        let mut handle = self.active_sync.lock().await;
-        self.cancel_sync_inner(&mut handle).await;
-    }
-
-    async fn cancel_sync_inner(&self, handle: &mut Option<tokio::task::JoinHandle<()>>) {
         self.cancel_token.store(true, Ordering::Relaxed);
-        if let Some(h) = handle.take() {
-            let _ = h.await;
-        }
     }
 }

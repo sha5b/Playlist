@@ -64,7 +64,7 @@
 	</div>
 
 	{#if history.length === 0}
-		<div class="flex flex-col items-center justify-center py-20 rounded-xl border border-dashed border-border/40 gap-5">
+		<div class="flex flex-col items-center justify-center py-20 rounded-xl border border-dashed border-border/60 gap-4">
 			<div class="size-16 rounded-2xl bg-muted/30 flex items-center justify-center">
 				<Clock class="size-8 text-muted-foreground/30" />
 			</div>
@@ -72,19 +72,19 @@
 		</div>
 	{:else}
 		<div class="rounded-xl border border-border/60 overflow-hidden">
-			<div class="border-b border-border/40 bg-muted/30 text-[10px] text-muted-foreground/70 uppercase tracking-wider flex items-center px-4 py-2">
+			<div class="border-b border-border/40 bg-muted/30 text-xs text-muted-foreground uppercase tracking-wider flex items-center px-4 py-2">
 				<div class="w-7"></div>
 				<div class="flex-1 pl-3">Title</div>
 				<div class="w-28 text-center hidden sm:block">Date</div>
 				<div class="w-24 text-center">Platform</div>
 				<div class="w-24 text-center">Status</div>
 			</div>
-			<div class="divide-y divide-border/20">
+			<div class="divide-y divide-border/40">
 				{#each history as dl (dl.id)}
-					<div class="flex items-center px-4 py-2.5 hover:bg-muted/20 transition-colors">
+					<div class="flex items-center px-4 py-2.5 hover:bg-muted/30 transition-colors">
 						<div class="w-7 flex items-center justify-center shrink-0">
 							{#if dl.status === 'completed'}
-								<CheckCircle2 class="size-4 text-green-500" />
+								<CheckCircle2 class="size-4 text-success" />
 							{:else if dl.status === 'failed'}
 								<XCircle class="size-4 text-destructive" />
 							{:else if dl.status === 'cancelled'}
@@ -111,7 +111,7 @@
 							<Badge
 								variant="outline"
 								class="text-[10px] capitalize
-									{dl.status === 'completed' ? 'text-green-500 border-green-500/30' : ''}
+									{dl.status === 'completed' ? 'text-success border-success/30' : ''}
 									{dl.status === 'failed' ? 'text-destructive border-destructive/30' : ''}
 									{dl.status === 'cancelled' ? 'text-muted-foreground/50 border-border/40' : ''}"
 							>

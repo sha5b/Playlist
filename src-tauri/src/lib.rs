@@ -282,6 +282,7 @@ pub fn run() {
             commands::download_search_and_start,
             commands::download_search_and_start_batch,
             commands::download_cancel,
+            commands::download_cancel_all,
             commands::download_retry,
             commands::download_get_active,
             commands::download_get_history,

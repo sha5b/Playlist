@@ -316,6 +316,15 @@ pub async fn download_cancel(
     Ok(())
 }
 
+/// Cancel every active/queued download across all playlists.
+#[tauri::command]
+pub async fn download_cancel_all(
+    manager: State<'_, Arc<DownloadManager>>,
+) -> Result<(), String> {
+    manager.cancel_all().await;
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn download_retry(
     db: State<'_, Arc<DbPool>>,
@@ -447,15 +456,19 @@ pub async fn download_artist_missing(
             .build()
             .unwrap_or_default();
 
-        let release_id = match client.get(&detail_url).send().await {
+        // Capture the release-group title too — used as the album name fallback so
+        // distinct un-matched releases don't all collapse into one "Unknown Album" (B4).
+        let (release_id, rg_title) = match client.get(&detail_url).send().await {
             Ok(resp) => {
                 let json: serde_json::Value = resp.json().await.unwrap_or_default();
-                json["releases"].as_array()
+                let rid = json["releases"].as_array()
                     .and_then(|arr| arr.first())
                     .and_then(|r| r["id"].as_str())
-                    .map(|s| s.to_string())
+                    .map(|s| s.to_string());
+                let title = json["title"].as_str().map(|s| s.to_string());
+                (rid, title)
             }
-            Err(_) => None,
+            Err(_) => (None, None),
         };
 
         let Some(release_id) = release_id else { continue };
@@ -524,7 +537,9 @@ pub async fn download_artist_missing(
                         .map(|s| s.to_string())
                 })
             };
-            let album_title = album_title_from_rg.unwrap_or_else(|| "Unknown Album".to_string());
+            let album_title = album_title_from_rg
+                .or_else(|| rg_title.clone())
+                .unwrap_or_else(|| "Unknown Album".to_string());
             let aid = crate::db::albums::find_or_create(
                 &conn,
                 &album_title,

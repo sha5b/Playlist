@@ -95,10 +95,15 @@ fn parse_lsblk_json(json_str: &str) -> Result<Vec<DetectedDevice>, String> {
         let uuid = device.get("uuid").and_then(|v| v.as_str()).unwrap_or("");
         let size_str = device.get("size").and_then(|v| v.as_str()).unwrap_or("");
 
-        let uid = if !serial.unwrap_or("").is_empty() {
-            format!("{}:{}", serial.unwrap_or(""), uuid)
+        // Key device identity on the filesystem UUID first — it's stable and matches
+        // what the mount-scan fallback derives, so the same stick keeps ONE identity
+        // regardless of which detection path ran (fixes recurring full re-syncs).
+        let uid = if !uuid.is_empty() {
+            format!("uuid:{}", uuid)
+        } else if !serial.unwrap_or("").is_empty() {
+            format!("serial:{}", serial.unwrap_or(""))
         } else {
-            format!("{}:{}:{}", label, uuid, size_str)
+            format!("label:{}:{}", label, size_str)
         };
 
         let name = if !label.is_empty() {
@@ -182,7 +187,11 @@ async fn detect_linux_scan_mounts() -> Result<Vec<DetectedDevice>, String> {
                 if mount_path.is_dir() {
                     let name = entry.file_name().to_string_lossy().to_string();
                     let (capacity, free) = get_fs_stats(&mount_path);
-                    let uid = format!("mount:{}:{}", name, capacity.unwrap_or(0));
+                    // Prefer the filesystem UUID so this matches the lsblk path's identity;
+                    // only fall back to the (stable) mount name if the UUID can't be read.
+                    let uid = fs_uuid_for_mount(&mount_path.to_string_lossy())
+                        .map(|u| format!("uuid:{}", u))
+                        .unwrap_or_else(|| format!("mount:{}", name));
                     devices.push(DetectedDevice {
                         device_uid: uid,
                         name,
@@ -321,7 +330,40 @@ async fn detect_windows() -> Result<Vec<DetectedDevice>, String> {
     Ok(devices)
 }
 
-fn get_fs_stats(path: &Path) -> (Option<i64>, Option<i64>) {
+/// Resolve the filesystem UUID backing a mount point (Linux only) by matching the
+/// mounted device from /proc/mounts against the symlinks in /dev/disk/by-uuid.
+/// Used so the mount-scan fallback produces the same device identity as the lsblk path.
+#[cfg(target_os = "linux")]
+fn fs_uuid_for_mount(mount_path: &str) -> Option<String> {
+    let mounts = std::fs::read_to_string("/proc/mounts").ok()?;
+    let mut device: Option<String> = None;
+    for line in mounts.lines() {
+        let mut parts = line.split_whitespace();
+        let dev = match parts.next() {
+            Some(d) => d,
+            None => continue,
+        };
+        // /proc/mounts escapes spaces as \040 in the mount point field.
+        let mp = parts.next().unwrap_or("").replace("\\040", " ");
+        if mp == mount_path {
+            device = Some(dev.to_string());
+            break;
+        }
+    }
+    let canon_dev = std::fs::canonicalize(device?).ok()?;
+    for entry in std::fs::read_dir("/dev/disk/by-uuid").ok()?.flatten() {
+        if let Ok(target) = std::fs::canonicalize(entry.path()) {
+            if target == canon_dev {
+                return entry.file_name().to_str().map(|s| s.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Returns (total_bytes, free_bytes) for the filesystem containing `path`.
+/// Unix-only; returns (None, None) on other platforms or on error.
+pub fn get_fs_stats(path: &Path) -> (Option<i64>, Option<i64>) {
     #[cfg(unix)]
     {
         use std::ffi::CString;

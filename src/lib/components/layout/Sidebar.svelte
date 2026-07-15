@@ -163,7 +163,7 @@
 					<Tooltip.Trigger>
 						<a
 							href="/metadata"
-							class="flex items-center justify-center rounded-lg p-2 transition-colors text-amber-400"
+							class="flex items-center justify-center rounded-lg p-2 transition-colors text-warning"
 						>
 							<Sparkles class="size-4 shrink-0 animate-pulse" />
 						</a>
@@ -175,7 +175,7 @@
 			{:else}
 				<a
 					href="/metadata"
-					class="flex flex-col gap-1 rounded-lg px-3 py-2 text-sm transition-colors text-amber-400 hover:bg-sidebar-accent/50"
+					class="flex flex-col gap-1 rounded-lg px-3 py-2 text-sm transition-colors text-warning hover:bg-sidebar-accent/50"
 				>
 					<div class="flex items-center gap-3">
 						<Sparkles class="size-4 shrink-0 animate-pulse" />
@@ -183,14 +183,14 @@
 					</div>
 					{#if pct > 0 || subtitle}
 						<div class="ml-7 flex flex-col gap-0.5">
-							<div class="h-1 w-full rounded-full bg-amber-400/20">
+							<div class="h-1 w-full rounded-full bg-warning/20">
 								<div
-									class="h-1 rounded-full bg-amber-400 transition-all"
+									class="h-1 rounded-full bg-warning transition-all"
 									style="width: {pct}%"
 								></div>
 							</div>
 							{#if subtitle}
-								<span class="text-[10px] text-amber-400/70 truncate">{subtitle}</span>
+								<span class="text-[10px] text-warning/70 truncate">{subtitle}</span>
 							{/if}
 						</div>
 					{/if}

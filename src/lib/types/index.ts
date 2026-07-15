@@ -328,7 +328,8 @@ export interface EnrichResult {
 export interface EnrichAlbumResult {
 	album_id: number;
 	fields_updated: number;
-	tracks_added: number;
+	/** Size of the discovered canonical tracklist (not tracks inserted into the library). */
+	tracklist_size: number;
 	tracklist: AlbumTrackInfo[];
 }
 

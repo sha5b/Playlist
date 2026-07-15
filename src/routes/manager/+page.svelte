@@ -22,6 +22,7 @@
 		retryDownload,
 		getDownloadHistory,
 		clearHistory,
+		stopAllDownloads,
 	} from '$lib/api/downloads';
 	import {
 		getMonitoredPlaylists,
@@ -185,6 +186,17 @@
 			toast.success('Download retried');
 		} catch (e) {
 			toast.error('Failed to retry', { description: String(e) });
+		}
+	}
+
+	async function handleStopAllDownloads() {
+		try {
+			await stopAllDownloads();
+			downloadStore.reset();
+			await loadPlaylists();
+			toast.success('Stopped all downloads');
+		} catch (e) {
+			toast.error('Failed to stop downloads', { description: String(e) });
 		}
 	}
 
@@ -403,11 +415,13 @@
 	}
 
 	// --- Derived state ---
+	// `activeDownloads` is a bounded render window; `activeCount` is the true total.
 	const activeDownloads = $derived(
 		downloadStore.downloads.filter(
 			(d) => d.status === 'queued' || d.status === 'downloading' || d.status === 'processing'
 		)
 	);
+	const activeCount = $derived(downloadStore.activeCount);
 	const allCompletedDownloads = $derived(
 		downloadStore.downloads.filter(
 			(d) => d.status === 'completed' || d.status === 'failed' || d.status === 'cancelled'
@@ -445,8 +459,8 @@
 
 <div class="flex-1 min-h-0 overflow-y-auto space-y-6">
 	<div>
-		<h1 class="text-2xl font-bold tracking-tight">Manager</h1>
-		<p class="text-sm text-muted-foreground/70 mt-0.5">
+		<h1 class="text-3xl font-bold tracking-tight">Manager</h1>
+		<p class="text-muted-foreground mt-1">
 			Track playlists and download music
 		</p>
 	</div>
@@ -510,8 +524,8 @@
 					<Tabs.Trigger value="downloads" class="gap-1.5">
 						<Download class="size-4" />
 						Downloads
-						{#if activeDownloads.length > 0}
-							<Badge variant="secondary" class="ml-1 h-5 min-w-5 px-1 text-xs">{activeDownloads.length}</Badge>
+						{#if activeCount > 0}
+							<Badge variant="secondary" class="ml-1 h-5 min-w-5 px-1 text-xs">{activeCount}</Badge>
 						{/if}
 					</Tabs.Trigger>
 					<Tabs.Trigger value="history" class="gap-1.5">
@@ -562,6 +576,7 @@
 					bind:urlInput
 					{submitting}
 					{activeDownloads}
+					{activeCount}
 					{allCompletedDownloads}
 					{groupedActiveDownloads}
 					bind:completedPage
@@ -569,6 +584,7 @@
 					onsubmit={handleSubmit}
 					oncancel={handleCancel}
 					onretry={handleRetry}
+					onstopAll={handleStopAllDownloads}
 				/>
 			</Tabs.Content>
 

@@ -112,6 +112,67 @@ fn extract_cover_from_tagged(tagged_file: &lofty::file::TaggedFile, source_path:
 }
 
 
+/// Authoritative tag values to write to a downloaded file so it's self-describing
+/// offline (correct title/artist/album/track number, not the noisy YouTube title).
+#[derive(Default)]
+pub struct TagWrite {
+    pub title: Option<String>,
+    pub artist: Option<String>,
+    pub album: Option<String>,
+    pub album_artist: Option<String>,
+    pub track_number: Option<u32>,
+    pub disc_number: Option<u32>,
+    pub year: Option<u32>,
+    pub genre: Option<String>,
+}
+
+/// Write the given tags into the audio file, preserving any existing tag/artwork.
+pub fn write_tags(path: &Path, w: &TagWrite) -> Result<(), String> {
+    use lofty::config::WriteOptions;
+    use lofty::tag::{ItemKey, Tag, TagExt};
+
+    let mut tagged = Probe::open(path)
+        .map_err(|e| format!("open failed: {}", e))?
+        .read()
+        .map_err(|e| format!("read failed: {}", e))?;
+
+    let tag_type = tagged.primary_tag_type();
+    if tagged.primary_tag().is_none() {
+        tagged.insert_tag(Tag::new(tag_type));
+    }
+    let tag = tagged
+        .primary_tag_mut()
+        .ok_or_else(|| "no writable tag".to_string())?;
+
+    if let Some(v) = &w.title {
+        tag.set_title(v.clone());
+    }
+    if let Some(v) = &w.artist {
+        tag.set_artist(v.clone());
+    }
+    if let Some(v) = &w.album {
+        tag.set_album(v.clone());
+    }
+    if let Some(v) = &w.genre {
+        tag.set_genre(v.clone());
+    }
+    if let Some(v) = w.track_number {
+        tag.set_track(v);
+    }
+    if let Some(v) = w.disc_number {
+        tag.set_disk(v);
+    }
+    if let Some(v) = w.year {
+        tag.insert_text(ItemKey::Year, v.to_string());
+    }
+    if let Some(v) = &w.album_artist {
+        tag.insert_text(ItemKey::AlbumArtist, v.clone());
+    }
+
+    tag.save_to_path(path, WriteOptions::default())
+        .map_err(|e| format!("save failed: {}", e))
+}
+
 fn simple_hash(s: &str) -> u64 {
     let mut hash: u64 = 5381;
     for byte in s.bytes() {

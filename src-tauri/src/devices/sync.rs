@@ -1,3 +1,4 @@
+use super::detect;
 use crate::db::devices as db_devices;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
@@ -54,6 +55,24 @@ pub async fn sync_playlist_to_device(
     std::fs::create_dir_all(&music_dir)
         .map_err(|e| format!("Failed to create music directory on device: {}", e))?;
 
+    // Free-space guard: estimate required bytes from source file sizes and refuse to
+    // start if the device clearly can't hold them (avoids opaque per-file copy failures).
+    // Transcoded output is usually smaller than the source, so this is conservative.
+    let estimated_bytes: u64 = tracks_to_sync
+        .iter()
+        .filter_map(|t| std::fs::metadata(&t.file_path).ok().map(|m| m.len()))
+        .sum();
+    if let (_, Some(free)) = detect::get_fs_stats(Path::new(mount_path)) {
+        // Keep a 5% headroom margin.
+        if estimated_bytes as i64 > free - (free / 20) {
+            return Err(format!(
+                "Not enough space on device: need ~{} MB but only {} MB free",
+                estimated_bytes / 1_048_576,
+                free / 1_048_576
+            ));
+        }
+    }
+
     let total = tracks_to_sync.len() as i64;
     let mut synced = 0i64;
     let mut failed = 0i64;
@@ -68,9 +87,16 @@ pub async fn sync_playlist_to_device(
                 device_id,
                 playlist_id,
                 synced,
-                skipped: total - synced - failed - (total - i as i64),
+                skipped: total - i as i64, // tracks not yet attempted
                 failed,
             });
+        }
+
+        // Detect mid-sync disconnect and abort cleanly rather than failing every
+        // remaining track against a dead mount point.
+        if !Path::new(mount_path).exists() {
+            emit_progress(&app_handle, device_id, playlist_id, i as i64, total, &track.title, "error", Some("Device disconnected".into()));
+            return Err("Device disconnected during sync".to_string());
         }
 
         let source_path = Path::new(&track.file_path);
@@ -104,7 +130,9 @@ pub async fn sync_playlist_to_device(
         let filename = if track_num > 0 {
             format!("{:02} - {}.{}", track_num, title, dest_ext)
         } else {
-            format!("{}.{}", title, dest_ext)
+            // No track number — disambiguate by track id so distinct tracks that share a
+            // title don't sanitize to the same path and overwrite each other on the device.
+            format!("{} [{}].{}", title, track.id, dest_ext)
         };
 
         let dest_dir = music_dir.join(&artist_name).join(&album_title);
@@ -115,11 +143,13 @@ pub async fn sync_playlist_to_device(
         }
 
         let dest_path = dest_dir.join(&filename);
+        // Path recorded for the M3U must be relative to the music_dir (where the M3U
+        // lives), using forward slashes — not relative to the mount root, which would
+        // double the music-dir segment and break the playlist on the device.
         let relative_path = dest_path
-            .strip_prefix(mount_path)
-            .unwrap_or(&dest_path)
-            .to_string_lossy()
-            .to_string();
+            .strip_prefix(&music_dir)
+            .map(|p| p.to_string_lossy().replace('\\', "/"))
+            .unwrap_or_else(|_| filename.clone());
 
         let result = if needs_conversion {
             transcode_file(source_path, &dest_path, &device.output_format, &device.output_bitrate, ffmpeg_path.as_deref()).await
@@ -176,9 +206,16 @@ pub async fn sync_playlist_to_device(
 }
 
 async fn copy_file(src: &Path, dest: &Path) -> Result<(), String> {
-    tokio::fs::copy(src, dest)
+    // Copy to a temp file then atomically rename, so a disconnect mid-copy leaves a
+    // stray ".part" file rather than a truncated file masquerading as a real track.
+    let tmp = dest.with_extension("part");
+    if let Err(e) = tokio::fs::copy(src, &tmp).await {
+        let _ = tokio::fs::remove_file(&tmp).await;
+        return Err(format!("Copy failed: {}", e));
+    }
+    tokio::fs::rename(&tmp, dest)
         .await
-        .map_err(|e| format!("Copy failed: {}", e))?;
+        .map_err(|e| format!("Finalize failed: {}", e))?;
     Ok(())
 }
 
@@ -315,14 +352,33 @@ fn emit_progress(
 }
 
 fn sanitize_filename(name: &str) -> String {
-    name.chars()
+    // Replace characters illegal on FAT32/exFAT/NTFS plus control chars, strip trailing
+    // dots/spaces (Windows removes them), avoid reserved DOS device names, and never
+    // return an empty string.
+    let mut s: String = name
+        .chars()
         .map(|c| match c {
             '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
-            _ => c,
+            c if (c as u32) < 0x20 => '_',
+            c => c,
         })
         .collect::<String>()
         .trim()
-        .to_string()
+        .trim_end_matches('.')
+        .trim()
+        .to_string();
+
+    const RESERVED: &[&str] = &[
+        "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7",
+        "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+    ];
+    if RESERVED.contains(&s.to_ascii_uppercase().as_str()) {
+        s.push('_');
+    }
+    if s.is_empty() {
+        s.push_str("untitled");
+    }
+    s
 }
 
 fn resolve_ffmpeg(app_handle: &AppHandle) -> Option<String> {

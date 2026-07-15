@@ -170,7 +170,7 @@
 			<div class="space-y-2">
 				<div class="flex items-center gap-2">
 					<p class="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Song</p>
-					<span class="text-xs font-medium {track.metadata_completeness >= 80 ? 'text-green-500' : track.metadata_completeness >= 50 ? 'text-yellow-500' : 'text-red-500'}">
+					<span class="text-xs font-medium {track.metadata_completeness >= 80 ? 'text-success' : track.metadata_completeness >= 50 ? 'text-warning' : 'text-destructive'}">
 						{track.metadata_completeness}% metadata
 					</span>
 				</div>

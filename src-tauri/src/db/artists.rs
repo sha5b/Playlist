@@ -64,18 +64,6 @@ pub fn find_or_create(conn: &Connection, name: &str) -> Result<i64, rusqlite::Er
     Ok(conn.last_insert_rowid())
 }
 
-pub fn update_image_if_missing(
-    conn: &Connection,
-    artist_id: i64,
-    image_path: &str,
-) -> Result<(), rusqlite::Error> {
-    conn.execute(
-        "UPDATE artists SET image_path = ?1 WHERE id = ?2 AND image_path IS NULL",
-        params![image_path, artist_id],
-    )?;
-    Ok(())
-}
-
 pub fn get_artists(conn: &Connection, offset: i64, limit: i64, search: Option<&str>) -> Result<(Vec<Artist>, i64), rusqlite::Error> {
     let (having_clause, pattern) = match search {
         Some(q) if !q.trim().is_empty() => {

@@ -8,7 +8,8 @@
 	import { player } from '$lib/stores/player.svelte';
 	import { ArrowLeft, Users, Disc, Play, Shuffle, Loader2, Sparkles, Download, Check } from 'lucide-svelte';
 	import { toast } from 'svelte-sonner';
-	import { assetUrl, shuffleArray } from '$lib/utils/format';
+	import { shuffleArray } from '$lib/utils/format';
+	import CoverArt from '$lib/components/shared/CoverArt.svelte';
 	import { listen } from '@tauri-apps/api/event';
 	import { onMount } from 'svelte';
 	import type { Artist, Album, Track } from '$lib/types';
@@ -177,15 +178,13 @@
 	{:else if artist}
 		<div class="flex gap-6 items-end">
 			<div class="size-48 rounded-full bg-muted flex items-center justify-center overflow-hidden shrink-0 shadow-lg">
-				{#if artist.image_path}
-					<img
-						src={assetUrl(artist.image_path)}
-						alt={artist.name}
-						class="size-full object-cover"
-					/>
-				{:else}
-					<Users class="size-16 text-muted-foreground" />
-				{/if}
+				<CoverArt
+					src={artist.image_path}
+					alt={artist.name}
+					class="size-full object-cover"
+					iconClass="size-16 text-muted-foreground"
+					icon={Users}
+				/>
 			</div>
 			<div class="space-y-2">
 				<p class="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Artist</p>
@@ -241,21 +240,21 @@
 						<a href="/library/albums/{album.id}" class="group rounded-lg p-2 -m-2 transition-colors hover:bg-muted/30">
 							<div class="relative aspect-square rounded-lg bg-muted flex items-center justify-center overflow-hidden mb-2">
 								{#if album.cover_art_path}
-									<img
-										src={assetUrl(album.cover_art_path)}
+									<CoverArt
+										src={album.cover_art_path}
 										alt={album.title}
 										class="size-full object-cover group-hover:scale-105 transition-transform"
-										loading="lazy"
+										iconClass="size-8 text-muted-foreground"
 									/>
 								{:else}
 									<Disc class="size-12 text-muted-foreground" />
 								{/if}
 								{#if downloadStatuses[String(album.id)]?.status === 'complete'}
-									<div class="absolute top-1.5 right-1.5 flex items-center justify-center size-5 rounded-full bg-green-500 text-white">
+									<div class="absolute top-1.5 right-1.5 flex items-center justify-center size-5 rounded-full bg-success text-white">
 										<Check class="size-3" />
 									</div>
 								{:else if downloadStatuses[String(album.id)]?.status === 'partial'}
-									<div class="absolute top-1.5 right-1.5 rounded-full bg-yellow-500/90 text-white text-[10px] font-bold px-1.5 py-0.5 leading-none">
+									<div class="absolute top-1.5 right-1.5 rounded-full bg-warning/90 text-white text-[10px] font-bold px-1.5 py-0.5 leading-none">
 										{downloadStatuses[String(album.id)].total_local}/{downloadStatuses[String(album.id)].total_expected}
 									</div>
 								{/if}

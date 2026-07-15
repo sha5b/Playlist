@@ -118,7 +118,7 @@
 			</div>
 		</div>
 	{:else}
-		<div class="p-6 space-y-8">
+		<div class="space-y-8">
 			<!-- Hero: Current Track -->
 			<div class="flex gap-8 items-start">
 				<!-- Artwork always visible -->

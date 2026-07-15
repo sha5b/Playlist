@@ -20,7 +20,7 @@
 		ArrowDownToLine,
 		Square,
 	} from 'lucide-svelte';
-	import type { MonitoredPlaylist, MonitoredEntry } from '$lib/types';
+	import type { MonitoredPlaylist, MonitoredEntry, Download as DownloadType } from '$lib/types';
 	import { assetUrl, formatSeconds, timeAgo, platformLabel, platformColor } from '$lib/utils/format';
 
 	let {
@@ -65,7 +65,7 @@
 		entriesPage: number;
 		entriesPageSize: number;
 		retryingAll: boolean;
-		activeDownloads: { length: number };
+		activeDownloads: DownloadType[];
 		totalNewAcrossPlaylists: number;
 		onaddPlaylist: () => void;
 		onsyncPlaylist: (id: number) => void;
@@ -87,19 +87,25 @@
 
 	function entryStatusColor(status: string): string {
 		switch (status) {
-			case 'downloaded': return 'text-green-500';
-			case 'new': return 'text-blue-400';
+			case 'downloaded': return 'text-success';
+			case 'new': return 'text-info';
 			case 'queued': return 'text-muted-foreground';
-			case 'downloading': return 'text-blue-400';
+			case 'downloading': return 'text-info';
 			case 'failed': return 'text-destructive';
 			case 'skipped': return 'text-muted-foreground/60';
 			default: return 'text-muted-foreground';
 		}
 	}
 
+	// Active downloads first so it's obvious what's happening right now, then queued,
+	// then everything else.
 	const statusOrder: Record<string, number> = {
-		new: 0, queued: 1, downloading: 2, failed: 3, downloaded: 4, skipped: 5,
+		downloading: 0, queued: 1, new: 2, failed: 3, downloaded: 4, skipped: 5,
 	};
+	// Live download progress keyed by download_id, for per-entry progress bars.
+	const progressByDownloadId = $derived(
+		new Map(activeDownloads.map((d) => [d.id, d.progress]))
+	);
 	const sortedEntries = $derived(
 		[...selectedEntries].sort((a, b) => (statusOrder[a.status] ?? 9) - (statusOrder[b.status] ?? 9))
 	);
@@ -140,11 +146,11 @@
 					<span>{selectedEntries.length} total</span>
 					{#if downloadedEntries.length > 0}
 						<span class="opacity-40">&middot;</span>
-						<span class="text-green-500">{downloadedEntries.length} downloaded</span>
+						<span class="text-success">{downloadedEntries.length} downloaded</span>
 					{/if}
 					{#if downloadingEntries.length > 0}
 						<span class="opacity-40">&middot;</span>
-						<span class="text-blue-400">{downloadingEntries.length} downloading</span>
+						<span class="text-info">{downloadingEntries.length} downloading</span>
 					{/if}
 					{#if queuedEntries.length > 0}
 						<span class="opacity-40">&middot;</span>
@@ -152,7 +158,7 @@
 					{/if}
 					{#if newEntries.length > 0}
 						<span class="opacity-40">&middot;</span>
-						<span class="text-blue-400">{newEntries.length} new</span>
+						<span class="text-info">{newEntries.length} new</span>
 					{/if}
 					{#if failedEntries.length > 0}
 						<span class="opacity-40">&middot;</span>
@@ -220,19 +226,19 @@
 				</div>
 				<div class="divide-y divide-border/40">
 					{#each paginatedEntries as entry, i (entry.id)}
-						<div class="flex items-center px-4 py-2.5 hover:bg-muted/30 transition-colors group">
+						<div class="flex items-center px-4 py-2.5 transition-colors group border-l-2 {entry.status === 'downloading' ? 'bg-primary/5 border-primary' : 'border-transparent hover:bg-muted/30'}">
 							<div class="w-8 text-center text-xs text-muted-foreground tabular-nums">
 								{entriesPage * entriesPageSize + i + 1}
 							</div>
 							<div class="w-7 flex items-center justify-center">
 								{#if entry.status === 'downloaded'}
-									<CheckCircle2 class="size-4 text-green-500" />
+									<CheckCircle2 class="size-4 text-success" />
 								{:else if entry.status === 'new'}
-									<div class="size-2.5 rounded-full bg-blue-400"></div>
+									<div class="size-2.5 rounded-full bg-info"></div>
 								{:else if entry.status === 'queued'}
 									<Clock class="size-3.5 text-muted-foreground" />
 								{:else if entry.status === 'downloading'}
-									<Loader2 class="size-3.5 animate-spin text-blue-400" />
+									<Loader2 class="size-3.5 animate-spin text-info" />
 								{:else if entry.status === 'failed'}
 									<XCircle class="size-4 text-destructive" />
 								{:else if entry.status === 'skipped'}
@@ -250,7 +256,13 @@
 							</div>
 							<div class="flex-1 min-w-0 pl-3">
 								<p class="text-sm truncate {entry.status === 'skipped' ? 'text-muted-foreground/50 line-through' : ''}">{entry.title || entry.source_url}</p>
-								{#if entry.artist}
+								{#if entry.status === 'downloading' && entry.download_id != null}
+									{@const prog = progressByDownloadId.get(entry.download_id) ?? 0}
+									<div class="flex items-center gap-2 mt-1">
+										<Progress value={prog} class="h-1 flex-1 max-w-[220px]" />
+										<span class="text-[10px] text-muted-foreground tabular-nums shrink-0">{Math.round(prog)}%</span>
+									</div>
+								{:else if entry.artist}
 									<p class="text-xs text-muted-foreground truncate mt-0.5">{entry.artist}</p>
 								{/if}
 							</div>
@@ -332,8 +344,8 @@
 	{#if activeDownloads.length > 0}
 		<div class="flex items-center gap-3 rounded-lg bg-muted/30 px-4 py-2.5">
 			<span class="relative flex size-2 shrink-0">
-				<span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
-				<span class="relative inline-flex rounded-full size-2 bg-blue-400"></span>
+				<span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-info opacity-75"></span>
+				<span class="relative inline-flex rounded-full size-2 bg-info"></span>
 			</span>
 			<span class="text-sm text-muted-foreground">
 				{activeDownloads.length} download{activeDownloads.length !== 1 ? 's' : ''} in progress
@@ -369,7 +381,7 @@
 	</div>
 
 	{#if playlists.length === 0}
-		<div class="flex flex-col items-center justify-center py-20 rounded-xl border border-dashed border-border/40 gap-5">
+		<div class="flex flex-col items-center justify-center py-20 rounded-xl border border-dashed border-border/60 gap-4">
 			<div class="size-16 rounded-2xl bg-muted/30 flex items-center justify-center">
 				<ListMusic class="size-8 text-muted-foreground/30" />
 			</div>
@@ -423,7 +435,7 @@
 								<div class="h-full bg-primary transition-all" style="width: {pct}%"></div>
 							</div>
 						{:else if pct === 100}
-							<div class="absolute bottom-0 left-0 right-0 h-1 bg-green-500"></div>
+							<div class="absolute bottom-0 left-0 right-0 h-1 bg-success"></div>
 						{/if}
 					</div>
 					<div class="p-3 space-y-1.5">
@@ -485,7 +497,7 @@
 							}"></span>
 							<span class="truncate flex-1">{pl.name}</span>
 							{#if pl.downloaded_count > 0}
-								<CheckCircle2 class="size-3.5 text-green-500/60 shrink-0" />
+								<CheckCircle2 class="size-3.5 text-success/60 shrink-0" />
 							{:else if pl.new_count > 0}
 								<Button variant="ghost" size="icon-sm" class="size-6 shrink-0" onclick={(e) => { e.stopPropagation(); ondownloadAllNew(pl.id); }}>
 									<ArrowDownToLine class="size-3" />

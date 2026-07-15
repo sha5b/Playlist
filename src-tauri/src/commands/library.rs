@@ -680,13 +680,12 @@ pub fn library_import_folder(
                 fts_ids.push(conn.last_insert_rowid());
                 imported += 1;
 
-                // Propagate cover art to album and artist
+                // Propagate cover art to the album only — the embedded image is album/track
+                // art, not an artist photo, and setting it here would permanently block the
+                // real artist photo enrichment fetches later (fix A1).
                 if let Some(ref cover) = cover_art_path {
                     if let Some(aid) = album_id {
                         let _ = crate::db::albums::update_cover_art_if_missing(&conn, aid, cover);
-                    }
-                    if let Some(aid) = artist_id {
-                        let _ = crate::db::artists::update_image_if_missing(&conn, aid, cover);
                     }
                 }
                 // Propagate album metadata from tags

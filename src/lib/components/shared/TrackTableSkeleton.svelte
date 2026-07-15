@@ -4,7 +4,7 @@
 	let { rows = 8 }: { rows?: number } = $props();
 </script>
 
-<div class="rounded-lg border border-border overflow-hidden">
+<div class="rounded-xl border border-border/60 overflow-hidden">
 	<table class="w-full">
 		<thead>
 			<tr class="border-b border-border bg-muted/30 text-xs text-muted-foreground uppercase tracking-wider">
@@ -17,7 +17,7 @@
 		</thead>
 		<tbody>
 			{#each Array(rows) as _, i}
-				<tr class="border-b border-border/50">
+				<tr class="border-b border-border/40">
 					<td class="w-12 px-4 py-2.5 text-center">
 						<Skeleton class="h-4 w-4 mx-auto" />
 					</td>

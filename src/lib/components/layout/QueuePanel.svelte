@@ -2,7 +2,8 @@
 	import { Button } from '$lib/components/ui/button';
 	import { X, Music, Trash2, ListPlus, SkipBack } from 'lucide-svelte';
 	import { player } from '$lib/stores/player.svelte';
-	import { formatDuration, assetUrl } from '$lib/utils/format';
+	import { formatDuration } from '$lib/utils/format';
+	import CoverArt from '$lib/components/shared/CoverArt.svelte';
 	import { hasDragData, processQueueDrop } from '$lib/utils/queueDrop';
 	import DndQueueList from '$lib/components/player/DndQueueList.svelte';
 
@@ -119,16 +120,13 @@
 							onclick={() => player.prev()}
 						>
 							<div class="size-8 shrink-0 rounded bg-muted flex items-center justify-center overflow-hidden">
-								{#if player.previousTrack.cover_art_path}
-									<img
-										src={assetUrl(player.previousTrack.cover_art_path)}
-										alt=""
-										class="size-full object-cover"
-										loading="lazy"
-									/>
-								{:else}
-									<Music class="size-3.5 text-muted-foreground" />
-								{/if}
+								<CoverArt
+									src={player.previousTrack.cover_art_path}
+									alt=""
+									class="size-full object-cover"
+									iconClass="size-3.5 text-muted-foreground"
+									icon={Music}
+								/>
 							</div>
 							<div class="min-w-0 flex-1">
 								<p class="text-xs font-medium truncate text-muted-foreground">
@@ -148,16 +146,13 @@
 						</div>
 						<div class="flex items-center gap-2 px-2 py-1.5 rounded-md bg-primary/10">
 							<div class="size-8 shrink-0 rounded bg-muted flex items-center justify-center overflow-hidden">
-								{#if player.currentTrack.cover_art_path}
-									<img
-										src={assetUrl(player.currentTrack.cover_art_path)}
-										alt=""
-										class="size-full object-cover"
-										loading="lazy"
-									/>
-								{:else}
-									<Music class="size-3.5 text-muted-foreground" />
-								{/if}
+								<CoverArt
+									src={player.currentTrack.cover_art_path}
+									alt=""
+									class="size-full object-cover"
+									iconClass="size-3.5 text-muted-foreground"
+									icon={Music}
+								/>
 							</div>
 							<div class="min-w-0 flex-1">
 								<p class="text-xs font-medium truncate text-primary">

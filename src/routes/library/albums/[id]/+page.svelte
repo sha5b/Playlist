@@ -6,7 +6,8 @@
 	import TrackTable from '$lib/components/library/TrackTable.svelte';
 	import { Button } from '$lib/components/ui/button';
 	import { player } from '$lib/stores/player.svelte';
-	import { formatDurationLong, assetUrl, shuffleArray } from '$lib/utils/format';
+	import { formatDurationLong, shuffleArray } from '$lib/utils/format';
+	import CoverArt from '$lib/components/shared/CoverArt.svelte';
 	import { ArrowLeft, Disc, Play, Shuffle, Loader2, Sparkles, Download, Trash2 } from 'lucide-svelte';
 	import { toast } from 'svelte-sonner';
 	import { listen } from '@tauri-apps/api/event';
@@ -203,15 +204,12 @@
 	{:else if album}
 		<div class="flex gap-6 items-end">
 			<div class="size-48 rounded-lg bg-muted flex items-center justify-center overflow-hidden shrink-0 shadow-lg">
-				{#if album.cover_art_path}
-					<img
-						src={assetUrl(album.cover_art_path)}
-						alt={album.title}
-						class="size-full object-cover"
-					/>
-				{:else}
-					<Disc class="size-16 text-muted-foreground" />
-				{/if}
+				<CoverArt
+					src={album.cover_art_path}
+					alt={album.title}
+					class="size-full object-cover"
+					iconClass="size-16 text-muted-foreground"
+				/>
 			</div>
 			<div class="space-y-2">
 				<p class="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Album</p>

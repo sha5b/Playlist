@@ -73,9 +73,9 @@
 	{#if loading}
 		<CardGridSkeleton />
 	{:else if playlists.length === 0}
-		<div class="flex flex-col items-center justify-center py-24 rounded-xl border border-dashed border-border/60 gap-4">
-			<div class="size-16 rounded-2xl bg-muted/50 flex items-center justify-center">
-				<Music2 class="size-8 text-muted-foreground" />
+		<div class="flex flex-col items-center justify-center py-20 rounded-xl border border-dashed border-border/60 gap-4">
+			<div class="size-16 rounded-2xl bg-muted/30 flex items-center justify-center">
+				<Music2 class="size-8 text-muted-foreground/30" />
 			</div>
 			<div class="text-center space-y-1">
 				<p class="text-muted-foreground font-medium">No playlists yet</p>
@@ -89,7 +89,7 @@
 	{:else}
 		<div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
 			{#each playlists as playlist}
-				<a href="/library/playlists/{playlist.id}" class="group rounded-xl transition-all duration-200 hover:bg-muted/40 p-2.5 -m-0.5">
+				<a href="/library/playlists/{playlist.id}" class="group rounded-xl transition-all duration-200 hover:bg-muted/30 p-2.5 -m-0.5">
 					<div class="aspect-square rounded-lg bg-muted/80 flex items-center justify-center overflow-hidden mb-3 relative shadow-sm group-hover:shadow-md transition-shadow">
 						{#if playlist.cover_art_path}
 							<img

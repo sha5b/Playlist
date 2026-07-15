@@ -146,7 +146,7 @@
 		</div>
 		<div class="flex items-center gap-2">
 			{#if active}
-				<Badge variant="outline" class="gap-1.5 border-amber-400/40 text-amber-400 py-1">
+				<Badge variant="outline" class="gap-1.5 border-warning/40 text-warning py-1">
 					<Loader2 class="size-3 animate-spin" />
 					{#if scanning && scanProgress}
 						Scanning {scanProgress.current}/{scanProgress.total}
@@ -192,8 +192,8 @@
 			<Card.Root class="border-border/60">
 				<Card.Content class="p-4">
 					<div class="flex items-center gap-2 mb-2">
-						<div class="size-8 rounded-lg flex items-center justify-center {stats.average_completeness >= 70 ? 'bg-green-500/10' : stats.average_completeness >= 40 ? 'bg-amber-500/10' : 'bg-red-500/10'}">
-							<TrendingUp class="size-4 {stats.average_completeness >= 70 ? 'text-green-500' : stats.average_completeness >= 40 ? 'text-amber-500' : 'text-red-500'}" />
+						<div class="size-8 rounded-lg flex items-center justify-center {stats.average_completeness >= 70 ? 'bg-success/10' : stats.average_completeness >= 40 ? 'bg-warning/10' : 'bg-destructive/10'}">
+							<TrendingUp class="size-4 {stats.average_completeness >= 70 ? 'text-success' : stats.average_completeness >= 40 ? 'text-warning' : 'text-destructive'}" />
 						</div>
 					</div>
 					<div class="flex items-baseline gap-1">
@@ -209,22 +209,22 @@
 			<Card.Root class="border-border/60">
 				<Card.Content class="p-4">
 					<div class="flex items-center gap-2 mb-2">
-						<div class="size-8 rounded-lg bg-green-500/10 flex items-center justify-center">
-							<CircleCheck class="size-4 text-green-500" />
+						<div class="size-8 rounded-lg bg-success/10 flex items-center justify-center">
+							<CircleCheck class="size-4 text-success" />
 						</div>
 					</div>
-					<div class="text-2xl font-bold text-green-500 tabular-nums">{stats.complete_tracks}</div>
+					<div class="text-2xl font-bold text-success tabular-nums">{stats.complete_tracks}</div>
 					<div class="text-xs text-muted-foreground mt-0.5">Complete ({'\u2265'}80%)</div>
 				</Card.Content>
 			</Card.Root>
 			<Card.Root class="border-border/60">
 				<Card.Content class="p-4">
 					<div class="flex items-center gap-2 mb-2">
-						<div class="size-8 rounded-lg bg-red-500/10 flex items-center justify-center">
-							<CircleAlert class="size-4 text-red-500" />
+						<div class="size-8 rounded-lg bg-destructive/10 flex items-center justify-center">
+							<CircleAlert class="size-4 text-destructive" />
 						</div>
 					</div>
-					<div class="text-2xl font-bold text-red-500 tabular-nums">{stats.incomplete_tracks}</div>
+					<div class="text-2xl font-bold text-destructive tabular-nums">{stats.incomplete_tracks}</div>
 					<div class="text-xs text-muted-foreground mt-0.5">Incomplete ({'<'}50%)</div>
 				</Card.Content>
 			</Card.Root>
@@ -233,9 +233,9 @@
 
 	<!-- Active Progress Banner -->
 	{#if active}
-		<div class="rounded-xl border border-amber-400/20 bg-amber-400/5 p-4">
+		<div class="rounded-xl border border-warning/20 bg-warning/5 p-4">
 			<div class="flex items-center gap-3">
-				<Sparkles class="size-5 shrink-0 text-amber-400 animate-pulse" />
+				<Sparkles class="size-5 shrink-0 text-warning animate-pulse" />
 				<div class="flex-1 min-w-0">
 					{#if scanning && scanProgress}
 						<div class="flex items-center justify-between text-sm mb-1.5">
@@ -279,18 +279,18 @@
 				<!-- Session summary badges -->
 				{#if feed.length > 0}
 					<div class="flex items-center gap-1.5 mr-2">
-						<Badge variant="outline" class="gap-1 text-green-500 border-green-500/30 py-0.5">
+						<Badge variant="outline" class="gap-1 text-success border-success/30 py-0.5">
 							<CheckCircle2 class="size-3" />
 							{successCount}
 						</Badge>
 						{#if partialCount > 0}
-							<Badge variant="outline" class="gap-1 text-amber-400 border-amber-400/30 py-0.5">
+							<Badge variant="outline" class="gap-1 text-warning border-warning/30 py-0.5">
 								<AlertTriangle class="size-3" />
 								{partialCount}
 							</Badge>
 						{/if}
 						{#if failedCount > 0}
-							<Badge variant="outline" class="gap-1 text-red-500 border-red-500/30 py-0.5">
+							<Badge variant="outline" class="gap-1 text-destructive border-destructive/30 py-0.5">
 								<XCircle class="size-3" />
 								{failedCount}
 							</Badge>
@@ -356,9 +356,9 @@
 							<!-- Status icon -->
 							<div
 								class="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-full
-									{item.status === 'success' ? 'bg-green-500/10 text-green-500' :
-									 item.status === 'partial' ? 'bg-amber-400/10 text-amber-400' :
-									 'bg-red-500/10 text-red-500'}"
+									{item.status === 'success' ? 'bg-success/10 text-success' :
+									 item.status === 'partial' ? 'bg-warning/10 text-warning' :
+									 'bg-destructive/10 text-destructive'}"
 							>
 								{#if item.status === 'success'}
 									<CheckCircle2 class="size-3.5" />
@@ -395,8 +395,8 @@
 											{#if fields.length > 0}
 												<div class="flex items-center gap-1.5">
 													{#if source === 'musicbrainz'}
-														<Database class="size-3 text-blue-400" />
-														<span class="text-[10px] font-medium text-blue-400">MusicBrainz</span>
+														<Database class="size-3 text-info" />
+														<span class="text-[10px] font-medium text-info">MusicBrainz</span>
 													{:else if source === 'lastfm'}
 														<Radio class="size-3 text-red-400" />
 														<span class="text-[10px] font-medium text-red-400">Last.fm</span>

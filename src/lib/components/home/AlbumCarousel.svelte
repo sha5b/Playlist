@@ -2,7 +2,7 @@
 	import { ScrollArea } from '$lib/components/ui/scroll-area';
 	import { Button } from '$lib/components/ui/button';
 	import { Play, ListPlus, Disc, Loader2 } from 'lucide-svelte';
-	import { assetUrl } from '$lib/utils/format';
+	import CoverArt from '$lib/components/shared/CoverArt.svelte';
 	import { player } from '$lib/stores/player.svelte';
 	import { getAlbumTracks } from '$lib/api/library';
 	import { toast } from 'svelte-sonner';
@@ -70,22 +70,17 @@
 				<div class="flex gap-2.5 pb-1">
 					{#each albums as album (album.id)}
 						<button
-							class="flex-shrink-0 w-[140px] group text-left rounded-lg p-1.5 transition-colors hover:bg-muted/40"
+							class="flex-shrink-0 w-[140px] group text-left rounded-lg p-1.5 transition-colors hover:bg-muted/30"
 							onclick={() => playAlbum(album.id)}
 							aria-label={`Play ${album.title || 'album'}`}
 						>
 							<div class="aspect-square w-full rounded-md overflow-hidden bg-muted/60 mb-1.5 relative">
-								{#if album.cover_art_path}
-									<img
-										src={assetUrl(album.cover_art_path)}
-										alt={album.title}
-										class="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
-									/>
-								{:else}
-									<div class="w-full h-full flex items-center justify-center">
-										<Disc class="size-7 text-muted-foreground/40" />
-									</div>
-								{/if}
+								<CoverArt
+									src={album.cover_art_path}
+									alt={album.title}
+									class="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+									iconClass="size-7 text-muted-foreground/40"
+								/>
 								<div class="absolute inset-0 bg-black/0 group-hover:bg-black/25 transition-colors flex items-center justify-center">
 									<Play class="size-8 text-white opacity-0 group-hover:opacity-100 transition-opacity drop-shadow-lg" />
 								</div>

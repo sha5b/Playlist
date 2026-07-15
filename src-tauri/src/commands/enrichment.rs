@@ -230,7 +230,10 @@ pub async fn enrich_track(
 pub struct EnrichAlbumResult {
     pub album_id: i64,
     pub fields_updated: i64,
-    pub tracks_added: i64,
+    /// Number of tracks in the canonical tracklist we discovered and stored (for
+    /// showing the full album with placeholders). NOT tracks inserted into the library —
+    /// actual audio is only added via the download path.
+    pub tracklist_size: i64,
     pub tracklist: Vec<crate::metadata::musicbrainz::AlbumTrackInfo>,
 }
 
@@ -426,7 +429,7 @@ pub async fn enrich_album(
     }
 
     let tracklist = enrichment.tracklist.clone();
-    let tracks_added = tracklist.len() as i64;
+    let tracklist_size = tracklist.len() as i64;
 
     // Persist the enriched tracklist as JSON so it survives page reloads
     if !tracklist.is_empty() {
@@ -440,7 +443,7 @@ pub async fn enrich_album(
         }
     }
 
-    Ok(EnrichAlbumResult { album_id, fields_updated: updated, tracks_added, tracklist })
+    Ok(EnrichAlbumResult { album_id, fields_updated: updated, tracklist_size, tracklist })
 }
 
 /// Scan all tracks with low metadata completeness and enrich them

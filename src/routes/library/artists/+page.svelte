@@ -60,7 +60,7 @@
 	{#if loading && artists.length === 0}
 		<CardGridSkeleton rounded="full" />
 	{:else if artists.length === 0}
-		<div class="flex items-center justify-center h-48 rounded-lg border border-dashed border-border">
+		<div class="flex items-center justify-center h-48 rounded-xl border border-dashed border-border/60">
 			<p class="text-muted-foreground text-sm">
 				{search.query ? `No artists matching "${search.query}"` : 'No artists in your library yet'}
 			</p>

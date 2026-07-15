@@ -82,7 +82,7 @@
 	const isEmpty = $derived(!hasPlaylists && stats !== null && stats.total_tracks === 0);
 </script>
 
-<div class="flex-1 min-h-0 overflow-y-auto space-y-5 px-1">
+<div class="flex-1 min-h-0 overflow-y-auto space-y-6 px-1">
 	{#if isEmpty}
 		<WelcomeScreen onChanged={() => { loadStats(); loadPlaylists(); }} />
 	{:else}

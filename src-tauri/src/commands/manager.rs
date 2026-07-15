@@ -391,8 +391,8 @@ pub async fn manager_download_new(
     // Use a transaction for bulk inserts (fast even for thousands of entries)
     conn.execute_batch("BEGIN IMMEDIATE").map_err(|e| e.to_string())?;
 
-    let result: Result<Vec<i64>, String> = (|| {
-        let mut download_ids = Vec::new();
+    let result: Result<Vec<(i64, Option<String>)>, String> = (|| {
+        let mut download_ids: Vec<(i64, Option<String>)> = Vec::new();
         for entry in &entries {
             let parsed = crate::download::url_parser::parse_url(&entry.source_url);
             // Prefer the playlist's platform for DRM sources; fall back to URL-parsed platform
@@ -429,7 +429,7 @@ pub async fn manager_download_new(
             )
             .map_err(|e| e.to_string())?;
 
-            download_ids.push(download.id);
+            download_ids.push((download.id, entry.title.clone()));
         }
         Ok(download_ids)
     })();
@@ -439,9 +439,10 @@ pub async fn manager_download_new(
             conn.execute_batch("COMMIT").map_err(|e| e.to_string())?;
             let queued = download_ids.len() as i64;
             drop(conn);
-            // Start all downloads (concurrency semaphore limits parallel yt-dlp processes)
-            for id in download_ids {
-                manager.start_download(id, None);
+            // Start all downloads (concurrency semaphore limits parallel yt-dlp processes).
+            // Pass the title so the initial "queued" event isn't a blank "ghost" row.
+            for (id, title) in download_ids {
+                manager.start_download(id, title);
             }
             Ok(BatchDownloadResult { queued, playlist_id })
         }

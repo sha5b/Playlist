@@ -15,7 +15,10 @@
 		Clock,
 		ChevronRight,
 		ChevronLeft,
+		Info,
+		Square,
 	} from 'lucide-svelte';
+	import * as Tooltip from '$lib/components/ui/tooltip';
 	import type { Download as DownloadType } from '$lib/types';
 	import { platformLabel, platformColor } from '$lib/utils/format';
 	import type { DownloadGroup } from '$lib/utils/grouping';
@@ -24,6 +27,7 @@
 		urlInput = $bindable(),
 		submitting,
 		activeDownloads,
+		activeCount,
 		allCompletedDownloads,
 		groupedActiveDownloads,
 		completedPage = $bindable(),
@@ -31,10 +35,12 @@
 		onsubmit,
 		oncancel,
 		onretry,
+		onstopAll,
 	}: {
 		urlInput: string;
 		submitting: boolean;
 		activeDownloads: DownloadType[];
+		activeCount: number;
 		allCompletedDownloads: DownloadType[];
 		groupedActiveDownloads: DownloadGroup[];
 		completedPage: number;
@@ -42,6 +48,7 @@
 		onsubmit: () => void;
 		oncancel: (id: number) => void;
 		onretry: (id: number) => void;
+		onstopAll: () => void;
 	} = $props();
 
 	const completedTotalPages = $derived(Math.ceil(allCompletedDownloads.length / completedPageSize));
@@ -55,7 +62,7 @@
 </script>
 
 <!-- URL Input -->
-<div class="flex gap-2 max-w-2xl">
+<div class="flex gap-2">
 	<div class="relative flex-1">
 		<Link class="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" />
 		<Input
@@ -75,12 +82,37 @@
 	</Button>
 </div>
 
+<!-- Cookie hint — only while idle, since cookies should be changed when nothing is downloading -->
+{#if activeCount === 0}
+	<Tooltip.Provider delayDuration={150}>
+		<Tooltip.Root>
+			<Tooltip.Trigger class="inline-flex items-center gap-1.5 text-xs text-muted-foreground/70 hover:text-muted-foreground transition-colors">
+				<Info class="size-3.5" />
+				Downloads getting blocked? Set browser cookies
+			</Tooltip.Trigger>
+			<Tooltip.Content class="max-w-xs">
+				<p class="text-xs leading-relaxed">
+					No browser cookies are used by default. If YouTube blocks a download with a
+					bot-detection error, open <span class="font-medium">Settings → Browser Cookies</span>
+					and pick the browser you're signed into YouTube with. Best changed while nothing is downloading.
+				</p>
+			</Tooltip.Content>
+		</Tooltip.Root>
+	</Tooltip.Provider>
+{/if}
+
 <!-- Active Downloads -->
-{#if activeDownloads.length > 0}
+{#if activeCount > 0}
 	<div class="space-y-3">
-		<h2 class="text-sm font-semibold uppercase tracking-wider text-muted-foreground">
-			Active ({activeDownloads.length})
-		</h2>
+		<div class="flex items-center justify-between gap-2">
+			<h2 class="text-sm font-semibold uppercase tracking-wider text-muted-foreground">
+				Active ({activeCount})
+			</h2>
+			<Button variant="destructive" size="sm" onclick={onstopAll} class="gap-1.5">
+				<Square class="size-3.5" />
+				Stop all
+			</Button>
+		</div>
 		{#each groupedActiveDownloads as group}
 			{#if group.albumId}
 				<!-- Album group -->
@@ -92,27 +124,27 @@
 							{group.downloads.length} track{group.downloads.length !== 1 ? 's' : ''}
 						</Badge>
 					</div>
-					<div class="border-b border-border/30 bg-muted/15 text-[10px] text-muted-foreground/70 uppercase tracking-wider flex items-center px-4 py-1.5">
+					<div class="border-b border-border/40 bg-muted/15 text-xs text-muted-foreground uppercase tracking-wider flex items-center px-4 py-2">
 						<div class="w-7"></div>
 						<div class="flex-1 pl-3">Title</div>
 						<div class="w-24 text-center">Status</div>
 						<div class="w-8"></div>
 					</div>
-					<div class="divide-y divide-border/20">
+					<div class="divide-y divide-border/40">
 						{#each group.downloads.slice(0, 30) as dl (dl.id)}
-							<div class="flex items-center px-4 py-2.5 hover:bg-muted/20 transition-colors group">
+							<div class="flex items-center px-4 py-2.5 hover:bg-muted/30 transition-colors group">
 								<div class="w-7 flex items-center justify-center shrink-0">
 									{#if dl.status === 'downloading'}
-										<Loader2 class="size-3.5 animate-spin text-blue-400" />
+										<Loader2 class="size-3.5 animate-spin text-info" />
 									{:else if dl.status === 'processing'}
-										<Loader2 class="size-3.5 animate-spin text-green-500" />
+										<Loader2 class="size-3.5 animate-spin text-success" />
 									{:else}
 										<Clock class="size-3.5 text-muted-foreground/40" />
 									{/if}
 								</div>
 								<div class="flex-1 min-w-0 pl-3">
 									<div class="flex items-center gap-2">
-										<p class="text-sm truncate">{dl.title || dl.url}</p>
+										<p class="text-sm truncate">{dl.title || dl.url || 'Untitled'}</p>
 										{#if dl.artist}
 											<span class="text-xs text-muted-foreground/60 truncate shrink-0">{dl.artist}</span>
 										{/if}
@@ -120,15 +152,15 @@
 									{#if dl.status === 'downloading'}
 										<div class="flex items-center gap-2 mt-1">
 											<Progress value={dl.progress} class="h-1 flex-1" />
-											<span class="text-[10px] text-blue-400 tabular-nums shrink-0">{Math.round(dl.progress)}%</span>
+											<span class="text-[10px] text-info tabular-nums shrink-0">{Math.round(dl.progress)}%</span>
 										</div>
 									{/if}
 								</div>
 								<div class="w-24 flex justify-center">
 									{#if dl.status === 'downloading'}
-										<Badge variant="outline" class="text-[10px] text-blue-400 border-blue-400/30">downloading</Badge>
+										<Badge variant="outline" class="text-[10px] text-info border-info/30">downloading</Badge>
 									{:else if dl.status === 'processing'}
-										<Badge variant="outline" class="text-[10px] text-green-500 border-green-500/30">importing</Badge>
+										<Badge variant="outline" class="text-[10px] text-success border-success/30">importing</Badge>
 									{:else}
 										<Badge variant="outline" class="text-[10px] text-muted-foreground/60">queued</Badge>
 									{/if}
@@ -155,21 +187,21 @@
 			{:else}
 				<!-- Ungrouped downloads -->
 				<div class="rounded-xl border border-border/60 overflow-hidden">
-					<div class="divide-y divide-border/20">
+					<div class="divide-y divide-border/40">
 						{#each group.downloads.slice(0, 30) as dl (dl.id)}
-							<div class="flex items-center px-4 py-2.5 hover:bg-muted/20 transition-colors group">
+							<div class="flex items-center px-4 py-2.5 hover:bg-muted/30 transition-colors group">
 								<div class="w-7 flex items-center justify-center shrink-0">
 									{#if dl.status === 'downloading'}
-										<Loader2 class="size-3.5 animate-spin text-blue-400" />
+										<Loader2 class="size-3.5 animate-spin text-info" />
 									{:else if dl.status === 'processing'}
-										<Loader2 class="size-3.5 animate-spin text-green-500" />
+										<Loader2 class="size-3.5 animate-spin text-success" />
 									{:else}
 										<Clock class="size-3.5 text-muted-foreground/40" />
 									{/if}
 								</div>
 								<div class="flex-1 min-w-0 pl-3">
 									<div class="flex items-center gap-2">
-										<p class="text-sm truncate">{dl.title || dl.url}</p>
+										<p class="text-sm truncate">{dl.title || dl.url || 'Untitled'}</p>
 										{#if dl.artist}
 											<span class="text-xs text-muted-foreground/60 truncate shrink-0">{dl.artist}</span>
 										{/if}
@@ -177,7 +209,7 @@
 									{#if dl.status === 'downloading'}
 										<div class="flex items-center gap-2 mt-1">
 											<Progress value={dl.progress} class="h-1 flex-1" />
-											<span class="text-[10px] text-blue-400 tabular-nums shrink-0">{Math.round(dl.progress)}%</span>
+											<span class="text-[10px] text-info tabular-nums shrink-0">{Math.round(dl.progress)}%</span>
 										</div>
 									{/if}
 								</div>
@@ -188,9 +220,9 @@
 								</div>
 								<div class="w-24 flex justify-center">
 									{#if dl.status === 'downloading'}
-										<Badge variant="outline" class="text-[10px] text-blue-400 border-blue-400/30">downloading</Badge>
+										<Badge variant="outline" class="text-[10px] text-info border-info/30">downloading</Badge>
 									{:else if dl.status === 'processing'}
-										<Badge variant="outline" class="text-[10px] text-green-500 border-green-500/30">importing</Badge>
+										<Badge variant="outline" class="text-[10px] text-success border-success/30">importing</Badge>
 									{:else}
 										<Badge variant="outline" class="text-[10px] text-muted-foreground/60">queued</Badge>
 									{/if}
@@ -226,7 +258,7 @@
 			Recent ({allCompletedDownloads.length})
 		</h2>
 		<div class="rounded-xl border border-border/60 overflow-hidden">
-			<div class="border-b border-border/40 bg-muted/30 text-[10px] text-muted-foreground/70 uppercase tracking-wider flex items-center px-4 py-2">
+			<div class="border-b border-border bg-muted/30 text-xs text-muted-foreground uppercase tracking-wider flex items-center px-4 py-2.5">
 				<div class="w-7"></div>
 				<div class="flex-1 pl-3">Title</div>
 				<div class="w-20 text-center hidden sm:block">Format</div>
@@ -234,12 +266,12 @@
 				<div class="w-24 text-center">Status</div>
 				<div class="w-8"></div>
 			</div>
-			<div class="divide-y divide-border/20">
+			<div class="divide-y divide-border/40">
 				{#each completedDownloads as dl (dl.id)}
-					<div class="flex items-center px-4 py-2.5 hover:bg-muted/20 transition-colors group">
+					<div class="flex items-center px-4 py-2.5 hover:bg-muted/30 transition-colors group">
 						<div class="w-7 flex items-center justify-center shrink-0">
 							{#if dl.status === 'completed'}
-								<CheckCircle2 class="size-4 text-green-500" />
+								<CheckCircle2 class="size-4 text-success" />
 							{:else if dl.status === 'failed'}
 								<XCircle class="size-4 text-destructive" />
 							{:else}
@@ -247,7 +279,7 @@
 							{/if}
 						</div>
 						<div class="flex-1 min-w-0 pl-3">
-							<p class="text-sm truncate">{dl.title || dl.url}</p>
+							<p class="text-sm truncate">{dl.title || dl.url || 'Untitled'}</p>
 							<div class="flex items-center gap-2 mt-0.5">
 								{#if dl.artist}
 									<span class="text-xs text-muted-foreground/60 truncate">{dl.artist}</span>
@@ -273,7 +305,7 @@
 							<Badge
 								variant="outline"
 								class="text-[10px] capitalize
-									{dl.status === 'completed' ? 'text-green-500 border-green-500/30' : ''}
+									{dl.status === 'completed' ? 'text-success border-success/30' : ''}
 									{dl.status === 'failed' ? 'text-destructive border-destructive/30' : ''}
 									{dl.status === 'cancelled' ? 'text-muted-foreground/50 border-border/40' : ''}"
 							>
@@ -316,8 +348,8 @@
 {/if}
 
 <!-- Empty state -->
-{#if activeDownloads.length === 0 && allCompletedDownloads.length === 0}
-	<div class="flex flex-col items-center justify-center py-20 rounded-xl border border-dashed border-border/40 gap-5">
+{#if activeCount === 0 && allCompletedDownloads.length === 0}
+	<div class="flex flex-col items-center justify-center py-20 rounded-xl border border-dashed border-border/60 gap-4">
 		<div class="size-16 rounded-2xl bg-muted/30 flex items-center justify-center">
 			<Download class="size-8 text-muted-foreground/30" />
 		</div>

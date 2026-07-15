@@ -118,58 +118,6 @@ pub async fn get_info(
     Ok(video_info_from_json(&json))
 }
 
-/// Like get_info but returns ALL results from a search URL (e.g. ytmsearch5:query).
-/// Does NOT use --flat-playlist so that full metadata (duration, title, URL) is extracted.
-pub async fn get_search_results(
-    binary: &str,
-    ffmpeg_dir: Option<&str>,
-    url: &str,
-    cookies_from_browser: Option<&str>,
-) -> Result<Vec<VideoInfo>, String> {
-    let mut cmd = Command::new(binary);
-    low_priority(&mut cmd);
-    cmd.args([
-        "--dump-json",
-        "--no-download",
-        "--no-warnings",
-        "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
-        "--extractor-retries", "3",
-    ]);
-    if let Some(dir) = ffmpeg_dir {
-        cmd.args(["--ffmpeg-location", dir]);
-    }
-    if let Some(browser) = cookies_from_browser {
-        if !browser.is_empty() {
-            cmd.args(["--cookies-from-browser", browser]);
-        }
-    }
-    cmd.arg(url);
-    cmd.stdout(Stdio::piped());
-    cmd.stderr(Stdio::piped());
-
-    let output = cmd
-        .output()
-        .await
-        .map_err(|e| format!("Failed to run yt-dlp: {}", e))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("yt-dlp error: {}", stderr.trim()));
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let mut results = Vec::new();
-    for line in stdout.lines() {
-        if line.trim().is_empty() {
-            continue;
-        }
-        if let Ok(json) = serde_json::from_str::<serde_json::Value>(line) {
-            results.push(video_info_from_json(&json));
-        }
-    }
-    Ok(results)
-}
-
 fn video_info_from_json(json: &serde_json::Value) -> VideoInfo {
     VideoInfo {
         title: json["title"].as_str().unwrap_or("Unknown").to_string(),
@@ -209,6 +157,84 @@ fn video_info_from_json(json: &serde_json::Value) -> VideoInfo {
             .or_else(|| json["external_ids"]["isrc"].as_str())
             .map(|s| s.to_string()),
     }
+}
+
+/// Percent-encode a query for use in a URL query string.
+fn url_encode_query(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() * 3);
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(b as char),
+            _ => out.push_str(&format!("%{:02X}", b)),
+        }
+    }
+    out
+}
+
+/// Search **YouTube Music** (catalog-only) and return up to `limit` full result
+/// infos. Unlike plain YouTube search, this only returns real songs — no
+/// reactions, tutorials, 1-hour loops, or lyric-channel re-uploads — and the
+/// results carry clean `artist`, `album`, and `duration` metadata, which is
+/// exactly what the matcher needs to pick the correct recording.
+///
+/// Uses the `youtube:music:search_url` extractor via a `music.youtube.com`
+/// search URL. Runs WITHOUT `--flat-playlist` so durations/artists are present.
+pub async fn search_music_tracks(
+    binary: &str,
+    ffmpeg_dir: Option<&str>,
+    query: &str,
+    limit: usize,
+    cookies_from_browser: Option<&str>,
+) -> Result<Vec<VideoInfo>, String> {
+    let url = format!("https://music.youtube.com/search?q={}", url_encode_query(query));
+    let mut cmd = Command::new(binary);
+    low_priority(&mut cmd);
+    cmd.args([
+        "--dump-json",
+        "--no-download",
+        "--no-warnings",
+        // Limit how many results we fully resolve (each costs a request).
+        "-I",
+        &format!("1:{}", limit),
+        "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
+        "--extractor-retries", "3",
+    ]);
+    if let Some(dir) = ffmpeg_dir {
+        cmd.args(["--ffmpeg-location", dir]);
+    }
+    if let Some(browser) = cookies_from_browser {
+        if !browser.is_empty() {
+            cmd.args(["--cookies-from-browser", browser]);
+        }
+    }
+    cmd.arg(&url);
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+
+    let output = cmd
+        .output()
+        .await
+        .map_err(|e| format!("Failed to run yt-dlp: {}", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("yt-dlp error: {}", stderr.trim()));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let results: Vec<VideoInfo> = stdout
+        .lines()
+        .filter_map(|line| {
+            serde_json::from_str::<serde_json::Value>(line)
+                .ok()
+                .map(|json| video_info_from_json(&json))
+        })
+        // Search pages sometimes include non-track entries (artist/album pages)
+        // that resolve to /browse/ URLs — keep only playable watch URLs.
+        .filter(|v| v.webpage_url.as_deref().map_or(false, |u| u.contains("watch")))
+        .collect();
+
+    Ok(results)
 }
 
 /// Search YouTube (or other platform) and return multiple result infos for duration matching.
@@ -500,8 +526,16 @@ where
         .to_string_lossy()
         .to_string();
 
-    // Use the quality setting from user preferences, default to "0" (best)
-    let audio_quality = if quality.is_empty() { "0" } else { quality };
+    // Map our quality setting to a valid yt-dlp `--audio-quality` value.
+    // yt-dlp accepts 0 (best) .. 10 (worst) for VBR, or a bitrate like "320K".
+    // "best" is NOT valid on its own (it was silently ignored before), so translate:
+    //   "best"/""/"0" -> "0" (highest quality)
+    //   "320"/"256"/… -> "320K"/"256K" (CBR bitrate)
+    let audio_quality = match quality.trim() {
+        "" | "best" | "0" => "0".to_string(),
+        q if q.chars().all(|c| c.is_ascii_digit()) => format!("{}K", q),
+        q => q.to_string(),
+    };
 
     let mut cmd = Command::new(binary);
     low_priority(&mut cmd);
@@ -510,7 +544,7 @@ where
         "--audio-format",
         format,
         "--audio-quality",
-        audio_quality,
+        audio_quality.as_str(),
         // No -f filter: let yt-dlp pick the best available format.
         // --extract-audio + --audio-format + ffmpeg handle conversion.
         // This avoids "Requested format is not available" on Topic channels etc.
@@ -535,6 +569,9 @@ where
     cmd.arg(url);
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
+    // Kill the yt-dlp/ffmpeg child immediately if this task is aborted (e.g. the user
+    // cancels the download), so "stop" is instant instead of leaving it running.
+    cmd.kill_on_drop(true);
 
     let mut child = cmd
         .spawn()
@@ -665,6 +702,9 @@ where
     cmd.arg(url);
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
+    // Kill the yt-dlp/ffmpeg child immediately if this task is aborted (e.g. the user
+    // cancels the download), so "stop" is instant instead of leaving it running.
+    cmd.kill_on_drop(true);
 
     let mut child = cmd
         .spawn()

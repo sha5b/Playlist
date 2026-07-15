@@ -20,7 +20,7 @@
 
 	let downloadDir = $state('');
 	let downloadFormat = $state('mp3');
-	let cookiesBrowser = $state('chrome');
+	let cookiesBrowser = $state('');
 	let defaultVolume = $state(75);
 	let autoDownloadMV = $state(false);
 	let audioDevices = $state<[string, boolean][]>([]);
@@ -199,11 +199,11 @@
 	async function resetSettings() {
 		downloadDir = '';
 		downloadFormat = 'mp3';
-		cookiesBrowser = 'chrome';
+		cookiesBrowser = '';
 		defaultVolume = 75;
 		await setSetting('default_volume', '0.75');
 		await setSetting('download_format', 'mp3');
-		await setSetting('cookies_from_browser', 'chrome');
+		await setSetting('cookies_from_browser', '');
 		player.setVolume(0.75);
 		toast.success('Settings reset to defaults');
 	}
@@ -390,13 +390,13 @@
 			<div class="space-y-3 rounded-lg bg-muted/30 p-4">
 				<div class="flex items-center justify-between">
 					<span class="text-sm text-muted-foreground">Average Completeness</span>
-					<span class="text-sm font-medium tabular-nums {metadataStats.average_completeness >= 80 ? 'text-green-500' : metadataStats.average_completeness >= 50 ? 'text-yellow-500' : 'text-red-500'}">
+					<span class="text-sm font-medium tabular-nums {metadataStats.average_completeness >= 80 ? 'text-success' : metadataStats.average_completeness >= 50 ? 'text-warning' : 'text-destructive'}">
 						{metadataStats.average_completeness}%
 					</span>
 				</div>
 				<div class="h-2 rounded-full bg-muted overflow-hidden">
 					<div
-						class="h-full rounded-full transition-all duration-500 {metadataStats.average_completeness >= 80 ? 'bg-green-500' : metadataStats.average_completeness >= 50 ? 'bg-yellow-500' : 'bg-red-500'}"
+						class="h-full rounded-full transition-all duration-500 {metadataStats.average_completeness >= 80 ? 'bg-success' : metadataStats.average_completeness >= 50 ? 'bg-warning' : 'bg-destructive'}"
 						style="width: {metadataStats.average_completeness}%"
 					></div>
 				</div>
@@ -406,11 +406,11 @@
 						<p class="text-xs text-muted-foreground">Total Tracks</p>
 					</div>
 					<div>
-						<p class="text-2xl font-bold tabular-nums text-green-500">{metadataStats.complete_tracks}</p>
+						<p class="text-2xl font-bold tabular-nums text-success">{metadataStats.complete_tracks}</p>
 						<p class="text-xs text-muted-foreground">Complete (80%+)</p>
 					</div>
 					<div>
-						<p class="text-2xl font-bold tabular-nums text-red-500">{metadataStats.incomplete_tracks}</p>
+						<p class="text-2xl font-bold tabular-nums text-destructive">{metadataStats.incomplete_tracks}</p>
 						<p class="text-xs text-muted-foreground">Incomplete (&lt;50%)</p>
 					</div>
 				</div>

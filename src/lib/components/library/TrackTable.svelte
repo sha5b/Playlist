@@ -1,7 +1,8 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import { Music, Clock, Hash, Play, ListPlus, ListStart, Trash2, MoreHorizontal, Download, ArrowUp, ArrowDown } from 'lucide-svelte';
-	import { formatDuration, assetUrl } from '$lib/utils/format';
+	import { formatDuration } from '$lib/utils/format';
+	import CoverArt from '$lib/components/shared/CoverArt.svelte';
 	import { player } from '$lib/stores/player.svelte';
 	import * as DropdownMenu from '$lib/components/ui/dropdown-menu';
 	import { Button } from '$lib/components/ui/button';
@@ -134,11 +135,11 @@
 </script>
 
 {#if displayRows.length === 0}
-	<div class="flex items-center justify-center h-48 rounded-lg border border-dashed border-border">
+	<div class="flex items-center justify-center h-48 rounded-xl border border-dashed border-border/60">
 		<p class="text-muted-foreground text-sm">No tracks found</p>
 	</div>
 {:else}
-	<div class="rounded-lg border border-border overflow-hidden flex flex-col flex-1 min-h-0">
+	<div class="rounded-xl border border-border/60 overflow-hidden flex flex-col flex-1 min-h-0">
 		<!-- Fixed header -->
 		<div class="border-b border-border bg-muted/30 text-xs text-muted-foreground uppercase tracking-wider flex items-center shrink-0">
 			<div class="w-12 px-4 py-3 text-center">
@@ -179,7 +180,7 @@
 						{#if row._placeholder}
 							<!-- Placeholder row for missing track -->
 							<div
-								class="group border-b border-border/50 flex items-center opacity-50 hover:opacity-80 cursor-default transition-opacity"
+								class="group border-b border-border/40 flex items-center opacity-50 hover:opacity-80 cursor-default transition-opacity"
 								style="height: {ROW_HEIGHT}px;"
 							>
 								<div class="w-12 px-4 text-center text-sm tabular-nums text-muted-foreground">
@@ -225,7 +226,7 @@
 									e.dataTransfer.effectAllowed = 'copyMove';
 								}}
 								ondragend={() => { setTimeout(() => { wasDragging = false; }, 0); }}
-								class="border-b border-border/50 hover:bg-muted/50 transition-colors cursor-pointer group flex items-center
+								class="border-b border-border/40 hover:bg-muted/30 transition-colors cursor-pointer group flex items-center
 									{isCurrentTrack ? 'bg-primary/5' : ''}"
 								style="height: {ROW_HEIGHT}px;"
 								onclick={() => { if (wasDragging) return; if (navigable) goto(songHref(track.id)); }}
@@ -245,18 +246,13 @@
 								</div>
 								<div class="flex-1 px-4">
 									<div class="flex items-center gap-3 min-w-0">
-										{#if track.cover_art_path}
-											<img
-												src={assetUrl(track.cover_art_path)}
-												alt=""
-												class="size-9 rounded object-cover shrink-0"
-												loading="lazy"
-											/>
-										{:else}
-											<div class="size-9 rounded bg-muted flex items-center justify-center shrink-0">
-												<Music class="size-4 text-muted-foreground" />
-											</div>
-										{/if}
+										<CoverArt
+											src={track.cover_art_path}
+											alt=""
+											class="size-9 rounded object-cover shrink-0"
+											iconClass="size-4 text-muted-foreground"
+											icon={Music}
+										/>
 										<div class="min-w-0">
 											<p class="text-sm font-medium truncate {isCurrentTrack ? 'text-primary' : ''}">
 												{track.title}
