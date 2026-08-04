@@ -20,7 +20,7 @@ cargo check --manifest-path src-tauri/Cargo.toml   # Check Rust compilation
 cargo clippy --manifest-path src-tauri/Cargo.toml   # Lint Rust code
 ```
 
-No test runner is configured. There are no unit/integration tests.
+Rust unit tests exist for URL parsing, matching, and the play queue. Run them with `cargo test --manifest-path src-tauri/Cargo.toml --lib`. There is no frontend test runner.
 
 ## Architecture
 

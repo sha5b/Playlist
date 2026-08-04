@@ -48,14 +48,16 @@
 		}
 	}
 
-	async function autoEnrich(a: Album) {
+	async function autoEnrich(a: Album): Promise<boolean> {
 		enriching = true;
 		try {
 			await enrichAlbum(a.id);
 			album = await getAlbum(a.id);
 			tracks = await getAlbumTracks(a.id);
+			return true;
 		} catch {
-			// Silent fail for auto-enrich
+			// Silent fail for auto-enrich; callers can check the return value
+			return false;
 		} finally {
 			enriching = false;
 		}
@@ -78,8 +80,12 @@
 
 	async function handleEnrich() {
 		if (!album || enriching) return;
-		await autoEnrich(album);
-		toast.success('Album metadata refreshed');
+		const ok = await autoEnrich(album);
+		if (ok) {
+			toast.success('Album metadata refreshed');
+		} else {
+			toast.error('Failed to refresh album metadata');
+		}
 	}
 
 	async function downloadAllMissing() {
@@ -173,15 +179,15 @@
 					(!p.title || !existingTitles.has(p.title.toLowerCase().trim())))
 				.map((p) => ({ track_number: p.track_number, disc_number: p.disc_number, title: p.title }));
 		}
-		// Fallback: generate from total_tracks count
+		// Fallback: generate from total_tracks count. Only valid for single-disc
+		// albums — total_tracks is the album-wide count, so looping 1..total_tracks
+		// per disc would generate bogus placeholders on multi-disc albums.
 		if (!album?.total_tracks || album.total_tracks <= tracks.length) return [];
-		const totalDiscs = album.total_discs ?? 1;
+		if ((album.total_discs ?? 1) > 1) return [];
 		const missing: { track_number: number; disc_number: number; title?: string }[] = [];
-		for (let d = 1; d <= totalDiscs; d++) {
-			for (let n = 1; n <= album.total_tracks; n++) {
-				if (!existingPositions.has(`${d}:${n}`)) {
-					missing.push({ track_number: n, disc_number: d });
-				}
+		for (let n = 1; n <= album.total_tracks; n++) {
+			if (!existingPositions.has(`1:${n}`)) {
+				missing.push({ track_number: n, disc_number: 1 });
 			}
 		}
 		return missing;

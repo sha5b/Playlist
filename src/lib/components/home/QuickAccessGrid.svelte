@@ -43,7 +43,7 @@
 				type: 'playlist',
 				id: p.id,
 				title: p.name,
-				subtitle: `${p.track_count} tracks`,
+				subtitle: `${p.track_count} track${p.track_count !== 1 ? 's' : ''}`,
 				cover: p.cover_art_path,
 			}));
 
@@ -79,7 +79,9 @@
 	});
 </script>
 
-{#if !loading && items.length > 0}
+<!-- Keep previous content visible while reloading (library version bumps) instead
+	of unmounting the whole grid on every refresh -->
+{#if items.length > 0}
 	<section class="space-y-2.5">
 		<div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2.5">
 			{#each items as item (item.type + item.id)}

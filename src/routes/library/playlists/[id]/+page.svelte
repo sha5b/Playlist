@@ -26,6 +26,10 @@
 
 	async function load(id: number) {
 		loading = true;
+		// Reset so navigating between playlists shows the loading spinner
+		// instead of the previous playlist's data until the fetch resolves.
+		playlist = null;
+		trackPage = null;
 		try {
 			const detail = await getPlaylist(id);
 			if (detail) {
@@ -89,6 +93,8 @@
 
 	async function handleDelete() {
 		if (!playlist) return;
+		// bits-ui v2 AlertDialog.Action does not auto-close — close explicitly
+		deleteOpen = false;
 		try {
 			await deletePlaylist(playlist.id);
 			toast.success('Playlist deleted');
@@ -104,6 +110,12 @@
 			await removeFromPlaylist(playlist.id, track.id);
 			toast.success(`Removed "${track.title}"`);
 			await loadTracks();
+			// If the total shrank, clamp to the new last page and reload
+			const lastPage = trackPage ? Math.max(0, Math.ceil(trackPage.total / pageSize) - 1) : 0;
+			if (currentPage > lastPage) {
+				currentPage = lastPage;
+				await loadTracks();
+			}
 		} catch (e) {
 			toast.error('Failed to remove track');
 		}

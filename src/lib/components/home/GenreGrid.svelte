@@ -99,10 +99,20 @@
 
 		<div class="flex flex-wrap gap-2">
 			{#each genres as genre, i (genre.name)}
-				<button
-					class="group relative flex items-center gap-2 rounded-full px-4 py-2 text-sm font-medium transition-all {colorFor(i)}"
-					onclick={() => playGenre(genre.name)}
-					disabled={loadingGenre === genre.name}
+				<!-- div[role=button] instead of <button>: the queue action inside would
+					otherwise be invalid nested-interactive HTML and unreachable by keyboard -->
+				<div
+					role="button"
+					tabindex="0"
+					class="group relative flex items-center gap-2 rounded-full px-4 py-2 text-sm font-medium transition-all cursor-pointer {colorFor(i)}"
+					aria-disabled={loadingGenre === genre.name}
+					onclick={() => { if (loadingGenre !== genre.name) playGenre(genre.name); }}
+					onkeydown={(e) => {
+						if ((e.key === 'Enter' || e.key === ' ') && loadingGenre !== genre.name) {
+							e.preventDefault();
+							playGenre(genre.name);
+						}
+					}}
 				>
 					{#if loadingGenre === genre.name}
 						<LoaderCircle class="size-3.5 animate-spin" />
@@ -110,18 +120,15 @@
 						<Play class="size-3.5 opacity-60 group-hover:opacity-100 transition-opacity" />
 					{/if}
 					<span>{genre.name}</span>
-					<!-- svelte-ignore a11y_no_static_element_interactions -->
-				<span
-					role="button"
-					tabindex="-1"
-					class="opacity-0 group-hover:opacity-70 hover:!opacity-100 transition-opacity cursor-pointer"
-					onclick={(e) => queueGenre(genre.name, e)}
-					onkeydown={(e) => { if (e.key === 'Enter') queueGenre(genre.name, e as unknown as MouseEvent); }}
-					aria-label={`Add ${genre.name} to queue`}
-				>
-					<ListPlus class="size-3.5" />
-				</span>
-				</button>
+					<button
+						type="button"
+						class="opacity-0 group-hover:opacity-70 hover:!opacity-100 focus-visible:opacity-100 transition-opacity cursor-pointer"
+						onclick={(e) => queueGenre(genre.name, e)}
+						aria-label={`Add ${genre.name} to queue`}
+					>
+						<ListPlus class="size-3.5" />
+					</button>
+				</div>
 			{/each}
 		</div>
 	</section>

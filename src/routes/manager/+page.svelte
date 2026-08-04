@@ -128,7 +128,7 @@
 			selectedEntries = selectedEntries.map((e) =>
 				e.id === entry_id ? { ...e, status: status as MonitoredEntryStatus } : e
 			);
-			loadPlaylists();
+			debouncedLoadPlaylists();
 		}));
 
 		register(listen<{ playlist_id: number }>('manager-thumbnails-ready', (event) => {
@@ -151,6 +151,10 @@
 
 		return () => {
 			cancelled = true;
+			if (loadPlaylistsDebounce !== null) {
+				clearTimeout(loadPlaylistsDebounce);
+				loadPlaylistsDebounce = null;
+			}
 			unlisteners.forEach((fn) => fn());
 		};
 	});
@@ -175,7 +179,9 @@
 	async function handleCancel(id: number) {
 		try {
 			await cancelDownload(id);
-			downloadStore.removeDownload(id);
+			// No optimistic removeDownload here: the backend's 'cancelled' event
+			// arrives immediately and handles it — the double path transiently
+			// double-decremented the active badge.
 			toast.info('Download cancelled');
 		} catch (e) {
 			toast.error('Failed to cancel', { description: String(e) });
@@ -195,7 +201,8 @@
 	async function handleStopAllDownloads() {
 		try {
 			await stopAllDownloads();
-			downloadStore.reset();
+			// Re-sync instead of reset() so the Recent list isn't wiped.
+			await downloadStore.refresh();
 			await loadPlaylists();
 			toast.success('Stopped all downloads');
 		} catch (e) {
@@ -219,9 +226,11 @@
 	async function handleClearHistory() {
 		try {
 			await clearHistory();
+			historyPage = 0;
 			history = [];
 			historyTotal = 0;
 			downloadStore.clearCompleted();
+			await loadHistory();
 			toast.success('History cleared');
 		} catch {
 			toast.error('Failed to clear history');
@@ -229,12 +238,28 @@
 	}
 
 	// --- Playlist actions ---
+	// Monotonic request id: responses arriving out of order (e.g. during a large
+	// batch of entry updates) must not overwrite a newer response with older data.
+	let playlistsRequestId = 0;
 	async function loadPlaylists() {
+		const requestId = ++playlistsRequestId;
 		try {
-			playlists = await getMonitoredPlaylists();
+			const result = await getMonitoredPlaylists();
+			if (requestId !== playlistsRequestId) return; // stale response
+			playlists = result;
 		} catch {
 			// Ignore on first load
 		}
+	}
+
+	// Trailing debounce so a batch of hundreds of entry events fires one reload.
+	let loadPlaylistsDebounce: ReturnType<typeof setTimeout> | null = null;
+	function debouncedLoadPlaylists() {
+		if (loadPlaylistsDebounce !== null) clearTimeout(loadPlaylistsDebounce);
+		loadPlaylistsDebounce = setTimeout(() => {
+			loadPlaylistsDebounce = null;
+			loadPlaylists();
+		}, 400);
 	}
 
 	async function handleAddPlaylist() {
@@ -322,11 +347,17 @@
 	async function loadEntries(playlistId: number) {
 		loadingEntries = true;
 		try {
-			selectedEntries = await getEntries(playlistId);
+			const entries = await getEntries(playlistId);
+			// Guard against fast playlist switches: if another playlist was
+			// selected while this request was in flight, discard the result so
+			// playlist A's entries never render under playlist B's header.
+			if (selectedPlaylist?.id !== playlistId) return;
+			selectedEntries = entries;
 		} catch (e) {
+			if (selectedPlaylist?.id !== playlistId) return;
 			toast.error('Failed to load entries', { description: String(e) });
 		} finally {
-			loadingEntries = false;
+			if (selectedPlaylist?.id === playlistId) loadingEntries = false;
 		}
 	}
 
@@ -336,7 +367,7 @@
 		entriesPage = 0;
 	}
 
-	async function handleDownloadEntry(entryId: number) {
+	async function handleDownloadEntry(entryId: number, quiet = false) {
 		downloadingEntryIds = new Set([...downloadingEntryIds, entryId]);
 		try {
 			const dl = await downloadEntry(entryId);
@@ -344,9 +375,9 @@
 			selectedEntries = selectedEntries.map((e) =>
 				e.id === entryId ? { ...e, status: 'queued' as const, download_id: dl.id } : e
 			);
-			toast.success('Download started');
+			if (!quiet) toast.success('Download started');
 		} catch (e) {
-			toast.error('Download failed', { description: String(e) });
+			if (!quiet) toast.error('Download failed', { description: String(e) });
 		} finally {
 			const next = new Set(downloadingEntryIds);
 			next.delete(entryId);
@@ -354,16 +385,20 @@
 		}
 	}
 
-	async function handleDownloadAllNew(playlistId: number) {
+	async function handleDownloadAllNew(playlistId: number, quiet = false): Promise<number> {
 		try {
 			const result = await downloadNew(playlistId);
 			if (selectedPlaylist?.id === playlistId) await loadEntries(playlistId);
 			await loadPlaylists();
-			toast.success(`Queued ${result.queued} downloads`, {
-				description: 'Downloads will process automatically (3 at a time)',
-			});
+			if (!quiet) {
+				toast.success(`Queued ${result.queued} downloads`, {
+					description: 'Downloads will process automatically (3 at a time)',
+				});
+			}
+			return result.queued;
 		} catch (e) {
-			toast.error('Failed to start downloads', { description: String(e) });
+			if (!quiet) toast.error('Failed to start downloads', { description: String(e) });
+			return 0;
 		}
 	}
 
@@ -397,7 +432,7 @@
 		if (failed.length === 0) return;
 		retryingAll = true;
 		try {
-			for (const entry of failed) await handleDownloadEntry(entry.id);
+			for (const entry of failed) await handleDownloadEntry(entry.id, true);
 			toast.success(`Retrying ${failed.length} failed downloads`);
 		} catch (e) {
 			toast.error('Failed to retry some downloads', { description: String(e) });
@@ -454,9 +489,10 @@
 		}
 	});
 
-	// Auto-load history when the history tab is selected
+	// Reload history whenever the history tab becomes active (or its page
+	// changes) so completed downloads always show up without a manual refresh.
 	$effect(() => {
-		if (activeTab === 'history' && !historyLoaded) loadHistory();
+		if (activeTab === 'history') loadHistory();
 	});
 </script>
 
@@ -558,6 +594,7 @@
 					{entriesPageSize}
 					{retryingAll}
 					{activeDownloads}
+					{activeCount}
 					{totalNewAcrossPlaylists}
 					onaddPlaylist={handleAddPlaylist}
 					onsyncPlaylist={handleSync}

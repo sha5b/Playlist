@@ -3,7 +3,8 @@
 	import { GripVertical, X, Music } from 'lucide-svelte';
 	import { Button } from '$lib/components/ui/button';
 	import { player } from '$lib/stores/player.svelte';
-	import { formatDuration, assetUrl } from '$lib/utils/format';
+	import { formatDuration } from '$lib/utils/format';
+	import CoverArt from '$lib/components/shared/CoverArt.svelte';
 	import { DRAG_TYPES, processQueueDrop } from '$lib/utils/queueDrop';
 	import type { QueueTrack } from '$lib/types';
 	import { flip } from 'svelte/animate';
@@ -169,16 +170,13 @@
 						onclick={() => player.skipTo(item.queueIndex)}
 					>
 						<div class="{thumbSize} shrink-0 rounded bg-muted flex items-center justify-center overflow-hidden">
-							{#if t?.cover_art_path}
-								<img
-									src={assetUrl(t.cover_art_path)}
-									alt=""
-									class="size-full object-cover"
-									loading="lazy"
-								/>
-							{:else}
-								<Music class={`${compact ? 'size-3.5' : 'size-4'} text-muted-foreground`} />
-							{/if}
+							<CoverArt
+								src={t?.cover_art_path}
+								alt=""
+								class="size-full object-cover"
+								iconClass={`${compact ? 'size-3.5' : 'size-4'} text-muted-foreground`}
+								icon={Music}
+							/>
 						</div>
 						<div class="min-w-0 flex-1 text-left">
 							<p class="{titleSize} font-medium truncate">{t?.title ?? ''}</p>

@@ -18,6 +18,9 @@
 	let sortBy = $state('random');
 	let sortDir = $state<'asc' | 'desc'>('asc');
 	const pageSize = 50;
+	// Stable per-visit shuffle seed: without it the backend re-randomizes on
+	// every page fetch, so pagination showed duplicate/missing tracks.
+	const randomSeed = Math.floor(Math.random() * 1_000_000) + 1;
 
 	const search = useSearch(async () => {
 		currentPage = 0;
@@ -27,7 +30,13 @@
 	async function load() {
 		loading = true;
 		try {
-			page = await getTracks(currentPage * pageSize, pageSize, sortBy, sortDir, search.query || undefined);
+			page = await getTracks(currentPage * pageSize, pageSize, sortBy, sortDir, search.query || undefined, randomSeed);
+			// If the total shrank (deletes/cleanup), don't strand the user on an
+			// empty out-of-range page.
+			if (page.tracks.length === 0 && currentPage > 0) {
+				currentPage = Math.max(0, Math.ceil(page.total / pageSize) - 1);
+				page = await getTracks(currentPage * pageSize, pageSize, sortBy, sortDir, search.query || undefined, randomSeed);
+			}
 		} catch (e) {
 			console.error('Failed to load tracks:', e);
 		} finally {

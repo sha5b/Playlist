@@ -58,6 +58,7 @@ fn sql_dir(sort_dir: &str) -> &'static str {
     if sort_dir == "asc" { "ASC" } else { "DESC" }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn get_tracks(
     conn: &Connection,
     offset: i64,
@@ -65,6 +66,7 @@ pub fn get_tracks(
     sort_by: &str,
     sort_dir: &str,
     search: Option<&str>,
+    seed: Option<i64>,
 ) -> Result<TrackPage, rusqlite::Error> {
     let limit = limit.clamp(1, 500);
     let offset = offset.max(0);
@@ -76,7 +78,14 @@ pub fn get_tracks(
         "play_count" => format!("t.play_count {dir}"),
         "last_played" => "t.last_played_at DESC NULLS LAST".to_string(),
         "year" => format!("t.year {dir}"),
-        "random" => "RANDOM()".to_string(),
+        // Deterministic per-seed shuffle: plain RANDOM() re-randomizes on
+        // every page fetch, so pagination showed duplicates and skipped
+        // tracks. The seed (an integer, safe to inline) is fixed per page
+        // visit and changes on the next visit for a fresh order.
+        "random" => {
+            let seed = seed.unwrap_or(1).unsigned_abs() | 1; // odd, non-zero
+            format!("((t.id * {}) % 1000003)", seed % 1_000_003)
+        }
         _ => format!("t.date_added {dir}"),
     };
 

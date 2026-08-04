@@ -62,7 +62,7 @@
 		<button
 			onclick={toggleMaximize}
 			class="inline-flex items-center justify-center w-11 h-full text-muted-foreground hover:bg-sidebar-accent hover:text-foreground transition-colors"
-			aria-label="Maximize"
+			aria-label={isMaximized ? 'Restore' : 'Maximize'}
 		>
 			{#if isMaximized}
 				<Copy class="size-3" />

@@ -57,6 +57,11 @@
   </requires>
 
   <releases>
+    <release version="0.8.0" date="2026-08-04">
+      <description>
+        <p>Large bug-fix release: full playlist imports from YouTube and Spotify, automatic yt-dlp updates, correct download matching, playback and queue fixes, and many UI corrections.</p>
+      </description>
+    </release>
     <release version="0.6.0" date="2026-04-05">
       <description>
         <p>Improved metadata accuracy, fixed audio playback resilience, and post-download track verification.</p>

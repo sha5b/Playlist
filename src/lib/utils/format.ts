@@ -7,10 +7,14 @@ export function assetUrl(filePath: string | null | undefined): string {
 }
 
 export function formatDuration(ms: number | null | undefined): string {
-	if (ms == null) return '--:--';
+	if (ms == null || !Number.isFinite(ms) || ms < 0) return '--:--';
 	const totalSeconds = Math.floor(ms / 1000);
-	const minutes = Math.floor(totalSeconds / 60);
+	const hours = Math.floor(totalSeconds / 3600);
+	const minutes = Math.floor((totalSeconds % 3600) / 60);
 	const seconds = totalSeconds % 60;
+	if (hours > 0) {
+		return `${hours}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+	}
 	return `${minutes}:${seconds.toString().padStart(2, '0')}`;
 }
 
@@ -33,9 +37,20 @@ export function formatFileSize(bytes: number | null): string {
 	return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 }
 
+/** Parse a SQLite datetime string, which is UTC ("YYYY-MM-DD HH:MM:SS"). */
+function parseUtcDate(dateStr: string): Date {
+	// Already ISO with timezone info — parse as-is
+	if (dateStr.endsWith('Z') || /[+-]\d{2}:?\d{2}$/.test(dateStr)) {
+		return new Date(dateStr);
+	}
+	// SQLite format: make it ISO and mark it UTC
+	return new Date(dateStr.replace(' ', 'T') + 'Z');
+}
+
 export function formatDate(dateStr: string | null): string {
 	if (!dateStr) return '--';
-	const date = new Date(dateStr);
+	const date = parseUtcDate(dateStr);
+	if (Number.isNaN(date.getTime())) return '--';
 	return date.toLocaleDateString(undefined, {
 		year: 'numeric',
 		month: 'short',
@@ -53,18 +68,19 @@ export function shuffleArray<T>(array: T[]): T[] {
 	return result;
 }
 
-/** Format seconds as m:ss */
+/** Format seconds as m:ss (or h:mm:ss) */
 export function formatSeconds(seconds: number | null | undefined): string {
-	if (seconds == null) return '--:--';
-	const m = Math.floor(seconds / 60);
-	const s = Math.round(seconds % 60);
-	return `${m}:${s.toString().padStart(2, '0')}`;
+	if (seconds == null || !Number.isFinite(seconds) || seconds < 0) return '--:--';
+	// Round the TOTAL first — rounding the remainder alone rendered "3:60"
+	// for values like 239.6s.
+	return formatDuration(Math.round(seconds) * 1000);
 }
 
 /** Format a date string as relative time (e.g., "5m ago", "2h ago") */
 export function timeAgo(dateStr: string | null): string {
 	if (!dateStr) return 'Never';
-	const date = new Date(dateStr + 'Z');
+	const date = parseUtcDate(dateStr);
+	if (Number.isNaN(date.getTime())) return 'Never';
 	const now = new Date();
 	const diff = now.getTime() - date.getTime();
 	const minutes = Math.floor(diff / 60000);

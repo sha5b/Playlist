@@ -31,7 +31,7 @@
 		if (!newName.trim()) return;
 		creating = true;
 		try {
-			await createPlaylist(newName.trim());
+			await createPlaylist(newName.trim(), newDescription.trim() || undefined);
 			createOpen = false;
 			newName = '';
 			newDescription = '';
@@ -146,7 +146,9 @@
 			</div>
 			<Dialog.Footer>
 				<Dialog.Close>
-					<Button variant="outline">Cancel</Button>
+					{#snippet child({ props })}
+						<Button variant="outline" type="button" {...props}>Cancel</Button>
+					{/snippet}
 				</Dialog.Close>
 				<Button type="submit" disabled={!newName.trim() || creating}>
 					{creating ? 'Creating...' : 'Create'}

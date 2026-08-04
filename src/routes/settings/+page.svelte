@@ -15,8 +15,12 @@
 	import * as AlertDialog from '$lib/components/ui/alert-dialog';
 	import { downloadStore } from '$lib/stores/downloads.svelte';
 
+	import { getVersion } from '@tauri-apps/api/app';
+
 	let resetLibraryOpen = $state(false);
 	let deleteMetadataOpen = $state(false);
+	let appVersion = $state('');
+	getVersion().then((v) => { appVersion = v; }).catch(() => {});
 
 	let downloadDir = $state('');
 	let downloadFormat = $state('mp3');
@@ -169,6 +173,8 @@
 	}
 
 	async function handleDeleteMetadata() {
+		// bits-ui v2 AlertDialog.Action does not auto-close — close explicitly
+		deleteMetadataOpen = false;
 		deletingMetadata = true;
 		try {
 			await deleteAllMetadata();
@@ -184,6 +190,7 @@
 	let resettingLibrary = $state(false);
 
 	async function handleResetLibrary() {
+		resetLibraryOpen = false;
 		resettingLibrary = true;
 		try {
 			await resetLibrary(true);
@@ -201,9 +208,15 @@
 		downloadFormat = 'mp3';
 		cookiesBrowser = '';
 		defaultVolume = 75;
+		autoDownloadMV = false;
+		selectedDevice = '';
+		await setSetting('download_dir', '');
 		await setSetting('default_volume', '0.75');
 		await setSetting('download_format', 'mp3');
 		await setSetting('cookies_from_browser', '');
+		await setSetting('auto_download_music_videos', 'false');
+		await setSetting('audio_device', '');
+		await setAudioDevice(null);
 		player.setVolume(0.75);
 		toast.success('Settings reset to defaults');
 	}
@@ -572,7 +585,7 @@
 		<div class="space-y-3">
 			<div class="flex justify-between text-sm">
 				<span class="text-muted-foreground">Version</span>
-				<span>0.4.1</span>
+				<span>{appVersion || '—'}</span>
 			</div>
 			<div class="flex justify-between text-sm">
 				<span class="text-muted-foreground">Stack</span>

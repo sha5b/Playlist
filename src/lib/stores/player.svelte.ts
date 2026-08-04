@@ -41,6 +41,10 @@ function handleEvent(event: PlayerEvent) {
 			currentTrack = event.data.current_track;
 			positionMs = event.data.position_ms;
 			durationMs = event.data.duration_ms;
+			// Also update the pending values so a queued rAF from a pre-seek
+			// progress event doesn't overwrite position with stale data.
+			pendingPositionMs = positionMs;
+			pendingDurationMs = durationMs;
 			volume = event.data.volume;
 			shuffle = event.data.shuffle;
 			repeat = event.data.repeat;
@@ -64,6 +68,10 @@ function handleEvent(event: PlayerEvent) {
 			if (event.data) {
 				positionMs = 0;
 				durationMs = event.data.duration_ms ?? 0;
+				// Keep pending values in sync so a queued rAF from the previous
+				// track's progress event doesn't restore a stale position.
+				pendingPositionMs = 0;
+				pendingDurationMs = durationMs;
 				playedHistory.add(event.data.id);
 				// Record the play in the database (fire-and-forget)
 				playerApi.recordPlay(event.data.id).catch(() => {});

@@ -12,15 +12,35 @@
 	import CoverArt from '$lib/components/shared/CoverArt.svelte';
 	import { processQueueDrop, handleQueueDragOver } from '$lib/utils/queueDrop';
 
+	// While dragging, show the drag value instead of the live progress so the
+	// backend's ~450ms progress events don't snap the thumb back mid-drag.
+	let seekDragValue = $state<number | null>(null);
+	let seekClearTimeout: ReturnType<typeof setTimeout>;
+
 	function handleProgressChange(value: number) {
 		const seconds = (value / 100) * (player.durationMs / 1000);
 		player.seek(seconds);
+		// Keep showing the committed value briefly to avoid a snap-back flash
+		// before the next progress event reflects the seek.
+		clearTimeout(seekClearTimeout);
+		seekClearTimeout = setTimeout(() => { seekDragValue = null; }, 500);
 	}
 
 	let volumeTimeout: ReturnType<typeof setTimeout>;
 	function handleVolumeChange(value: number) {
 		clearTimeout(volumeTimeout);
 		volumeTimeout = setTimeout(() => player.setVolume(value / 100), 16);
+	}
+
+	// Remember the volume before muting so unmute restores it (not a hardcoded value)
+	let volumeBeforeMute = 0.75;
+	function toggleMute() {
+		if (player.volume === 0) {
+			player.setVolume(volumeBeforeMute > 0 ? volumeBeforeMute : 0.75);
+		} else {
+			volumeBeforeMute = player.volume;
+			player.setVolume(0);
+		}
 	}
 
 	const progressPercent = $derived(
@@ -163,11 +183,12 @@
 			</span>
 			<Slider
 				type="single"
-				value={progressPercent}
+				value={seekDragValue ?? progressPercent}
 				max={100}
 				step={0.1}
 				class="flex-1"
 				disabled={!hasTrack}
+				onValueChange={(v: number) => { seekDragValue = v; }}
 				onValueCommit={handleProgressChange}
 			/>
 			<span class="text-[11px] text-muted-foreground w-10 tabular-nums">
@@ -182,7 +203,7 @@
 			variant="ghost"
 			size="icon-sm"
 			class="text-muted-foreground hover:text-foreground"
-			onclick={() => player.setVolume(player.volume === 0 ? 0.75 : 0)}
+			onclick={toggleMute}
 			aria-label={player.volume === 0 ? 'Unmute' : 'Mute'}
 		>
 			<VolumeIcon class="size-4" />

@@ -6,7 +6,15 @@ export interface LrcLine {
 const LRC_LINE_RE = /^\[(\d{2}):(\d{2})(?:\.(\d{2,3}))?\](.*)/;
 
 export function isLrcFormat(text: string): boolean {
-	return LRC_LINE_RE.test(text.trim().split('\n')[0] ?? '');
+	// LRC files often start with metadata tags like [ar:...] or [ti:...], so
+	// scan the first few non-empty lines for a timestamp tag instead of only
+	// checking the first line.
+	const lines = text
+		.split('\n')
+		.map((l) => l.trim())
+		.filter((l) => l.length > 0)
+		.slice(0, 10);
+	return lines.some((l) => LRC_LINE_RE.test(l));
 }
 
 export function parseLrc(text: string): LrcLine[] {

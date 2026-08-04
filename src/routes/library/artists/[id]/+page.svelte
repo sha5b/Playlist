@@ -262,7 +262,7 @@
 							<p class="text-sm font-medium truncate">{album.title}</p>
 							<p class="text-xs text-muted-foreground truncate">
 								{album.year ?? ''}
-								{#if album.track_count}&middot; {album.track_count} tracks{/if}
+								{#if album.track_count}&middot; {album.track_count} track{album.track_count !== 1 ? 's' : ''}{/if}
 							</p>
 						</a>
 					{/each}

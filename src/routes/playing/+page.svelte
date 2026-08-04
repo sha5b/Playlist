@@ -16,6 +16,15 @@
 	type DisplayMode = 'artwork' | 'video' | 'lyrics';
 	let preferredMode = $state<DisplayMode>('artwork');
 	let fullTrack = $state<Track | null>(null);
+
+	// Queue-order previous track — this is what player.prev() will actually
+	// play. player.previousTrack (playback history) can differ under shuffle,
+	// so showing it here would play a different track than displayed.
+	const queuePrevTrack = $derived(
+		player.queuePosition !== null && player.queuePosition > 0
+			? (player.queueTracks[player.queuePosition - 1] ?? null)
+			: null
+	);
 	let videoPausedAudio = $state(false);
 	let videoPlaying = $state(false);
 	let videoElement = $state<HTMLVideoElement | null>(null);
@@ -86,9 +95,18 @@
 		displayMode === 'video' && hasVideo ? videoPlaying : player.isPlaying
 	);
 
+	// While dragging, show the drag value instead of the live progress so the
+	// backend's ~450ms progress events don't snap the thumb back mid-drag.
+	let seekDragValue = $state<number | null>(null);
+	let seekClearTimeout: ReturnType<typeof setTimeout>;
+
 	function handleProgressChange(value: number) {
 		const seconds = (value / 100) * (player.durationMs / 1000);
 		player.seek(seconds);
+		// Keep showing the committed value briefly to avoid a snap-back flash
+		// before the next progress event reflects the seek.
+		clearTimeout(seekClearTimeout);
+		seekClearTimeout = setTimeout(() => { seekDragValue = null; }, 500);
 	}
 
 	const progressPercent = $derived(
@@ -196,10 +214,11 @@
 							</span>
 							<Slider
 								type="single"
-								value={progressPercent}
+								value={seekDragValue ?? progressPercent}
 								max={100}
 								step={0.1}
 								class="flex-1"
+								onValueChange={(v: number) => { seekDragValue = v; }}
 								onValueCommit={handleProgressChange}
 							/>
 							<span class="text-xs text-muted-foreground w-10 tabular-nums">
@@ -291,8 +310,8 @@
 				</div>
 			{/if}
 
-			<!-- Previously Played -->
-			{#if player.previousTrack}
+			<!-- Previously Played (queue-order previous — matches player.prev()) -->
+			{#if queuePrevTrack}
 				<div>
 					<div class="flex items-center gap-2 mb-3">
 						<History class="size-4 text-muted-foreground" />
@@ -303,9 +322,9 @@
 						onclick={() => player.prev()}
 					>
 						<div class="size-12 shrink-0 rounded-md bg-muted overflow-hidden">
-							{#if player.previousTrack.cover_art_path}
+							{#if queuePrevTrack.cover_art_path}
 								<img
-									src={assetUrl(player.previousTrack.cover_art_path)}
+									src={assetUrl(queuePrevTrack.cover_art_path)}
 									alt=""
 									class="size-full object-cover"
 									loading="lazy"
@@ -318,12 +337,12 @@
 						</div>
 						<div class="min-w-0 flex-1">
 							<p class="text-sm font-medium truncate text-muted-foreground group-hover:text-foreground transition-colors">
-								{player.previousTrack.title}
+								{queuePrevTrack.title}
 							</p>
 							<p class="text-xs text-muted-foreground/60 truncate">
-								{player.previousTrack.artist_name ?? 'Unknown Artist'}
-								{#if player.previousTrack.album_title}
-									&middot; {player.previousTrack.album_title}
+								{queuePrevTrack.artist_name ?? 'Unknown Artist'}
+								{#if queuePrevTrack.album_title}
+									&middot; {queuePrevTrack.album_title}
 								{/if}
 							</p>
 						</div>

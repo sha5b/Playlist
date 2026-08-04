@@ -9,6 +9,23 @@
 
 	let dragOver = $state(false);
 
+	// The queue-order previous track — this is what player.prev() will actually
+	// play, so display and action always agree (player.previousTrack can differ
+	// under shuffle).
+	const queuePrevTrack = $derived(
+		player.queuePosition !== null && player.queuePosition > 0
+			? player.queueTracks[player.queuePosition - 1]
+			: null
+	);
+
+	// Count the rows the panel actually renders (now playing + up next)
+	const visibleCount = $derived(
+		(player.currentTrack ? 1 : 0) +
+			(player.queuePosition !== null
+				? Math.max(0, player.queueTracks.length - player.queuePosition - 1)
+				: player.queueTracks.length)
+	);
+
 	function handleDragOver(e: DragEvent) {
 		if (hasDragData(e.dataTransfer)) {
 			e.preventDefault();
@@ -75,7 +92,7 @@
 	>
 		<div class="flex items-center justify-between px-4 h-14 border-b border-border">
 			<h2 class="text-sm font-semibold">
-				Queue{#if player.queueTracks.length > 0}<span class="text-muted-foreground font-normal ml-1">({player.queueTracks.length})</span>{/if}
+				Queue{#if visibleCount > 0}<span class="text-muted-foreground font-normal ml-1">({visibleCount})</span>{/if}
 			</h2>
 			<div class="flex items-center gap-1">
 				{#if player.queueTracks.length > 0}
@@ -84,6 +101,7 @@
 						size="icon-sm"
 						class="text-muted-foreground hover:text-foreground"
 						onclick={() => player.clearQueue()}
+						aria-label="Clear queue"
 					>
 						<Trash2 class="size-3.5" />
 					</Button>
@@ -93,6 +111,7 @@
 					size="icon-sm"
 					class="text-muted-foreground hover:text-foreground"
 					onclick={() => player.toggleQueuePanel()}
+					aria-label="Close queue panel"
 				>
 					<X class="size-4" />
 				</Button>
@@ -111,7 +130,7 @@
 				</div>
 			{:else}
 				<div class="p-2">
-					{#if player.previousTrack}
+					{#if queuePrevTrack}
 						<div class="px-2 py-1.5 mb-1">
 							<p class="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Previously Played</p>
 						</div>
@@ -121,7 +140,7 @@
 						>
 							<div class="size-8 shrink-0 rounded bg-muted flex items-center justify-center overflow-hidden">
 								<CoverArt
-									src={player.previousTrack.cover_art_path}
+									src={queuePrevTrack.cover_art_path}
 									alt=""
 									class="size-full object-cover"
 									iconClass="size-3.5 text-muted-foreground"
@@ -130,10 +149,10 @@
 							</div>
 							<div class="min-w-0 flex-1">
 								<p class="text-xs font-medium truncate text-muted-foreground">
-									{player.previousTrack.title}
+									{queuePrevTrack.title}
 								</p>
 								<p class="text-[10px] text-muted-foreground/60 truncate">
-									{player.previousTrack.artist_name ?? 'Unknown'}
+									{queuePrevTrack.artist_name ?? 'Unknown'}
 								</p>
 							</div>
 							<SkipBack class="size-3 text-muted-foreground shrink-0" />
@@ -141,7 +160,7 @@
 					{/if}
 
 					{#if player.currentTrack}
-						<div class="px-2 py-1.5 mb-1 {player.previousTrack ? 'mt-3' : ''}">
+						<div class="px-2 py-1.5 mb-1 {queuePrevTrack ? 'mt-3' : ''}">
 							<p class="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Now Playing</p>
 						</div>
 						<div class="flex items-center gap-2 px-2 py-1.5 rounded-md bg-primary/10">

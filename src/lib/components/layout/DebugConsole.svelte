@@ -73,7 +73,7 @@
 <svelte:window onkeydown={handleKeydown} />
 
 {#if open}
-	<div class="fixed inset-x-0 bottom-[72px] z-50 flex flex-col bg-zinc-950/95 backdrop-blur border-t border-zinc-700 shadow-2xl"
+	<div class="fixed inset-x-0 bottom-20 z-50 flex flex-col bg-zinc-950/95 backdrop-blur border-t border-zinc-700 shadow-2xl"
 		style="height: 280px;"
 	>
 		<!-- Header -->
@@ -85,7 +85,7 @@
 			</div>
 			<div class="flex items-center gap-1">
 				<!-- Filter buttons -->
-				{#each ['all', 'INFO', 'WARN', 'ERROR', 'DEBUG'] as level}
+				{#each ['all', 'INFO', 'WARN', 'ERROR', 'DEBUG', 'TRACE'] as level}
 					<button
 						class="px-2 py-0.5 text-[10px] font-mono rounded transition-colors
 							{filter === level

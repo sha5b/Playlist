@@ -20,11 +20,11 @@
 
 ---
 
-Streaming platforms decide what you hear, lock your library behind a subscription, and pay artists fractions of a cent. Playlist is built on a simple idea: **your music collection belongs to you, not to a corporation.**
+Streaming platforms decide what you hear, lock your library behind a subscription, and pay artists fractions of a cent. Playlist starts from a simple idea: **your music collection belongs to you, not to a corporation.**
 
-A cross-platform desktop music manager built with **Tauri 2**, **SvelteKit**, and **Rust**. Download tracks from most platforms, discover missing albums and tracks, and play everything locally — all offline, all yours.
+Playlist is a desktop music manager for Windows, macOS, and Linux. It is built with **Tauri 2**, **SvelteKit**, and **Rust**. Download tracks from most platforms, find the albums and tracks your collection misses, and play everything locally. All offline. All yours.
 
-> **Support artists directly.** Buy their albums. Back them on Patreon. Buy them a coffee. Go to their shows. This tool gives you autonomy over your data — use that freedom to support the people who make the music you love.
+> **Support artists directly.** Buy their albums. Back them on Patreon. Buy them a coffee. Go to their shows. This tool gives you control over your data. Use that freedom to support the people who make the music you love.
 
 ---
 
@@ -33,10 +33,10 @@ A cross-platform desktop music manager built with **Tauri 2**, **SvelteKit**, an
 | | Feature | Description |
 |---|---|---|
 | **Download** | From almost anywhere | YouTube, SoundCloud, Bandcamp, and hundreds more via yt-dlp |
-| **Discover** | Missing music | Find missing tracks in albums and albums you don't have for artists in your library |
-| **Sync** | Across devices | Keep your library in sync between machines |
-| **Metadata** | Rich & automatic | MusicBrainz and Last.fm enrichment — album art, genres, and more |
-| **Playback** | Full local player | Queue, shuffle, repeat, and system tray background playback |
+| **Discover** | Missing music | Find the missing tracks in your albums, and the missing albums for your artists |
+| **Sync** | Across devices | Keep your library identical between machines |
+| **Metadata** | Automatic | MusicBrainz and Last.fm enrichment: album art, genres, and more |
+| **Playback** | Full local player | Queue, shuffle, repeat, and background playback from the system tray |
 | **Library** | Organized your way | Playlists, album views, artist browsing, and full-text search |
 | **Platform** | Cross-platform | Windows, macOS, and Linux (deb, rpm, Flatpak) |
 
@@ -52,7 +52,7 @@ Download the latest installer for your platform from the [Releases](https://gith
 | macOS | `.dmg` |
 | Linux | `.deb`, `.rpm` |
 
-On first launch, yt-dlp and ffmpeg are downloaded automatically.
+On the first launch, the app downloads yt-dlp and ffmpeg automatically. On each later launch, the app updates yt-dlp so downloads keep working when platforms change.
 
 ---
 
@@ -79,7 +79,7 @@ npx tauri build      # Outputs installer to src-tauri/target/release/bundle/
 
 ### Flatpak
 
-A Flatpak manifest is provided at `com.playlist.app.yml` for building and publishing to Flathub. The build targets GNOME Platform 48 and bundles yt-dlp as a standalone binary.
+The Flatpak manifest is at `com.playlist.app.yml`. Use it to build and to publish to Flathub. The build targets GNOME Platform 48 and bundles yt-dlp as a standalone binary.
 
 <details>
 <summary><strong>Flatpak build instructions</strong></summary>
@@ -99,7 +99,7 @@ flatpak install flathub org.freedesktop.Sdk.Extension.node22//24.08
 
 #### Generate offline dependency manifests
 
-Flatpak builds have no network access, so dependencies must be pre-fetched using [flatpak-builder-tools](https://github.com/flatpak/flatpak-builder-tools):
+Flatpak builds have no network access. Fetch the dependencies first with [flatpak-builder-tools](https://github.com/flatpak/flatpak-builder-tools):
 
 ```sh
 pip3 install toml aiohttp

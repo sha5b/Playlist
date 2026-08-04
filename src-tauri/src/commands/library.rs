@@ -41,9 +41,10 @@ pub fn library_get_tracks(
     sort_by: String,
     sort_dir: String,
     search: Option<String>,
+    seed: Option<i64>,
 ) -> Result<TrackPage, String> {
     let conn = crate::db::lock(&db)?;
-    crate::db::tracks::get_tracks(&conn, offset, limit, &sort_by, &sort_dir, search.as_deref())
+    crate::db::tracks::get_tracks(&conn, offset, limit, &sort_by, &sort_dir, search.as_deref(), seed)
         .map_err(|e| e.to_string())
 }
 

@@ -20,6 +20,8 @@
 		ArrowDownToLine,
 		Square,
 	} from 'lucide-svelte';
+	import * as AlertDialog from '$lib/components/ui/alert-dialog';
+	import { toast } from 'svelte-sonner';
 	import type { MonitoredPlaylist, MonitoredEntry, Download as DownloadType } from '$lib/types';
 	import { assetUrl, formatSeconds, timeAgo, platformLabel, platformColor } from '$lib/utils/format';
 
@@ -38,6 +40,7 @@
 		entriesPageSize,
 		retryingAll,
 		activeDownloads,
+		activeCount,
 		totalNewAcrossPlaylists,
 		onaddPlaylist,
 		onsyncPlaylist,
@@ -66,6 +69,7 @@
 		entriesPageSize: number;
 		retryingAll: boolean;
 		activeDownloads: DownloadType[];
+		activeCount: number;
 		totalNewAcrossPlaylists: number;
 		onaddPlaylist: () => void;
 		onsyncPlaylist: (id: number) => void;
@@ -74,7 +78,7 @@
 		onopenPlaylist: (pl: MonitoredPlaylist) => void;
 		oncloseDetail: () => void;
 		ondownloadEntry: (id: number) => void;
-		ondownloadAllNew: (id: number) => void;
+		ondownloadAllNew: (id: number, quiet?: boolean) => Promise<number>;
 		oncancelEntry: (id: number) => void;
 		oncancelAll: (id: number) => void;
 		onskipEntry: (id: number) => void;
@@ -106,8 +110,15 @@
 	const progressByDownloadId = $derived(
 		new Map(activeDownloads.map((d) => [d.id, d.progress]))
 	);
+	// Stable secondary sort (position, then id) so rows don't teleport between
+	// pages when statuses change.
 	const sortedEntries = $derived(
-		[...selectedEntries].sort((a, b) => (statusOrder[a.status] ?? 9) - (statusOrder[b.status] ?? 9))
+		[...selectedEntries].sort(
+			(a, b) =>
+				(statusOrder[a.status] ?? 9) - (statusOrder[b.status] ?? 9) ||
+				a.position - b.position ||
+				a.id - b.id
+		)
 	);
 	const paginatedEntries = $derived(
 		sortedEntries.slice(entriesPage * entriesPageSize, (entriesPage + 1) * entriesPageSize)
@@ -125,6 +136,56 @@
 
 	function prevEntriesPage() {
 		if (entriesPage > 0) entriesPage--;
+	}
+
+	// Clamp the page to the last one when the entry list shrinks.
+	$effect(() => {
+		const maxPage = Math.max(0, Math.ceil(sortedEntries.length / entriesPageSize) - 1);
+		if (entriesPage > maxPage) entriesPage = maxPage;
+	});
+
+	// Grid shows multi-track playlists plus freshly-added ones still fetching
+	// (total_entries === 0); single-track playlists live in the Singles list.
+	const gridPlaylists = $derived(playlists.filter((pl) => pl.total_entries !== 1));
+	const singles = $derived(playlists.filter((pl) => pl.total_entries === 1));
+
+	// Thumbnail URLs that failed to load — hide instead of showing the
+	// broken-image glyph. Keyed by URL so a refreshed thumbnail retries.
+	let failedThumbs = $state<Set<string>>(new Set());
+	function markThumbFailed(url: string) {
+		failedThumbs = new Set([...failedThumbs, url]);
+	}
+
+	// Remove-playlist confirmation dialog.
+	let removeDialogOpen = $state(false);
+	let playlistPendingRemoval = $state<MonitoredPlaylist | null>(null);
+	function requestRemovePlaylist(pl: MonitoredPlaylist) {
+		playlistPendingRemoval = pl;
+		removeDialogOpen = true;
+	}
+	function confirmRemovePlaylist() {
+		// bits-ui v2 AlertDialog.Action does not auto-close — close explicitly
+		removeDialogOpen = false;
+		if (playlistPendingRemoval) onremovePlaylist(playlistPendingRemoval.id);
+		playlistPendingRemoval = null;
+	}
+
+	// Banner "Download all": one aggregated toast instead of one per playlist.
+	let downloadingAllBanner = $state(false);
+	async function handleDownloadAllBanner(playlistsWithNew: MonitoredPlaylist[]) {
+		if (downloadingAllBanner) return;
+		downloadingAllBanner = true;
+		try {
+			let totalQueued = 0;
+			for (const pl of playlistsWithNew) {
+				totalQueued += await ondownloadAllNew(pl.id, true);
+			}
+			toast.success(`Queued ${totalQueued} downloads`, {
+				description: 'Downloads will process automatically (3 at a time)',
+			});
+		} finally {
+			downloadingAllBanner = false;
+		}
 	}
 </script>
 
@@ -168,7 +229,7 @@
 					<span>Synced {timeAgo(selectedPlaylist.last_synced_at)}</span>
 				</div>
 				{#if selectedEntries.length > 0}
-					{@const pct = Math.round((downloadedEntries.length / selectedEntries.length) * 100)}
+					{@const pct = Math.floor((downloadedEntries.length / selectedEntries.length) * 100)}
 					<div class="flex items-center gap-2 mt-2">
 						<Progress value={pct} class="h-1.5 flex-1 max-w-xs" />
 						<span class="text-xs text-muted-foreground tabular-nums">{pct}%</span>
@@ -246,21 +307,27 @@
 								{/if}
 							</div>
 							<div class="w-9 h-9 rounded overflow-hidden flex-shrink-0 ml-2 bg-muted/30">
-								{#if entry.thumbnail}
+								{#if entry.thumbnail && !failedThumbs.has(entry.thumbnail)}
 									<img
 										src={entry.thumbnail.startsWith('/') ? assetUrl(entry.thumbnail) : entry.thumbnail}
 										alt=""
 										class="w-full h-full object-cover"
+										onerror={() => markThumbFailed(entry.thumbnail!)}
 									/>
 								{/if}
 							</div>
 							<div class="flex-1 min-w-0 pl-3">
 								<p class="text-sm truncate {entry.status === 'skipped' ? 'text-muted-foreground/50 line-through' : ''}">{entry.title || entry.source_url}</p>
 								{#if entry.status === 'downloading' && entry.download_id != null}
-									{@const prog = progressByDownloadId.get(entry.download_id) ?? 0}
+									{@const prog = progressByDownloadId.get(entry.download_id)}
 									<div class="flex items-center gap-2 mt-1">
-										<Progress value={prog} class="h-1 flex-1 max-w-[220px]" />
-										<span class="text-[10px] text-muted-foreground tabular-nums shrink-0">{Math.round(prog)}%</span>
+										{#if prog !== undefined}
+											<Progress value={prog} class="h-1 flex-1 max-w-[220px]" />
+											<span class="text-[10px] text-muted-foreground tabular-nums shrink-0">{Math.floor(prog)}%</span>
+										{:else}
+											<!-- Progress unknown (download outside the render window): indeterminate, not a frozen 0% -->
+											<div class="h-1 flex-1 max-w-[220px] rounded-full bg-muted animate-pulse"></div>
+										{/if}
 									</div>
 								{:else if entry.artist}
 									<p class="text-xs text-muted-foreground truncate mt-0.5">{entry.artist}</p>
@@ -333,22 +400,26 @@
 					<p class="text-xs text-muted-foreground mt-0.5">Across {playlistsWithNew.length} playlist{playlistsWithNew.length !== 1 ? 's' : ''}</p>
 				</div>
 			</div>
-			<Button size="sm" class="gap-1.5 shrink-0" onclick={() => { for (const pl of playlistsWithNew) ondownloadAllNew(pl.id); }}>
-				<ArrowDownToLine class="size-3.5" />
+			<Button size="sm" class="gap-1.5 shrink-0" disabled={downloadingAllBanner} onclick={() => handleDownloadAllBanner(playlistsWithNew)}>
+				{#if downloadingAllBanner}
+					<Loader2 class="size-3.5 animate-spin" />
+				{:else}
+					<ArrowDownToLine class="size-3.5" />
+				{/if}
 				Download all
 			</Button>
 		</div>
 	{/if}
 
 	<!-- Active downloads indicator -->
-	{#if activeDownloads.length > 0}
+	{#if activeCount > 0}
 		<div class="flex items-center gap-3 rounded-lg bg-muted/30 px-4 py-2.5">
 			<span class="relative flex size-2 shrink-0">
 				<span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-info opacity-75"></span>
 				<span class="relative inline-flex rounded-full size-2 bg-info"></span>
 			</span>
 			<span class="text-sm text-muted-foreground">
-				{activeDownloads.length} download{activeDownloads.length !== 1 ? 's' : ''} in progress
+				{activeCount} download{activeCount !== 1 ? 's' : ''} in progress
 			</span>
 		</div>
 	{/if}
@@ -395,8 +466,8 @@
 	{:else}
 		<!-- Playlist grid -->
 		<div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
-			{#each playlists as pl (pl.id)}
-				{@const pct = pl.total_entries > 0 ? Math.round((pl.downloaded_count / pl.total_entries) * 100) : 0}
+			{#each gridPlaylists as pl (pl.id)}
+				{@const pct = pl.total_entries > 0 ? Math.floor((pl.downloaded_count / pl.total_entries) * 100) : 0}
 				<div
 					class="group rounded-xl border border-border/40 bg-card hover:bg-muted/20 transition-all cursor-pointer overflow-hidden"
 					role="button"
@@ -445,7 +516,7 @@
 								<Button variant="ghost" size="icon-sm" class="size-6" onclick={(e) => { e.stopPropagation(); onsyncPlaylist(pl.id); }} disabled={syncingIds.has(pl.id)}>
 									<RefreshCw class="size-3 {syncingIds.has(pl.id) ? 'animate-spin' : ''}" />
 								</Button>
-								<Button variant="ghost" size="icon-sm" class="size-6 text-muted-foreground hover:text-destructive" onclick={(e) => { e.stopPropagation(); onremovePlaylist(pl.id); }}>
+								<Button variant="ghost" size="icon-sm" class="size-6 text-muted-foreground hover:text-destructive" onclick={(e) => { e.stopPropagation(); requestRemovePlaylist(pl); }}>
 									<Trash2 class="size-3" />
 								</Button>
 							</div>
@@ -475,7 +546,6 @@
 			{/each}
 		</div>
 		<!-- Singles list -->
-		{@const singles = playlists.filter(pl => pl.total_entries <= 1)}
 		{#if singles.length > 0}
 			<div class="space-y-1.5">
 				<p class="text-xs font-medium uppercase tracking-wider text-muted-foreground/50 px-1">Singles ({singles.length})</p>
@@ -503,7 +573,7 @@
 									<ArrowDownToLine class="size-3" />
 								</Button>
 							{/if}
-							<Button variant="ghost" size="icon-sm" class="size-6 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-destructive" onclick={(e) => { e.stopPropagation(); onremovePlaylist(pl.id); }}>
+							<Button variant="ghost" size="icon-sm" class="size-6 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-destructive" onclick={(e) => { e.stopPropagation(); requestRemovePlaylist(pl); }}>
 								<Trash2 class="size-3" />
 							</Button>
 						</div>
@@ -512,4 +582,20 @@
 			</div>
 		{/if}
 	{/if}
+
+	<!-- Remove playlist confirmation -->
+	<AlertDialog.Root bind:open={removeDialogOpen}>
+		<AlertDialog.Content>
+			<AlertDialog.Header>
+				<AlertDialog.Title>Remove Playlist</AlertDialog.Title>
+				<AlertDialog.Description>
+					Are you sure you want to remove "{playlistPendingRemoval?.name}"? This stops monitoring the playlist. This action cannot be undone.
+				</AlertDialog.Description>
+			</AlertDialog.Header>
+			<AlertDialog.Footer>
+				<AlertDialog.Cancel>Cancel</AlertDialog.Cancel>
+				<AlertDialog.Action onclick={confirmRemovePlaylist}>Remove</AlertDialog.Action>
+			</AlertDialog.Footer>
+		</AlertDialog.Content>
+	</AlertDialog.Root>
 {/if}

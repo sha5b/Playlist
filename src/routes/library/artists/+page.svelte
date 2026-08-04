@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { untrack } from 'svelte';
 	import { getArtists } from '$lib/api/library';
 	import CardGridSkeleton from '$lib/components/shared/CardGridSkeleton.svelte';
 	import { Input } from '$lib/components/ui/input';
@@ -17,7 +18,7 @@
 	async function load() {
 		loading = true;
 		try {
-			const [data, count] = await getArtists(0, 200, search.query || undefined);
+			const [data, count] = await getArtists(0, 10000, search.query || undefined);
 			artists = data;
 			total = count;
 		} catch (e) {
@@ -29,7 +30,10 @@
 
 	$effect(() => {
 		libraryStore.version;
-		load();
+		// untrack: load() reads search.query — tracking it here made every
+		// keystroke fetch TWICE (the debounced search callback plus this effect
+		// re-running), defeating the search debounce.
+		untrack(() => load());
 	});
 </script>
 

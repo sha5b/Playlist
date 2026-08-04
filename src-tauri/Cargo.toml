@@ -1,6 +1,6 @@
 [package]
 name = "playlist"
-version = "0.7.0"
+version = "0.8.0"
 description = "Liberate your music. Own your data. Support artists. Download tracks, discover missing music, sync across devices, and play everything locally."
 authors = ["sha5b"]
 license = "MIT"

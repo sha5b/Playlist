@@ -41,6 +41,7 @@
 			size="icon-sm"
 			class="text-muted-foreground hover:text-foreground shrink-0"
 			onclick={() => ui.toggleSidebar()}
+			aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
 		>
 			{#if collapsed}
 				<PanelLeft class="size-4" />
@@ -70,8 +71,8 @@
 			{:else}
 				<a
 					href={item.href}
-					class="flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition-colors
-						{isActive(item.href) ? 'bg-sidebar-accent text-sidebar-accent-foreground font-medium border-l-2 border-primary' : 'text-muted-foreground hover:bg-sidebar-accent/50 hover:text-sidebar-foreground'}"
+					class="flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition-colors border-l-2
+						{isActive(item.href) ? 'bg-sidebar-accent text-sidebar-accent-foreground font-medium border-primary' : 'border-transparent text-muted-foreground hover:bg-sidebar-accent/50 hover:text-sidebar-foreground'}"
 				>
 					<item.icon class="size-4 shrink-0" />
 					{item.label}
@@ -106,8 +107,8 @@
 			{:else}
 				<a
 					href={item.href}
-					class="flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition-colors
-						{isActive(item.href) ? 'bg-sidebar-accent text-sidebar-accent-foreground font-medium border-l-2 border-primary' : 'text-muted-foreground hover:bg-sidebar-accent/50 hover:text-sidebar-foreground'}"
+					class="flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition-colors border-l-2
+						{isActive(item.href) ? 'bg-sidebar-accent text-sidebar-accent-foreground font-medium border-primary' : 'border-transparent text-muted-foreground hover:bg-sidebar-accent/50 hover:text-sidebar-foreground'}"
 				>
 					<item.icon class="size-4 shrink-0" />
 					{item.label}
@@ -155,7 +156,7 @@
 				? (scanProg ? `Enriching ${scanProg.current}/${scanProg.total}` : 'Enriching…')
 				: `${metadataScanStore.autoPhase === 'albums' ? 'Albums' : 'Tracks'} ${metadataScanStore.autoCurrent}/${metadataScanStore.autoTotal}`}
 			{@const pct = isScan
-				? (scanProg ? Math.round((scanProg.current / scanProg.total) * 100) : 0)
+				? (scanProg && scanProg.total > 0 ? Math.round((scanProg.current / scanProg.total) * 100) : 0)
 				: (metadataScanStore.autoTotal > 0 ? Math.round((metadataScanStore.autoCurrent / metadataScanStore.autoTotal) * 100) : 0)}
 			{@const subtitle = isScan ? scanProg?.track_title : metadataScanStore.autoTitle}
 			{#if collapsed}
@@ -219,8 +220,8 @@
 			{:else}
 				<a
 					href={item.href}
-					class="flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition-colors
-						{isActive(item.href) ? 'bg-sidebar-accent text-sidebar-accent-foreground font-medium border-l-2 border-primary' : 'text-muted-foreground hover:bg-sidebar-accent/50 hover:text-sidebar-foreground'}"
+					class="flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition-colors border-l-2
+						{isActive(item.href) ? 'bg-sidebar-accent text-sidebar-accent-foreground font-medium border-primary' : 'border-transparent text-muted-foreground hover:bg-sidebar-accent/50 hover:text-sidebar-foreground'}"
 				>
 					<item.icon class="size-4 shrink-0" />
 					{item.label}

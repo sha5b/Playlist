@@ -86,6 +86,28 @@ jobs:
           grep '"version"' src-tauri/tauri.conf.json package.json
           grep '^version' src-tauri/Cargo.toml | head -1
 
+      - name: Extract release notes from CHANGELOG.md
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          NOTES=$(awk -v ver="$VERSION" '
+            $0 ~ "^## \\[" ver "\\]" {found=1; next}
+            found && /^## \[/ {exit}
+            found {print}
+          ' CHANGELOG.md 2>/dev/null || true)
+          if [ -z "$NOTES" ]; then
+            NOTES="Download the installer for your platform below."
+          fi
+          {
+            echo "RELEASE_NOTES<<CHANGELOG_EOF"
+            echo "$NOTES"
+            echo ""
+            echo "---"
+            echo "Download the installer for your platform below."
+            echo "CHANGELOG_EOF"
+          } >> "$GITHUB_ENV"
+
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
         env:
@@ -94,7 +116,7 @@ jobs:
           args: --target ${{ matrix.target }}
           tagName: ${{ github.ref_name }}
           releaseName: 'Playlist ${{ github.ref_name }}'
-          releaseBody: 'Download the installer for your platform below.'
+          releaseBody: ${{ env.RELEASE_NOTES }}
           releaseDraft: false
           prerelease: false
 

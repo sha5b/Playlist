@@ -89,6 +89,7 @@ function flushEvents() {
 	const newById = new Map<number, Download>();
 	const removed = new Set<number>();
 	let activeDelta = 0;
+	let sawUnknownActive = false;
 
 	for (const data of batch) {
 		const idx = index.get(data.id);
@@ -110,9 +111,12 @@ function flushEvents() {
 			} else {
 				newById.set(data.id, mergeEvent(cur, data));
 			}
-		} else if (data.status === 'queued' || data.status === 'downloading') {
+		} else if (data.status === 'queued' || data.status === 'downloading' || data.status === 'processing') {
 			newById.set(data.id, placeholderFromEvent(data));
 			activeDelta++;
+			// The id may have been evicted from the window while still counted as
+			// active, so the local ++ can drift — re-sync with the backend.
+			sawUnknownActive = true;
 		} else if (!terminalUnknown.has(data.id)) {
 			// Terminal status for an id outside our window: it was evicted by
 			// boundList while still active, so decrement — ignoring these left
@@ -128,7 +132,7 @@ function flushEvents() {
 	downloads = boundList([...fresh, ...keptExisting]);
 	activeCount = Math.max(0, activeCount + activeDelta);
 
-	if (terminalUnknown.size > 0) scheduleRefresh();
+	if (terminalUnknown.size > 0 || sawUnknownActive) scheduleRefresh();
 }
 
 // Ids outside the rendered window whose terminal event was already counted,

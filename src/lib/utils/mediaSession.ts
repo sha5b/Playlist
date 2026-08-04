@@ -41,7 +41,9 @@ export function updateMediaSessionMetadata(track: QueueTrack | null) {
 
 	const artwork: MediaImage[] = [];
 	if (track.cover_art_path) {
-		artwork.push({ src: assetUrl(track.cover_art_path), sizes: '512x512', type: 'image/jpeg' });
+		const ext = track.cover_art_path.split('.').pop()?.toLowerCase();
+		const type = ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : 'image/jpeg';
+		artwork.push({ src: assetUrl(track.cover_art_path), sizes: '512x512', type });
 	}
 
 	navigator.mediaSession.metadata = new MediaMetadata({

@@ -255,7 +255,7 @@
 {#if allCompletedDownloads.length > 0}
 	<div class="space-y-3">
 		<h2 class="text-sm font-semibold uppercase tracking-wider text-muted-foreground">
-			Recent ({allCompletedDownloads.length})
+			Recent
 		</h2>
 		<div class="rounded-xl border border-border/60 overflow-hidden">
 			<div class="border-b border-border bg-muted/30 text-xs text-muted-foreground uppercase tracking-wider flex items-center px-4 py-2.5">

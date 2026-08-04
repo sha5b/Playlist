@@ -77,7 +77,8 @@
 	let offsetY = $derived(startIndex * ROW_HEIGHT);
 
 	// Reset scroll to top when sort/filter changes (not on every tracks reference change)
-	let scrollKey = $derived(`${sortBy}-${sortDir}-${tracks.length}`);
+	// Include the first track's id so page changes (same length) also reset scroll
+	let scrollKey = $derived(`${sortBy}-${sortDir}-${tracks.length}-${tracks[0]?.id}`);
 	let prevScrollKey = '';
 	$effect(() => {
 		if (scrollKey !== prevScrollKey) {

@@ -50,7 +50,10 @@ export async function getTracks(
 	limit = 50,
 	sortBy = 'date_added',
 	sortDir = 'desc',
-	search?: string
+	search?: string,
+	/** Shuffle seed for sortBy='random' — keep it stable across page fetches
+	 * so pagination is consistent (no duplicated/skipped tracks). */
+	seed?: number
 ): Promise<TrackPage> {
 	return invoke('library_get_tracks', {
 		offset,
@@ -58,6 +61,7 @@ export async function getTracks(
 		sortBy,
 		sortDir,
 		search: search || null,
+		seed: seed ?? null,
 	});
 }
 

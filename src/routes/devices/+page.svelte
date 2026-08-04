@@ -62,8 +62,9 @@
 			: []
 	);
 
-	async function handleScanDevices() {
-		scanningDevices = true;
+	async function handleScanDevices(silent = false) {
+		// Background polls pass silent=true so the Scan button doesn't strobe
+		if (!silent) scanningDevices = true;
 		try {
 			scannedDevices = await scanDevices();
 			// Load details for known devices to show sync status
@@ -77,9 +78,9 @@
 				}
 			}
 		} catch (e) {
-			toast.error('Failed to scan devices', { description: String(e) });
+			if (!silent) toast.error('Failed to scan devices', { description: String(e) });
 		} finally {
-			scanningDevices = false;
+			if (!silent) scanningDevices = false;
 		}
 	}
 
@@ -215,7 +216,7 @@
 	// Auto-scan and poll while page is active
 	$effect(() => {
 		handleScanDevices();
-		const interval = setInterval(handleScanDevices, 5000);
+		const interval = setInterval(() => handleScanDevices(true), 5000);
 
 		let unlistenSync: (() => void) | null = null;
 		listen<DeviceSyncProgress>('device-sync-progress', (event) => {
@@ -359,7 +360,7 @@
 									class="rounded border-input pointer-events-none" tabindex={-1} />
 								<div>
 										<p class="text-sm font-medium">{pl.name}</p>
-										<p class="text-xs text-muted-foreground">{pl.track_count} tracks</p>
+										<p class="text-xs text-muted-foreground">{pl.track_count} track{pl.track_count !== 1 ? 's' : ''}</p>
 									</div>
 								</div>
 								{#if linked}
@@ -454,7 +455,7 @@
 				<p class="text-sm text-muted-foreground">
 					Connect a phone, MP3 player, or USB drive to sync your music.
 				</p>
-				<Button variant="outline" size="sm" onclick={handleScanDevices} disabled={scanningDevices} class="gap-1.5">
+				<Button variant="outline" size="sm" onclick={() => handleScanDevices()} disabled={scanningDevices} class="gap-1.5">
 					{#if scanningDevices}
 						<Loader2 class="size-3 animate-spin" />
 					{:else}
@@ -480,9 +481,19 @@
 				<div class="grid gap-3">
 					{#each scannedDevices as device}
 						{@const unsynced = getDeviceUnsynced(device.device_id)}
-						<button
-							class="flex items-center gap-4 p-4 rounded-lg border hover:bg-muted/50 transition-colors text-left w-full"
+						<!-- div[role=button] instead of <button>: the quick-sync Button inside
+							would otherwise be invalid nested-interactive HTML -->
+						<div
+							role="button"
+							tabindex="0"
+							class="flex items-center gap-4 p-4 rounded-lg border hover:bg-muted/50 transition-colors text-left w-full cursor-pointer"
 							onclick={() => { if (device.device_id) selectDevice(device.device_id); }}
+							onkeydown={(e) => {
+								if ((e.key === 'Enter' || e.key === ' ') && device.device_id) {
+									e.preventDefault();
+									selectDevice(device.device_id);
+								}
+							}}
 						>
 							<div class="rounded-full bg-muted p-2.5">
 								<HardDrive class="size-5 text-muted-foreground" />
@@ -509,7 +520,7 @@
 								{/if}
 							</div>
 							<ChevronRight class="size-4 text-muted-foreground shrink-0" />
-						</button>
+						</div>
 					{/each}
 				</div>
 			{/if}

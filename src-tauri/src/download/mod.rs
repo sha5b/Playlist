@@ -174,7 +174,15 @@ impl DownloadManager {
             Ok(d) => d,
             Err(e) => {
                 log::error!("[download] {}", e);
-                emit_event(&self.app_handle, download_id, "error", 0.0, Some(e), None, None, title);
+                // Persist and emit "failed" — "error" is not a status the
+                // frontend (or the DB) knows, so the row would vanish from
+                // every list and resurrect as an eternally-"queued" ghost.
+                if let Ok(conn) = self.db.lock() {
+                    let _ = crate::db::downloads::update_download_status(
+                        &conn, download_id, "failed", Some(&e),
+                    );
+                }
+                emit_event(&self.app_handle, download_id, "failed", 0.0, Some(e), None, None, title);
                 return;
             }
         };
@@ -219,6 +227,9 @@ impl DownloadManager {
         }
         if let Ok(conn) = self.db.lock() {
             let _ = crate::db::downloads::cancel_download(&conn, download_id);
+            // Reset the linked monitored entry, otherwise it stays badged
+            // "queued/downloading" forever in the playlist view.
+            reset_entries_for_downloads(&conn, &self.app_handle, &[download_id]);
         }
         let _ = self.app_handle.emit(
             "download-event",
@@ -238,8 +249,10 @@ impl DownloadManager {
     /// Cancel **all** active downloads. Called when the library is reset or the app exits.
     pub async fn cancel_all(&self) {
         let mut tasks = self.active_tasks.lock().await;
+        let mut cancelled_ids: Vec<i64> = Vec::new();
         for (id, handle) in tasks.drain() {
             handle.abort();
+            cancelled_ids.push(id);
             let _ = self.app_handle.emit(
                 "download-event",
                 DownloadEvent {
@@ -282,7 +295,7 @@ impl DownloadManager {
             );
             // Emit cancel events for downloads that weren't in active_tasks
             // (e.g. queued but waiting for semaphore)
-            for id in ids {
+            for &id in &ids {
                 let _ = self.app_handle.emit(
                     "download-event",
                     DownloadEvent {
@@ -297,6 +310,36 @@ impl DownloadManager {
                     },
                 );
             }
+            // Reset all linked monitored entries back to "new" — without this,
+            // playlist entries stay stuck showing "queued/downloading" and the
+            // playlist cards keep their spinner even though nothing is running.
+            cancelled_ids.extend(ids);
+            reset_entries_for_downloads(&conn, &self.app_handle, &cancelled_ids);
+        }
+    }
+}
+
+/// Reset the monitored playlist entries linked to the given downloads back to
+/// "new" (clearing the download link) and notify the frontend per entry.
+fn reset_entries_for_downloads(
+    conn: &rusqlite::Connection,
+    app_handle: &tauri::AppHandle,
+    download_ids: &[i64],
+) {
+    for &download_id in download_ids {
+        let eid: Option<i64> = conn
+            .query_row(
+                "SELECT id FROM monitored_playlist_entries WHERE download_id = ?1",
+                rusqlite::params![download_id],
+                |row| row.get(0),
+            )
+            .ok();
+        if let Some(eid) = eid {
+            let _ = crate::db::monitored::update_entry_status(conn, eid, "new", None, None);
+            let _ = app_handle.emit(
+                "manager-entry-updated",
+                serde_json::json!({ "entry_id": eid, "status": "new" }),
+            );
         }
     }
 }
