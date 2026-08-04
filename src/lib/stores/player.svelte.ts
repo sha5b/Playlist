@@ -107,7 +107,14 @@ async function init() {
 		seek: (seconds) => player.seek(seconds),
 	});
 
-	unlisten = await listen<PlayerEvent>('player-event', (e) => handleEvent(e.payload));
+	const fn = await listen<PlayerEvent>('player-event', (e) => handleEvent(e.payload));
+	if (!initialized) {
+		// destroy() ran while listen() was resolving — remove immediately so a
+		// later init() doesn't stack a second handler.
+		fn();
+		return;
+	}
+	unlisten = fn;
 	// Fetch initial state
 	try {
 		const s = await playerApi.getState();

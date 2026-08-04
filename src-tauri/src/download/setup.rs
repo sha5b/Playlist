@@ -84,6 +84,108 @@ pub fn resolve_ffmpeg_dir(bin_dir: &Path) -> Option<String> {
     None
 }
 
+/// Self-update yt-dlp in the background. An outdated yt-dlp silently breaks in
+/// subtle ways when YouTube changes (e.g. playlists truncated to 100 entries),
+/// so we keep it current instead of installing once and never touching it.
+///
+/// Standalone yt-dlp binaries support `-U` self-update. If `-U` fails (e.g. a
+/// distro/pip install that can't self-update), we download a fresh app-managed
+/// binary into `bin_dir`, which `resolve_ytdlp` prefers over PATH from then on.
+pub async fn auto_update_ytdlp(bin_dir: &Path) {
+    let local = get_ytdlp_path(bin_dir);
+    let is_managed = local.exists();
+    let binary = if is_managed {
+        local.to_string_lossy().to_string()
+    } else {
+        "yt-dlp".to_string()
+    };
+
+    // Make sure the binary exists at all before trying to update it
+    if !is_managed && super::ytdlp::check_available(&binary).await.is_err() {
+        return;
+    }
+
+    log::info!("Checking for yt-dlp updates ({})", binary);
+    let update = tokio::process::Command::new(&binary)
+        .arg("-U")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .await;
+
+    match update {
+        Ok(out) if out.status.success() => {
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            if let Some(line) = stdout.lines().last() {
+                log::info!("yt-dlp update: {}", line.trim());
+            }
+        }
+        Ok(out) => {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            log::warn!("yt-dlp self-update failed: {}", stderr.trim());
+            // Can't self-update (pip/distro install, or a broken managed
+            // binary) — install a fresh app-managed binary instead.
+            if let Err(e) = redownload_ytdlp(bin_dir).await {
+                log::warn!("yt-dlp re-download failed: {}", e);
+            }
+        }
+        Err(e) => log::warn!("Failed to run yt-dlp -U: {}", e),
+    }
+}
+
+/// Re-download the latest yt-dlp release over the app-managed binary.
+async fn redownload_ytdlp(bin_dir: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(bin_dir)
+        .map_err(|e| format!("Failed to create bin directory: {}", e))?;
+    let dest = get_ytdlp_path(bin_dir);
+    let url = ytdlp_download_url();
+
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::limited(10))
+        .connect_timeout(std::time::Duration::from_secs(30))
+        .timeout(std::time::Duration::from_secs(600))
+        .build()
+        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
+
+    let bytes = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("Download request failed: {}", e))?
+        .error_for_status()
+        .map_err(|e| format!("Download failed: {}", e))?
+        .bytes()
+        .await
+        .map_err(|e| format!("Download stream error: {}", e))?;
+
+    let tmp_path = dest.with_extension("tmp");
+    tokio::fs::write(&tmp_path, &bytes)
+        .await
+        .map_err(|e| format!("Failed to write yt-dlp: {}", e))?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o755))
+            .map_err(|e| format!("Failed to set executable permission: {}", e))?;
+    }
+
+    // Verify the new binary runs before replacing the old one
+    super::ytdlp::check_available(&tmp_path.to_string_lossy())
+        .await
+        .map_err(|e| {
+            let _ = std::fs::remove_file(&tmp_path);
+            format!("Downloaded yt-dlp failed to run: {}", e)
+        })?;
+
+    tokio::fs::rename(&tmp_path, &dest)
+        .await
+        .map_err(|e| format!("Failed to replace yt-dlp: {}", e))?;
+
+    log::info!("yt-dlp re-downloaded to {:?}", dest);
+    Ok(())
+}
+
 /// Check what dependencies are available
 pub async fn check_deps(bin_dir: &Path) -> DepsStatus {
     // Check yt-dlp: local binary first, then PATH

@@ -176,7 +176,7 @@ pub fn reset_download_for_retry(conn: &Connection, id: i64) -> Result<(), rusqli
 
 pub fn cancel_download(conn: &Connection, id: i64) -> Result<(), rusqlite::Error> {
     conn.execute(
-        "UPDATE downloads SET status = 'cancelled' WHERE id = ?1 AND status IN ('queued', 'downloading')",
+        "UPDATE downloads SET status = 'cancelled' WHERE id = ?1 AND status IN ('queued', 'downloading', 'processing')",
         params![id],
     )?;
     Ok(())

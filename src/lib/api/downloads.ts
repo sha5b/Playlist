@@ -48,10 +48,12 @@ export async function searchAndDownload(
 	discNumber?: number,
 	trackNumber?: number
 ): Promise<Download> {
+	// Tauri exposes snake_case Rust args as camelCase — snake_case keys were
+	// silently dropped (all Option fields), losing the album/artist linkage.
 	return invoke('download_search_and_start', {
 		query, title, artist, format, quality,
-		album_id: albumId, artist_id: artistId,
-		disc_number: discNumber, track_number: trackNumber,
+		albumId, artistId,
+		discNumber, trackNumber,
 	});
 }
 

@@ -83,12 +83,7 @@ pub fn get_tracks(
     // When searching, use FTS for matching then apply sort/pagination
     let fts_query = search
         .filter(|q| !q.trim().is_empty())
-        .map(|q| {
-            q.split_whitespace()
-                .map(|w| format!("{}*", w))
-                .collect::<Vec<_>>()
-                .join(" ")
-        });
+        .map(fts_prefix_query);
 
     let total: i64 = if let Some(ref fts) = fts_query {
         conn.query_row(
@@ -155,8 +150,9 @@ pub fn delete_track(conn: &Connection, id: i64, delete_file: bool) -> Result<Opt
         None
     };
 
-    // Note: tracks_fts is contentless — can't delete individual rows.
-    // Stale FTS entries are harmless because searches JOIN back to the tracks table.
+    // tracks_fts uses contentless_delete=1, so the index entry can be removed
+    // (stale entries inflated search counts and kept matching old terms).
+    conn.execute("DELETE FROM tracks_fts WHERE rowid = ?1", params![id])?;
 
     // Remove from playlist_tracks
     conn.execute(
@@ -169,16 +165,23 @@ pub fn delete_track(conn: &Connection, id: i64, delete_file: bool) -> Result<Opt
     Ok(file_path)
 }
 
+/// Build an FTS5 prefix-match query from free-form user input.
+/// Each token is quoted so FTS5 syntax characters in the input
+/// (`"`, `-`, `(`, `:` …) can't cause a MATCH syntax error.
+pub fn fts_prefix_query(query: &str) -> String {
+    query
+        .split_whitespace()
+        .map(|w| format!("\"{}\"*", w.replace('"', "\"\"")))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 pub fn search_tracks_fts(
     conn: &Connection,
     query: &str,
     limit: i64,
 ) -> Result<Vec<Track>, rusqlite::Error> {
-    let fts_query = query
-        .split_whitespace()
-        .map(|w| format!("{}*", w))
-        .collect::<Vec<_>>()
-        .join(" ");
+    let fts_query = fts_prefix_query(query);
 
     let sql = format!(
         "SELECT {}
@@ -329,8 +332,10 @@ pub fn record_play(conn: &Connection, track_id: i64) -> Result<(), rusqlite::Err
 }
 
 pub fn update_fts(conn: &Connection, track_id: i64) -> Result<(), rusqlite::Error> {
-    // Note: tracks_fts is contentless — can't delete old entries.
-    // Duplicate rowid inserts are harmless; FTS5 handles them as updates.
+    // tracks_fts is contentless with contentless_delete=1: remove any prior
+    // entry first. (A plain re-INSERT on the same rowid does NOT update — it
+    // adds a duplicate index entry, so the track showed up twice in search.)
+    conn.execute("DELETE FROM tracks_fts WHERE rowid = ?1", params![track_id])?;
 
     // Insert new entry with denormalized data
     conn.execute(

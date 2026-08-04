@@ -191,6 +191,10 @@ impl DownloadManager {
 
         let active_tasks_insert = self.active_tasks.clone();
         tokio::spawn(async move {
+            // Hold the map lock across spawn+insert: the worker's final
+            // `remove` must wait for the insert, otherwise a fast worker could
+            // finish before its handle is inserted, leaking a stale entry.
+            let mut tasks = active_tasks_insert.lock().await;
             let handle = tokio::spawn(async move {
                 // Wait for a concurrency slot (limits parallel yt-dlp processes)
                 let _permit = match semaphore.acquire().await {
@@ -204,7 +208,7 @@ impl DownloadManager {
                     .await;
                 active_tasks.lock().await.remove(&download_id);
             });
-            active_tasks_insert.lock().await.insert(download_id, handle);
+            tasks.insert(download_id, handle);
         });
     }
 
@@ -606,6 +610,14 @@ async fn run_download(
                         log::warn!("[download] id={} smart match download FAILED: {}", download_id, e);
                         errors.push(format!("smart-match: {}", e));
                         failed_urls.insert(url.clone());
+                        // Release the URL claim so a retry of this track (or a
+                        // sibling album track) can use it again.
+                        if let Some(album_id) = download.target_album_id {
+                            let mut guard = used_urls_by_album.write().await;
+                            if let Some(set) = guard.get_mut(&album_id) {
+                                set.remove(url);
+                            }
+                        }
                         false
                     }
                 }
@@ -615,8 +627,10 @@ async fn run_download(
                 false
             }
         } else {
-            // Original path: search URLs without duration or direct URLs
-            if is_search_url {
+            // Direct URL path (search URLs always take the smart-match branch).
+            // Fetch metadata first so the UI shows a real title while
+            // downloading and Phase-2 fallbacks have title/artist to work with.
+            {
                 ytdlp_info = match ytdlp::get_info(
                     &ytdlp_binary,
                     ffmpeg_dir.as_deref(),
@@ -675,45 +689,66 @@ async fn run_download(
 
     // --- Phase 2: All fast methods failed — search fallbacks for this track ---
     if !ytdlp_success {
-                // Check if the track already exists in the library
-                let library_match = {
-                    let search_query = if let Some(ref info) = ytdlp_info {
-                        let title = info.track.as_deref().unwrap_or(&info.title);
-                        let artist = info.artist.as_deref().or(info.uploader.as_deref());
-                        match artist {
-                            Some(a) => Some(format!("{} {}", a, title)),
-                            None => Some(title.to_string()),
-                        }
-                    } else if let Ok(conn) = db.lock() {
-                        conn.query_row(
-                            "SELECT title, artist FROM downloads WHERE id = ?1",
-                            rusqlite::params![download_id],
-                            |row| {
-                                let t: Option<String> = row.get(0)?;
-                                let a: Option<String> = row.get(1)?;
-                                Ok(match (t, a) {
-                                    (Some(t), Some(a)) => Some(format!("{} {}", a, t)),
-                                    (Some(t), None) => Some(t),
-                                    _ => None,
-                                })
-                            },
-                        ).ok().flatten()
+                // Check if the track already exists in the library.
+                // A bare FTS hit is NOT enough: it must also pass the same
+                // title/artist similarity gates as search matching, otherwise a
+                // failed download gets marked "completed" against an unrelated
+                // library track (e.g. a cover) and is never retried.
+                let expected: Option<(String, Option<String>)> = if let Some(ref info) = ytdlp_info {
+                    let title = info.track.as_deref().unwrap_or(&info.title).to_string();
+                    let artist = info.artist.clone().or_else(|| info.uploader.clone());
+                    Some((title, artist))
+                } else if let Ok(conn) = db.lock() {
+                    conn.query_row(
+                        "SELECT title, artist FROM downloads WHERE id = ?1",
+                        rusqlite::params![download_id],
+                        |row| {
+                            let t: Option<String> = row.get(0)?;
+                            let a: Option<String> = row.get(1)?;
+                            Ok(t.map(|t| (t, a)))
+                        },
+                    ).ok().flatten()
+                } else {
+                    None
+                };
+
+                let library_match = expected.as_ref().and_then(|(exp_title, exp_artist)| {
+                    let q = match exp_artist {
+                        Some(a) => format!("{} {}", a, exp_title),
+                        None => exp_title.clone(),
+                    };
+                    let candidate = if let Ok(conn) = db.lock() {
+                        crate::db::tracks::search_tracks_fts(&conn, &q, 1)
+                            .ok()
+                            .and_then(|tracks| tracks.into_iter().next())
                     } else {
                         None
                     };
-
-                    if let Some(ref q) = search_query {
-                        if let Ok(conn) = db.lock() {
-                            crate::db::tracks::search_tracks_fts(&conn, q, 1)
-                                .ok()
-                                .and_then(|tracks| tracks.into_iter().next())
-                        } else {
-                            None
+                    candidate.filter(|track| {
+                        let title_ok =
+                            matching::title_similarity(exp_title, &track.title) >= 0.67;
+                        let artist_ok = match (exp_artist, &track.artist_name) {
+                            (Some(want), Some(have)) => {
+                                let want_t = matching::tokens(want);
+                                let have_t = matching::tokens(have);
+                                let matched = want_t
+                                    .iter()
+                                    .filter(|w| have_t.contains(w))
+                                    .count();
+                                matched * 2 >= want_t.len().max(1)
+                            }
+                            // No artist on either side — don't reject on missing data
+                            _ => true,
+                        };
+                        if !(title_ok && artist_ok) {
+                            log::info!(
+                                "Download {} FTS candidate '{}' rejected (title_ok={}, artist_ok={})",
+                                download_id, track.title, title_ok, artist_ok
+                            );
                         }
-                    } else {
-                        None
-                    }
-                };
+                        title_ok && artist_ok
+                    })
+                });
 
                 if let Some(track) = library_match {
                     log::info!("Download {} matched existing library track {} ('{}')", download_id, track.id, track.title);
@@ -740,7 +775,8 @@ async fn run_download(
                             "entry_id": eid, "status": "downloaded", "track_id": track.id
                         }));
                     }
-                    let _ = app_handle.emit("library-changed", ());
+                    // NB: the frontend listens for "library-updated" (not "library-changed")
+                    let _ = app_handle.emit("library-updated", ());
                     return;
                 }
 

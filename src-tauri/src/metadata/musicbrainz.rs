@@ -17,6 +17,28 @@ fn client() -> reqwest::Client {
         .unwrap_or_default()
 }
 
+/// Global rate gate: serializes ALL MusicBrainz requests process-wide so the
+/// combined traffic of concurrent enrichment paths (startup auto-enrich,
+/// manual scans, per-track/album/artist enrich) stays under 1 request/second.
+/// Per-call-site sleeps can't do this — two paths sleeping in parallel still
+/// hit the API at 2 req/s and get throttled.
+async fn rate_gate() {
+    use std::sync::OnceLock;
+    use tokio::sync::Mutex;
+    static LAST_REQUEST: OnceLock<Mutex<Option<std::time::Instant>>> = OnceLock::new();
+
+    let gate = LAST_REQUEST.get_or_init(|| Mutex::new(None));
+    let mut last = gate.lock().await;
+    if let Some(t) = *last {
+        let elapsed = t.elapsed();
+        let min_gap = std::time::Duration::from_millis(MB_RATE_LIMIT_MS);
+        if elapsed < min_gap {
+            tokio::time::sleep(min_gap - elapsed).await;
+        }
+    }
+    *last = Some(std::time::Instant::now());
+}
+
 // ── Recording search (for tracks) ──────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
@@ -118,7 +140,7 @@ struct MbRelArtist {
 
 /// Look up a recording's artist relations to find the composer.
 async fn lookup_composer(recording_mbid: &str) -> Option<String> {
-    tokio::time::sleep(std::time::Duration::from_millis(MB_RATE_LIMIT_MS)).await;
+    rate_gate().await;
 
     let url = format!(
         "{}/recording/{}?inc=artist-rels&fmt=json",
@@ -141,7 +163,7 @@ async fn lookup_composer(recording_mbid: &str) -> Option<String> {
 /// Look up a recording's URL relations to find a confirmed music video link.
 pub async fn lookup_music_video_url(recording_mbid: &str) -> Option<String> {
     // Rate limit: 1 req/sec
-    tokio::time::sleep(std::time::Duration::from_millis(MB_RATE_LIMIT_MS)).await;
+    rate_gate().await;
 
     let url = format!(
         "{}/recording/{}?inc=url-rels&fmt=json",
@@ -181,7 +203,7 @@ pub async fn lookup_music_video_url(recording_mbid: &str) -> Option<String> {
 
 /// Look up an artist's URL relations to find their official website.
 async fn lookup_artist_website(artist_mbid: &str) -> Option<String> {
-    tokio::time::sleep(std::time::Duration::from_millis(MB_RATE_LIMIT_MS)).await;
+    rate_gate().await;
     let url = format!("{}/artist/{}?inc=url-rels&fmt=json", MB_BASE, artist_mbid);
     let resp = client().get(&url).send().await.ok()?;
     let detail: RecordingDetail = resp.json().await.ok()?;
@@ -207,7 +229,7 @@ async fn lookup_artist_website(artist_mbid: &str) -> Option<String> {
 
 /// Look up a release's URL relations to find purchase/streaming links.
 async fn lookup_album_purchase_url(release_mbid: &str) -> Option<String> {
-    tokio::time::sleep(std::time::Duration::from_millis(MB_RATE_LIMIT_MS)).await;
+    rate_gate().await;
     let url = format!("{}/release/{}?inc=url-rels&fmt=json", MB_BASE, release_mbid);
     let resp = client().get(&url).send().await.ok()?;
     let detail: RecordingDetail = resp.json().await.ok()?;
@@ -277,6 +299,9 @@ struct MbMedia {
 
 #[derive(Debug, Deserialize)]
 struct MbTrack {
+    /// Numeric position within the medium — always an integer, unlike
+    /// `number`, which is free-form ("A1", "B2" on vinyl).
+    position: Option<i64>,
     number: Option<String>,
     title: Option<String>,
     length: Option<i64>,
@@ -425,6 +450,7 @@ pub async fn enrich_track(title: &str, artist: Option<&str>) -> Result<TrackEnri
 
     let url = format!("{}/recording/?query={}&fmt=json&limit=5", MB_BASE, urlencoding(&query));
 
+    rate_gate().await;
     let resp: RecordingSearchResult = client()
         .get(&url)
         .send()
@@ -461,8 +487,24 @@ pub async fn enrich_track(title: &str, artist: Option<&str>) -> Result<TrackEnri
         }
     }
 
-    // Album info from first release
-    if let Some(release) = hit.releases.as_ref().and_then(|r| r.first()) {
+    // Album info: MusicBrainz orders a recording's releases arbitrarily, so
+    // "first" could be a compilation. Prefer a proper Album release, break
+    // ties by earliest date (the original release), fall back to the first.
+    let picked_release = hit.releases.as_ref().and_then(|releases| {
+        releases
+            .iter()
+            .filter(|r| {
+                r.release_group.as_ref()
+                    .and_then(|rg| rg.primary_type.as_deref())
+                    == Some("Album")
+            })
+            .min_by(|a, b| {
+                a.date.as_deref().unwrap_or("9999")
+                    .cmp(b.date.as_deref().unwrap_or("9999"))
+            })
+            .or_else(|| releases.first())
+    });
+    if let Some(release) = picked_release {
         enrichment.album_musicbrainz_id = Some(release.id.clone());
         enrichment.album_release_date = release.date.clone();
         enrichment.album_type = release.release_group.as_ref()
@@ -516,6 +558,7 @@ pub async fn enrich_album(title: &str, artist: Option<&str>) -> Result<AlbumEnri
         MB_BASE, urlencoding(&query)
     );
 
+    rate_gate().await;
     let resp: ReleaseSearchResult = client()
         .get(&url)
         .send()
@@ -565,7 +608,7 @@ pub async fn enrich_album(title: &str, artist: Option<&str>) -> Result<AlbumEnri
     }
 
     // Now fetch full release with media for tracklist
-    tokio::time::sleep(std::time::Duration::from_millis(MB_RATE_LIMIT_MS)).await; // rate limit
+    rate_gate().await;
     let detail_url = format!(
         "{}/release/{}?inc=recordings+artist-credits&fmt=json",
         MB_BASE, hit.id
@@ -580,10 +623,11 @@ pub async fn enrich_album(title: &str, artist: Option<&str>) -> Result<AlbumEnri
                     let disc = medium.position.unwrap_or(1);
                     if disc > total_discs { total_discs = disc; }
                     if let Some(tracks) = &medium.tracks {
-                        for track in tracks {
-                            let num: i64 = track.number.as_ref()
-                                .and_then(|n| n.parse::<i64>().ok())
-                                .unwrap_or(0);
+                        for (idx, track) in tracks.iter().enumerate() {
+                            let num: i64 = track.position
+                                .or_else(|| track.number.as_ref()
+                                    .and_then(|n| n.parse::<i64>().ok()))
+                                .unwrap_or(idx as i64 + 1);
                             tracklist.push(AlbumTrackInfo {
                                 disc_number: disc,
                                 track_number: num,
@@ -643,6 +687,7 @@ struct ArtistSearchHit {
 /// Search MusicBrainz for an artist by name and return their MBID.
 pub async fn search_artist(name: &str) -> Result<String, String> {
     let url = format!("{}/artist/?query={}&fmt=json&limit=5", MB_BASE, urlencoding(name));
+    rate_gate().await;
     let resp: ArtistSearchResult = client()
         .get(&url)
         .send()
@@ -663,6 +708,7 @@ pub async fn get_artist_discography(mbid: &str) -> Result<Vec<ArtistDiscographyE
         "{}/release-group?artist={}&type=album|ep|single&fmt=json&limit=100",
         MB_BASE, mbid
     );
+    rate_gate().await;
     let resp: ReleaseGroupSearchResult = client()
         .get(&url)
         .send()

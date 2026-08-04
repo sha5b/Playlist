@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { untrack } from 'svelte';
 	import { getTracks, cleanupDuplicateTracks } from '$lib/api/library';
 	import TrackTable from '$lib/components/library/TrackTable.svelte';
 	import TrackTableSkeleton from '$lib/components/shared/TrackTableSkeleton.svelte';
@@ -62,7 +63,11 @@
 
 	$effect(() => {
 		libraryStore.version;
-		load();
+		// untrack: load() reads currentPage/sortBy/search.query — tracking them
+		// here made every pagination/sort/keystroke fetch TWICE (the explicit
+		// load() plus this effect re-running), visibly reshuffling the default
+		// random sort and defeating the search debounce.
+		untrack(() => load());
 	});
 
 	const totalPages = $derived(page ? Math.ceil(page.total / pageSize) : 0);

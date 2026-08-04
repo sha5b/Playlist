@@ -9,7 +9,12 @@ const FALLBACK_PLAYLIST_HASH: &str =
 /// Works for any public Spotify URL without authentication.
 /// Returns (title, artist) parsed from the oEmbed "title" field which is formatted as "Song - Artist".
 pub async fn fetch_track_metadata(url: &str) -> Option<(String, Option<String>)> {
-    let oembed_url = format!("https://open.spotify.com/oembed?url={}", url);
+    // Percent-encode: raw `?si=…&…` query params in the target URL would
+    // otherwise truncate the `url=` parameter and 404 the oEmbed request.
+    let oembed_url = format!(
+        "https://open.spotify.com/oembed?url={}",
+        super::metadata::url_encode(url)
+    );
     let client = reqwest::Client::new();
     let resp = client.get(&oembed_url).send().await.ok()?;
     let data: serde_json::Value = resp.json().await.ok()?;
@@ -52,8 +57,11 @@ fn parse_spotify_track(track: &serde_json::Value, album_name: Option<&str>) -> O
                 .and_then(|a| a["name"].as_str())
         })
         .map(|s| s.to_string());
+    // The embed page's `duration` field is MILLISECONDS (like `duration_ms`);
+    // storing it raw as seconds broke every duration-based match gate.
     let duration = track["duration"].as_f64()
-        .or_else(|| track["duration_ms"].as_f64().map(|ms| ms / 1000.0));
+        .or_else(|| track["duration_ms"].as_f64())
+        .map(|ms| ms / 1000.0);
     let track_uri = track["uri"].as_str().unwrap_or("").to_string();
 
     // ISRC from embed data (if available)
@@ -521,7 +529,6 @@ pub async fn fetch_playlist_entries(url: &str) -> Result<super::ytdlp::PlaylistF
             // discovery works, otherwise the bundled fallback hash. (Previously, if hash
             // discovery failed we skipped straight to the v1 API, which Spotify now hard
             // rate-limits — leaving the playlist stuck at the embed's first ~100 tracks.)
-            let mut pathfinder_ok = false;
             let (op_name, hash) = match discover_pathfinder_hash(&client, item_type, item_id).await {
                 Some((op, h)) => (op, h),
                 None => {
@@ -584,13 +591,16 @@ pub async fn fetch_playlist_entries(url: &str) -> Result<super::ytdlp::PlaylistF
                 }
 
                 if entries.len() > entries_from_embed {
-                    pathfinder_ok = true;
                     log::info!("[spotify] Pathfinder fetched {} total tracks", entries.len());
                 }
             }
 
             // --- Strategy B: v1 REST API fallback ---
-            if !pathfinder_ok && entries.len() < total {
+            // Runs whenever tracks are still missing — including after a
+            // PARTIALLY successful Pathfinder run that aborted mid-playlist
+            // (persistent errors after some pages). Previously any Pathfinder
+            // progress suppressed this fallback and truncated the playlist.
+            if entries.len() < total {
                 log::info!("[spotify] Falling back to v1 API for pagination");
                 let mut offset = entries.len();
                 let api_path = format!("https://api.spotify.com/v1/playlists/{}/tracks", item_id);

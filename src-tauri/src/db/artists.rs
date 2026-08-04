@@ -5,7 +5,8 @@ use super::models::Artist;
 const ARTIST_COLUMNS: &str =
     "a.id, a.name, a.sort_name, a.musicbrainz_id, a.image_path, a.bio,
      a.country, a.begin_year, a.artist_type, a.website_url,
-     COUNT(t.id) as track_count";
+     COUNT(t.id) as track_count,
+     a.enriched_discography IS NOT NULL as has_enriched_discography";
 
 fn row_to_artist(row: &Row) -> Result<Artist, rusqlite::Error> {
     Ok(Artist {
@@ -20,6 +21,7 @@ fn row_to_artist(row: &Row) -> Result<Artist, rusqlite::Error> {
         artist_type: row.get(8)?,
         website_url: row.get(9)?,
         track_count: row.get(10)?,
+        has_enriched_discography: row.get(11)?,
     })
 }
 
@@ -44,17 +46,9 @@ pub fn find_or_create(conn: &Connection, name: &str) -> Result<i64, rusqlite::Er
         return Ok(id);
     }
 
-    // Fuzzy match: substring containment (only for names longer than 3 chars to avoid false positives)
-    if stripped.len() > 3 {
-        let pattern = format!("%{}%", stripped);
-        if let Ok(id) = conn.query_row(
-            "SELECT id FROM artists WHERE name LIKE ?1 COLLATE NOCASE LIMIT 1",
-            params![pattern],
-            |row| row.get::<_, i64>(0),
-        ) {
-            return Ok(id);
-        }
-    }
+    // NOTE: no substring matching here on purpose. `LIKE '%name%'` silently
+    // merged distinct artists whose name contains another's ("Muse" filed
+    // under "Museum of Love"), putting downloads in the wrong artist/folder.
 
     conn.execute(
         "INSERT INTO artists (name) VALUES (?1)",

@@ -187,6 +187,7 @@ fn reset_database_tables(conn: &rusqlite::Connection) -> Result<(), String> {
          CREATE VIRTUAL TABLE tracks_fts USING fts5(
              title, artist_name, album_title, album_artist, genre,
              content='',
+             contentless_delete=1,
              tokenize='unicode61 remove_diacritics 2'
          );"
     ).map_err(|e| e.to_string())
@@ -225,7 +226,9 @@ pub async fn library_reset(
     reset_database_tables(&conn)?;
     cleanup_cover_art(&app_handle);
 
-    let _ = app_handle.emit("library-changed", ());
+    // The frontend listens for "library-updated" — "library-changed" was a
+    // dead event, so pages kept showing the wiped library after a reset.
+    let _ = app_handle.emit("library-updated", ());
     log::info!("Library reset complete");
     Ok(())
 }
@@ -484,6 +487,7 @@ pub fn search(
                 artist_type: None,
                 website_url: None,
                 track_count: row.get(6)?,
+                has_enriched_discography: false,
             })
         })
         .map_err(|e| e.to_string())?
@@ -728,11 +732,17 @@ pub fn library_get_album_download_status(
 ) -> Result<serde_json::Value, String> {
     let conn = crate::db::lock(&db)?;
 
-    let tracklist_json: Option<String> = conn.query_row(
+    // An unknown album id is "unknown" status, not an error (matches the
+    // batch variant's behavior).
+    let tracklist_json: Option<String> = match conn.query_row(
         "SELECT enriched_tracklist FROM albums WHERE id = ?1",
         params![album_id],
         |row| row.get(0),
-    ).map_err(|e| e.to_string())?;
+    ) {
+        Ok(v) => v,
+        Err(rusqlite::Error::QueryReturnedNoRows) => None,
+        Err(e) => return Err(e.to_string()),
+    };
 
     let Some(json_str) = tracklist_json else {
         return Ok(serde_json::json!({ "total_expected": 0, "total_local": 0, "status": "unknown" }));
@@ -917,10 +927,10 @@ pub async fn library_export(
 
     // Query all tracks with artist and album names
     #[allow(clippy::type_complexity)]
-    let rows: Vec<(String, Option<String>, Option<String>, Option<i64>, Option<i64>, String)> = {
+    let rows: Vec<(i64, String, Option<String>, Option<String>, Option<i64>, Option<i64>, String)> = {
         let conn = crate::db::lock(&db)?;
         let mut stmt = conn.prepare(
-            "SELECT t.file_path, ar.name, al.title, t.track_number, t.disc_number, t.title
+            "SELECT t.id, t.file_path, ar.name, al.title, t.track_number, t.disc_number, t.title
              FROM tracks t
              LEFT JOIN artists ar ON t.artist_id = ar.id
              LEFT JOIN albums al ON t.album_id = al.id
@@ -929,12 +939,13 @@ pub async fn library_export(
 
         let result: Vec<_> = stmt.query_map([], |row| {
             Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, Option<String>>(1)?,
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
                 row.get::<_, Option<String>>(2)?,
-                row.get::<_, Option<i64>>(3)?,
+                row.get::<_, Option<String>>(3)?,
                 row.get::<_, Option<i64>>(4)?,
-                row.get::<_, String>(5)?,
+                row.get::<_, Option<i64>>(5)?,
+                row.get::<_, String>(6)?,
             ))
         })
         .map_err(|e| e.to_string())?
@@ -948,7 +959,7 @@ pub async fn library_export(
     let mut skipped: i64 = 0;
     let mut failed: i64 = 0;
 
-    for (i, (file_path, artist_name, album_title, track_num, disc_num, title)) in rows.iter().enumerate() {
+    for (i, (track_id, file_path, artist_name, album_title, track_num, disc_num, title)) in rows.iter().enumerate() {
         // Emit progress
         let _ = app_handle.emit("export-progress", ExportProgress {
             current: i as i64 + 1,
@@ -977,7 +988,10 @@ pub async fn library_export(
         };
         let safe_title = sanitize_filename(title);
         let filename = if track_prefix.is_empty() {
-            format!("{}.{}", safe_title, ext)
+            // No track number — disambiguate by track id so two tracks that
+            // sanitize to the same "Title.ext" don't collide (the second was
+            // silently skipped as "already exists").
+            format!("{} [{}].{}", safe_title, track_id, ext)
         } else {
             format!("{} - {}.{}", track_prefix, safe_title, ext)
         };

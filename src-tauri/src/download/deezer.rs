@@ -108,15 +108,21 @@ impl DeezerSource {
             return Err(SourceError::NotFound);
         }
 
+        let md5_origin = results["MD5_ORIGIN"].as_str().unwrap_or("").to_string();
+        if md5_origin.is_empty() {
+            // Without MD5_ORIGIN we cannot derive the CDN URL — happens for
+            // tracks that require track tokens or a higher-tier subscription.
+            return Err(SourceError::DrmBlocked(
+                "Deezer did not return file info for this track (MD5_ORIGIN missing)".into(),
+            ));
+        }
+
         Ok(DeezerTrackInfo {
             id: results["SNG_ID"]
                 .as_str()
                 .unwrap_or(track_id)
                 .to_string(),
-            md5_origin: results["MD5_ORIGIN"]
-                .as_str()
-                .unwrap_or("")
-                .to_string(),
+            md5_origin,
             media_version: results["MEDIA_VERSION"]
                 .as_str()
                 .unwrap_or("1")
@@ -146,21 +152,38 @@ impl DeezerSource {
         Ok(track_id.to_string())
     }
 
-    /// Build the CDN URL for a track
+    /// Build the CDN URL for a track (deemix/d-fi "legacy stream URL" scheme).
+    ///
+    /// The fields are joined with the single latin-1 byte 0xA4 ('¤') — NOT the
+    /// UTF-8 encoding of '¤' (0xC2 0xA4), which would produce a different MD5
+    /// and AES input and therefore a dead CDN URL.
     fn build_cdn_url(track_info: &DeezerTrackInfo, quality: u8) -> String {
-        // quality: 1 = MP3 128, 3 = MP3 320, 9 = FLAC
-        let step1 = format!(
-            "{}¤{}¤{}¤{}",
-            track_info.md5_origin, quality, track_info.id, track_info.media_version
-        );
-        let md5_hash = format!("{:x}", Md5::digest(step1.as_bytes()));
-        let step2 = format!("{}¤{}¤{}", md5_hash, step1, " ".repeat(16 - ((md5_hash.len() + step1.len() + 1) % 16) % 16));
+        const SEP: u8 = 0xA4;
 
-        // AES ECB encrypt with the hash to get the path
-        // Actually, Deezer uses a simpler approach for the URL path
-        let hash_bytes = step2.as_bytes();
-        let mut aes_input = hash_bytes.to_vec();
-        // Pad to 16 byte boundary
+        // quality: 1 = MP3 128, 3 = MP3 320, 9 = FLAC
+        let quality_str = quality.to_string();
+        let parts = [
+            track_info.md5_origin.as_bytes(),
+            quality_str.as_bytes(),
+            track_info.id.as_bytes(),
+            track_info.media_version.as_bytes(),
+        ];
+        let mut step1: Vec<u8> = Vec::new();
+        for (i, part) in parts.iter().enumerate() {
+            if i > 0 {
+                step1.push(SEP);
+            }
+            step1.extend_from_slice(part);
+        }
+
+        let md5_hash = format!("{:x}", Md5::digest(&step1));
+
+        // step2 = md5 ¤ step1 ¤, space-padded to a 16-byte boundary
+        let mut aes_input: Vec<u8> = Vec::with_capacity(md5_hash.len() + step1.len() + 18);
+        aes_input.extend_from_slice(md5_hash.as_bytes());
+        aes_input.push(SEP);
+        aes_input.extend_from_slice(&step1);
+        aes_input.push(SEP);
         while aes_input.len() % 16 != 0 {
             aes_input.push(b' ');
         }
@@ -181,10 +204,11 @@ impl DeezerSource {
         }
         let path = hex::encode(&encrypted);
 
+        // md5_origin is guaranteed non-empty by get_track_info
+        let cdn_shard = track_info.md5_origin.get(..1).unwrap_or("0");
         format!(
             "https://e-cdns-proxy-{}.dzcdn.net/mobile/1/{}",
-            &track_info.md5_origin[..1],
-            path
+            cdn_shard, path
         )
     }
 

@@ -113,14 +113,39 @@ function flushEvents() {
 		} else if (data.status === 'queued' || data.status === 'downloading') {
 			newById.set(data.id, placeholderFromEvent(data));
 			activeDelta++;
+		} else if (!terminalUnknown.has(data.id)) {
+			// Terminal status for an id outside our window: it was evicted by
+			// boundList while still active, so decrement — ignoring these left
+			// the badge stuck at hundreds of "active" downloads after a big
+			// playlist finished. A backend refresh re-syncs authoritatively.
+			terminalUnknown.add(data.id);
+			activeDelta--;
 		}
-		// terminal status for an id outside our window: ignore (count stays from backend refresh)
 	}
 
 	const keptExisting = removed.size ? existing.filter((d) => !removed.has(d.id)) : existing;
 	const fresh = [...newById.values()].reverse(); // newest first
 	downloads = boundList([...fresh, ...keptExisting]);
 	activeCount = Math.max(0, activeCount + activeDelta);
+
+	if (terminalUnknown.size > 0) scheduleRefresh();
+}
+
+// Ids outside the rendered window whose terminal event was already counted,
+// so duplicate terminal events don't double-decrement.
+const terminalUnknown = new Set<number>();
+
+// Debounced authoritative re-sync with the backend after out-of-window
+// terminal events (the local delta is a best guess).
+let refreshScheduled = false;
+function scheduleRefresh() {
+	if (refreshScheduled) return;
+	refreshScheduled = true;
+	setTimeout(async () => {
+		refreshScheduled = false;
+		terminalUnknown.clear();
+		await downloadStore.refresh();
+	}, 2000);
 }
 
 async function init() {

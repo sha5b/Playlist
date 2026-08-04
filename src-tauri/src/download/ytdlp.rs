@@ -516,7 +516,7 @@ pub async fn download_audio<F>(
     progress_callback: F,
 ) -> Result<String, String>
 where
-    F: Fn(DownloadProgress) + Send + 'static,
+    F: Fn(DownloadProgress) + Send + Sync + 'static,
 {
     // Use a safe, deterministic filename based on the download ID.
     // This avoids all encoding issues with non-ASCII titles, special characters
@@ -577,57 +577,14 @@ where
         .spawn()
         .map_err(|e| format!("Failed to spawn yt-dlp: {}", e))?;
 
-    let stderr = child.stderr.take()
-        .ok_or_else(|| "Failed to capture yt-dlp stderr".to_string())?;
-    let stdout = child.stdout.take()
-        .ok_or_else(|| "Failed to capture yt-dlp stdout".to_string())?;
-
-    // Read both streams concurrently to avoid pipe deadlocks.
-    // Throttle progress callbacks to at most once per second to avoid flooding
-    // the frontend with IPC events (yt-dlp emits many lines per second).
-    let stderr_reader = BufReader::new(stderr);
-    let mut stderr_lines = stderr_reader.lines();
-    let progress_handle = tokio::spawn(async move {
-        let mut last_emit = std::time::Instant::now()
-            .checked_sub(std::time::Duration::from_secs(2))
-            .unwrap_or_else(std::time::Instant::now);
-        let mut latest: Option<DownloadProgress> = None;
-        let mut error_lines: Vec<String> = Vec::new();
-
-        while let Ok(Some(line)) = stderr_lines.next_line().await {
-            if let Some(progress) = parse_progress_line(&line) {
-                latest = Some(progress);
-                if last_emit.elapsed() >= std::time::Duration::from_millis(800) {
-                    if let Some(p) = latest.take() {
-                        progress_callback(p);
-                        last_emit = std::time::Instant::now();
-                    }
-                }
-            } else if line.starts_with("ERROR:") || line.contains("ERROR:") {
-                error_lines.push(line);
-            }
-        }
-        // Always emit the final progress
-        if let Some(p) = latest {
-            progress_callback(p);
-        }
-        error_lines
-    });
-
-    // Drain stdout to prevent pipe deadlock
-    let stdout_reader = BufReader::new(stdout);
-    let mut stdout_lines = stdout_reader.lines();
-    let stdout_handle = tokio::spawn(async move {
-        while let Ok(Some(_)) = stdout_lines.next_line().await {}
-    });
+    let output_handle = spawn_output_readers(&mut child, progress_callback)?;
 
     let status = child
         .wait()
         .await
         .map_err(|e| format!("Failed to wait for yt-dlp: {}", e))?;
 
-    let error_lines = progress_handle.await.unwrap_or_default();
-    let _ = stdout_handle.await;
+    let error_lines = output_handle.await.unwrap_or_default();
 
     if !status.success() {
         let detail = if error_lines.is_empty() {
@@ -671,7 +628,7 @@ pub async fn download_video<F>(
     progress_callback: F,
 ) -> Result<String, String>
 where
-    F: Fn(DownloadProgress) + Send + 'static,
+    F: Fn(DownloadProgress) + Send + Sync + 'static,
 {
     let output_template = output_dir
         .join(format!("{}.%(ext)s", file_stem))
@@ -710,49 +667,14 @@ where
         .spawn()
         .map_err(|e| format!("Failed to spawn yt-dlp: {}", e))?;
 
-    // Drain both pipes to avoid deadlock, parse progress from stderr
-    let stderr = child.stderr.take()
-        .ok_or_else(|| "Failed to capture yt-dlp stderr".to_string())?;
-    let stdout = child.stdout.take()
-        .ok_or_else(|| "Failed to capture yt-dlp stdout".to_string())?;
-    let stderr_handle = tokio::spawn(async move {
-        let mut last_emit = std::time::Instant::now()
-            .checked_sub(std::time::Duration::from_secs(2))
-            .unwrap_or_else(std::time::Instant::now);
-        let mut latest: Option<DownloadProgress> = None;
-        let mut error_lines: Vec<String> = Vec::new();
-        let mut lines = BufReader::new(stderr).lines();
-        while let Ok(Some(line)) = lines.next_line().await {
-            if let Some(progress) = parse_progress_line(&line) {
-                latest = Some(progress);
-                if last_emit.elapsed() >= std::time::Duration::from_millis(800) {
-                    if let Some(p) = latest.take() {
-                        progress_callback(p);
-                        last_emit = std::time::Instant::now();
-                    }
-                }
-            } else if line.starts_with("ERROR:") || line.contains("ERROR:") {
-                error_lines.push(line);
-            }
-        }
-        // Always emit the final progress
-        if let Some(p) = latest {
-            progress_callback(p);
-        }
-        error_lines
-    });
-    let stdout_handle = tokio::spawn(async move {
-        let mut lines = BufReader::new(stdout).lines();
-        while let Ok(Some(_)) = lines.next_line().await {}
-    });
+    let output_handle = spawn_output_readers(&mut child, progress_callback)?;
 
     let status = child
         .wait()
         .await
         .map_err(|e| format!("Failed to wait for yt-dlp: {}", e))?;
 
-    let error_lines = stderr_handle.await.unwrap_or_default();
-    let _ = stdout_handle.await;
+    let error_lines = output_handle.await.unwrap_or_default();
 
     if !status.success() {
         let detail = if error_lines.is_empty() {
@@ -781,6 +703,76 @@ where
     }
 
     Err(format!("Video download completed but output file not found for {}", file_stem))
+}
+
+/// Read both yt-dlp pipes concurrently (avoids pipe deadlocks), parsing
+/// `[download] …%` progress lines from EITHER stream (yt-dlp prints progress
+/// on stdout — the old code read only stderr and never saw any progress) and
+/// collecting `ERROR:` lines. Progress callbacks are throttled to ~1/second so
+/// the frontend isn't flooded with IPC events. The returned handle resolves to
+/// the collected error lines once both pipes close.
+fn spawn_output_readers<F>(
+    child: &mut tokio::process::Child,
+    progress_callback: F,
+) -> Result<tokio::task::JoinHandle<Vec<String>>, String>
+where
+    F: Fn(DownloadProgress) + Send + Sync + 'static,
+{
+    let stdout = child.stdout.take()
+        .ok_or_else(|| "Failed to capture yt-dlp stdout".to_string())?;
+    let stderr = child.stderr.take()
+        .ok_or_else(|| "Failed to capture yt-dlp stderr".to_string())?;
+
+    let handle = tokio::spawn(async move {
+        let mut stdout_lines = BufReader::new(stdout).lines();
+        let mut stderr_lines = BufReader::new(stderr).lines();
+        let mut stdout_done = false;
+        let mut stderr_done = false;
+
+        let mut last_emit = std::time::Instant::now()
+            .checked_sub(std::time::Duration::from_secs(2))
+            .unwrap_or_else(std::time::Instant::now);
+        let mut latest: Option<DownloadProgress> = None;
+        let mut error_lines: Vec<String> = Vec::new();
+
+        let handle_line = |line: String,
+                               latest: &mut Option<DownloadProgress>,
+                               error_lines: &mut Vec<String>,
+                               last_emit: &mut std::time::Instant| {
+            if let Some(progress) = parse_progress_line(&line) {
+                *latest = Some(progress);
+                if last_emit.elapsed() >= std::time::Duration::from_millis(800) {
+                    if let Some(p) = latest.take() {
+                        progress_callback(p);
+                        *last_emit = std::time::Instant::now();
+                    }
+                }
+            } else if line.contains("ERROR:") {
+                error_lines.push(line);
+            }
+        };
+
+        while !(stdout_done && stderr_done) {
+            tokio::select! {
+                line = stdout_lines.next_line(), if !stdout_done => match line {
+                    Ok(Some(l)) => handle_line(l, &mut latest, &mut error_lines, &mut last_emit),
+                    _ => stdout_done = true,
+                },
+                line = stderr_lines.next_line(), if !stderr_done => match line {
+                    Ok(Some(l)) => handle_line(l, &mut latest, &mut error_lines, &mut last_emit),
+                    _ => stderr_done = true,
+                },
+            }
+        }
+
+        // Always emit the final progress
+        if let Some(p) = latest {
+            progress_callback(p);
+        }
+        error_lines
+    });
+
+    Ok(handle)
 }
 
 fn parse_progress_line(line: &str) -> Option<DownloadProgress> {

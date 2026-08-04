@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { untrack } from 'svelte';
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
 	import { getPlaylist, getPlaylistTracks, deletePlaylist, removeFromPlaylist } from '$lib/api/library';
@@ -48,19 +49,42 @@
 	}
 
 	$effect(() => {
-		currentPage = 0;
-		load(playlistId);
+		playlistId;
+		// untrack: load() reads currentPage — tracking it here made the effect
+		// re-run on every pagination click and reset back to page 0.
+		untrack(() => {
+			currentPage = 0;
+			load(playlistId);
+		});
 	});
 
-	function playAll() {
-		if (!trackPage || trackPage.tracks.length === 0) return;
-		player.playTracks(trackPage.tracks.map((t) => t.id), 0);
+	// Fetch ALL track ids, not just the visible 50-track page — otherwise
+	// "Play"/"Shuffle" on a 500-track playlist queued only the current page.
+	async function allTrackIds(): Promise<number[]> {
+		if (!playlist || !trackPage) return [];
+		if (trackPage.total <= trackPage.tracks.length && currentPage === 0) {
+			return trackPage.tracks.map((t) => t.id);
+		}
+		const all = await getPlaylistTracks(playlist.id, 0, trackPage.total);
+		return all.tracks.map((t) => t.id);
 	}
 
-	function shuffleAll() {
+	async function playAll() {
 		if (!trackPage || trackPage.tracks.length === 0) return;
-		const ids = shuffleArray(trackPage.tracks.map((t) => t.id));
-		player.playTracks(ids, 0);
+		try {
+			player.playTracks(await allTrackIds(), 0);
+		} catch (e) {
+			toast.error('Failed to start playback');
+		}
+	}
+
+	async function shuffleAll() {
+		if (!trackPage || trackPage.tracks.length === 0) return;
+		try {
+			player.playTracks(shuffleArray(await allTrackIds()), 0);
+		} catch (e) {
+			toast.error('Failed to start playback');
+		}
 	}
 
 	async function handleDelete() {

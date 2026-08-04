@@ -99,56 +99,59 @@
 	});
 
 	// --- Initialize ---
+	// Reload playlists when the deps become ready. Kept separate from the
+	// listener registration below: this effect re-runs when depsReady flips,
+	// and re-running the listen() block duplicated event handlers (double
+	// toasts/loads) because the async unlisten fns resolved after cleanup.
 	$effect(() => {
-		downloadStore.init();
-
 		if (depsReady) {
 			loadPlaylists();
 		}
+	});
 
-		let unlistenEntry: (() => void) | null = null;
-		listen<ManagerEntryEvent>('manager-entry-updated', (event) => {
+	$effect(() => {
+		downloadStore.init();
+
+		// Registration is async: if cleanup runs before a listen() promise
+		// resolves, unlisten immediately instead of leaking the handler.
+		let cancelled = false;
+		const unlisteners: (() => void)[] = [];
+		const register = (p: Promise<() => void>) => {
+			p.then((fn) => {
+				if (cancelled) fn();
+				else unlisteners.push(fn);
+			});
+		};
+
+		register(listen<ManagerEntryEvent>('manager-entry-updated', (event) => {
 			const { entry_id, status } = event.payload;
 			selectedEntries = selectedEntries.map((e) =>
 				e.id === entry_id ? { ...e, status: status as MonitoredEntryStatus } : e
 			);
 			loadPlaylists();
-		}).then((fn) => {
-			unlistenEntry = fn;
-		});
+		}));
 
-		let unlistenThumbs: (() => void) | null = null;
-		listen<{ playlist_id: number }>('manager-thumbnails-ready', (event) => {
+		register(listen<{ playlist_id: number }>('manager-thumbnails-ready', (event) => {
 			if (selectedPlaylist?.id === event.payload.playlist_id) {
 				loadEntries(event.payload.playlist_id);
 			}
 			loadPlaylists();
-		}).then((fn) => {
-			unlistenThumbs = fn;
-		});
+		}));
 
-		let unlistenUpdated: (() => void) | null = null;
-		listen<MonitoredPlaylist>('manager-playlist-updated', (event) => {
+		register(listen<MonitoredPlaylist>('manager-playlist-updated', (event) => {
 			const updated = event.payload;
 			playlists = playlists.map((p) => (p.id === updated.id ? updated : p));
 			toast.success('Playlist ready', { description: `${updated.name} (${updated.total_entries} tracks)` });
-		}).then((fn) => {
-			unlistenUpdated = fn;
-		});
+		}));
 
-		let unlistenAddError: (() => void) | null = null;
-		listen<{ url: string; error: string; playlist_id: number }>('manager-playlist-error', (event) => {
+		register(listen<{ url: string; error: string; playlist_id: number }>('manager-playlist-error', (event) => {
 			playlists = playlists.filter((p) => p.id !== event.payload.playlist_id);
 			toast.error('Failed to add playlist', { description: event.payload.error });
-		}).then((fn) => {
-			unlistenAddError = fn;
-		});
+		}));
 
 		return () => {
-			unlistenEntry?.();
-			unlistenThumbs?.();
-			unlistenUpdated?.();
-			unlistenAddError?.();
+			cancelled = true;
+			unlisteners.forEach((fn) => fn());
 		};
 	});
 

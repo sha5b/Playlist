@@ -20,6 +20,11 @@ pub struct PlayQueue {
     /// Current position in `order`
     position: Option<usize>,
     shuffle: bool,
+    /// Set when the currently playing entry was removed from the queue while
+    /// tracks remained after it: `position` already points at the FOLLOWING
+    /// track, so the next `next()` must stay in place instead of advancing
+    /// (otherwise one track gets silently skipped).
+    stay_on_next: bool,
 }
 
 impl PlayQueue {
@@ -29,12 +34,14 @@ impl PlayQueue {
             order: Vec::new(),
             position: None,
             shuffle: false,
+            stay_on_next: false,
         }
     }
 
     pub fn set_tracks(&mut self, tracks: Vec<QueueTrack>, start_index: usize) {
         let len = tracks.len();
         self.tracks = tracks;
+        self.stay_on_next = false;
         self.rebuild_order();
         // Clamp start_index to valid range, then find its position in play order
         let clamped = if len > 0 { start_index.min(len - 1) } else { 0 };
@@ -70,6 +77,12 @@ impl PlayQueue {
         if self.tracks.is_empty() {
             return None;
         }
+        // The current entry was removed while playing — `position` already
+        // points at the track that should play next, so don't advance.
+        if self.stay_on_next {
+            self.stay_on_next = false;
+            return self.current();
+        }
         match self.position {
             Some(pos) if pos + 1 < self.order.len() => {
                 self.position = Some(pos + 1);
@@ -86,6 +99,7 @@ impl PlayQueue {
         if self.tracks.is_empty() {
             return None;
         }
+        self.stay_on_next = false;
         match self.position {
             Some(pos) if pos > 0 => {
                 self.position = Some(pos - 1);
@@ -98,6 +112,7 @@ impl PlayQueue {
     /// Skip to a specific position in the play order
     pub fn skip_to(&mut self, order_index: usize) -> Option<&QueueTrack> {
         if order_index < self.order.len() {
+            self.stay_on_next = false;
             self.position = Some(order_index);
             self.current()
         } else {
@@ -110,6 +125,7 @@ impl PlayQueue {
         if self.tracks.is_empty() {
             return None;
         }
+        self.stay_on_next = false;
         self.position = Some(0);
         self.current()
     }
@@ -131,10 +147,13 @@ impl PlayQueue {
         self.tracks.clear();
         self.order.clear();
         self.position = None;
+        self.stay_on_next = false;
     }
 
     pub fn len(&self) -> usize {
-        self.tracks.len()
+        // Removed entries stay in `tracks` but leave `order` — the play order
+        // is the real queue length.
+        self.order.len()
     }
 
     pub fn position(&self) -> Option<usize> {
@@ -190,8 +209,16 @@ impl PlayQueue {
         if let Some(pos) = self.position {
             if order_idx < pos {
                 self.position = Some(pos - 1);
-            } else if order_idx == pos && pos >= self.order.len() {
-                self.position = if self.order.is_empty() { None } else { Some(self.order.len() - 1) };
+            } else if order_idx == pos {
+                if pos >= self.order.len() {
+                    // Removed the last entry — step back to the new last one
+                    self.position = if self.order.is_empty() { None } else { Some(self.order.len() - 1) };
+                } else {
+                    // Removed the CURRENT entry with tracks after it: position
+                    // now points at the following track. Flag it so the next
+                    // `next()` plays that track instead of skipping past it.
+                    self.stay_on_next = true;
+                }
             }
         }
     }
@@ -203,5 +230,73 @@ impl PlayQueue {
             let mut rng = rand::thread_rng();
             self.order.shuffle(&mut rng);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn track(id: i64) -> QueueTrack {
+        QueueTrack {
+            id,
+            title: format!("Track {}", id),
+            artist_name: None,
+            album_title: None,
+            duration_ms: None,
+            file_path: String::new(),
+            cover_art_path: None,
+        }
+    }
+
+    fn queue_with(n: i64) -> PlayQueue {
+        let mut q = PlayQueue::new();
+        q.set_tracks((1..=n).map(track).collect(), 0);
+        q
+    }
+
+    #[test]
+    fn removing_current_does_not_skip_next_track() {
+        // Queue [1, 2, 3], playing 1. Remove 1 while it plays → the next
+        // natural advance must play 2, not 3.
+        let mut q = queue_with(3);
+        assert_eq!(q.current().unwrap().id, 1);
+        q.remove_at_order_index(0);
+        assert_eq!(q.next().unwrap().id, 2);
+        assert_eq!(q.next().unwrap().id, 3);
+    }
+
+    #[test]
+    fn removing_before_current_keeps_current() {
+        let mut q = queue_with(3);
+        q.skip_to(1); // playing 2
+        q.remove_at_order_index(0); // remove 1
+        assert_eq!(q.current().unwrap().id, 2);
+        assert_eq!(q.next().unwrap().id, 3);
+    }
+
+    #[test]
+    fn removing_last_while_current_steps_back() {
+        let mut q = queue_with(2);
+        q.skip_to(1); // playing 2 (last)
+        q.remove_at_order_index(1);
+        assert_eq!(q.current().unwrap().id, 1);
+        assert!(q.next().is_none());
+    }
+
+    #[test]
+    fn explicit_skip_clears_stay_flag() {
+        let mut q = queue_with(3);
+        q.remove_at_order_index(0); // stay flag set
+        q.skip_to(1); // user explicitly jumps to 3 (order is now [2, 3])
+        assert_eq!(q.current().unwrap().id, 3);
+        assert!(q.next().is_none()); // end of queue, no phantom repeat
+    }
+
+    #[test]
+    fn len_reflects_removals() {
+        let mut q = queue_with(3);
+        q.remove_at_order_index(2);
+        assert_eq!(q.len(), 2);
     }
 }

@@ -16,6 +16,8 @@ fn client() -> reqwest::Client {
 struct LrclibResponse {
     synced_lyrics: Option<String>,
     plain_lyrics: Option<String>,
+    track_name: Option<String>,
+    artist_name: Option<String>,
 }
 
 /// Search LRCLIB for lyrics. Tries exact match first, then fuzzy search.
@@ -85,14 +87,40 @@ async fn fetch_search(title: &str, artist: &str) -> Result<String, String> {
         .await
         .map_err(|e| format!("Failed to parse LRCLIB search response: {}", e))?;
 
-    // Pick the first result that has lyrics, preferring synced
+    // Pick the first result whose track/artist actually match — the search
+    // endpoint is fuzzy, and blindly taking the first hit stored the wrong
+    // song's lyrics permanently (updates only fill NULL fields).
     for result in results {
-        if let Ok(lyrics) = extract_lyrics(result) {
-            return Ok(lyrics);
+        let title_ok = result.track_name.as_deref()
+            .map(|t| normalized_match(t, title))
+            .unwrap_or(false);
+        let artist_ok = result.artist_name.as_deref()
+            .map(|a| normalized_match(a, artist))
+            .unwrap_or(false);
+        if title_ok && artist_ok {
+            if let Ok(lyrics) = extract_lyrics(result) {
+                return Ok(lyrics);
+            }
         }
     }
 
     Err("No lyrics found".to_string())
+}
+
+/// Case/punctuation-insensitive containment match in either direction
+/// (handles "Song (Remastered)" vs "Song" and "Artist feat. X" vs "Artist").
+fn normalized_match(a: &str, b: &str) -> bool {
+    let norm = |s: &str| {
+        s.to_lowercase()
+            .chars()
+            .filter(|c| c.is_alphanumeric())
+            .collect::<String>()
+    };
+    let (na, nb) = (norm(a), norm(b));
+    if na.is_empty() || nb.is_empty() {
+        return false;
+    }
+    na.contains(&nb) || nb.contains(&na)
 }
 
 fn extract_lyrics(data: LrclibResponse) -> Result<String, String> {

@@ -128,12 +128,38 @@ pub fn upsert_entries(
     entries: &[(String, Option<String>, Option<String>, Option<f64>, Option<String>, Option<String>)], // (url, title, artist, duration, thumbnail, isrc)
 ) -> Result<(i64, i64), rusqlite::Error> {
     log::info!("upsert_entries called for playlist_id: {} with {} entries", playlist_id, entries.len());
-    let mut new_count = 0i64;
 
     // Batch all upserts in a single transaction for dramatically faster writes.
     // Use SAVEPOINT instead of BEGIN to avoid "cannot start a transaction within a transaction"
     // errors when SQLite already has an implicit or explicit transaction open.
     conn.execute_batch("SAVEPOINT upsert_entries")?;
+
+    // Run the body in a closure so any error path rolls the savepoint back —
+    // an early `?` return would otherwise leave the savepoint open on the
+    // shared connection and break every later BEGIN with
+    // "cannot start a transaction within a transaction".
+    match upsert_entries_body(conn, playlist_id, entries) {
+        Ok(result) => {
+            conn.execute_batch("RELEASE SAVEPOINT upsert_entries")?;
+            let (new_count, total_count) = result;
+            log::info!("upsert_entries completed: new={}, total={} for playlist_id={}", new_count, total_count, playlist_id);
+            Ok(result)
+        }
+        Err(e) => {
+            let _ = conn.execute_batch(
+                "ROLLBACK TO SAVEPOINT upsert_entries; RELEASE SAVEPOINT upsert_entries",
+            );
+            Err(e)
+        }
+    }
+}
+
+fn upsert_entries_body(
+    conn: &Connection,
+    playlist_id: i64,
+    entries: &[(String, Option<String>, Option<String>, Option<f64>, Option<String>, Option<String>)],
+) -> Result<(i64, i64), rusqlite::Error> {
+    let mut new_count = 0i64;
 
     // Fix stale ytsearch URLs: if we now have a direct URL for an entry that was
     // previously stored with a search query, update the source_url in-place so the
@@ -177,6 +203,9 @@ pub fn upsert_entries(
             position = excluded.position",
     )?;
 
+    // Track URLs seen within this batch: a playlist containing the same URL
+    // twice inserts only one row (ON CONFLICT), so count it as new only once.
+    let mut seen_in_batch: std::collections::HashSet<&str> = std::collections::HashSet::new();
     for (i, (url, title, artist, duration, thumbnail, isrc)) in entries.iter().enumerate() {
         insert_stmt.execute(params![
             playlist_id,
@@ -188,8 +217,7 @@ pub fn upsert_entries(
             i as i64,
             isrc,
         ])?;
-        // If the URL wasn't in the existing set, it's a new entry
-        if !existing_urls.contains(url) {
+        if !existing_urls.contains(url) && seen_in_batch.insert(url.as_str()) {
             new_count += 1;
         }
     }
@@ -207,9 +235,6 @@ pub fn upsert_entries(
         params![playlist_id, total_count],
     )?;
 
-    conn.execute_batch("RELEASE SAVEPOINT upsert_entries")?;
-
-    log::info!("upsert_entries completed: new={}, total={} for playlist_id={}", new_count, total_count, playlist_id);
     Ok((new_count, total_count))
 }
 

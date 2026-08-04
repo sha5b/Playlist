@@ -51,7 +51,7 @@ export interface Artist {
 	begin_year: number | null;
 	artist_type: string | null;
 	website_url: string | null;
-	enriched_discography: string | null;
+	has_enriched_discography: boolean;
 	track_count: number;
 }
 

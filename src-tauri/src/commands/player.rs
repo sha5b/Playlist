@@ -86,13 +86,15 @@ pub fn player_play_tracks(
             cover_art_path: row.get(6)?,
         })
     }).map_err(|e| e.to_string())?;
-    let mut loaded: std::collections::HashMap<i64, QueueTrack> = rows
+    let loaded: std::collections::HashMap<i64, QueueTrack> = rows
         .filter_map(|r| r.ok())
         .map(|t| (t.id, t))
         .collect();
-    // Preserve original order from track_ids, moving values out of the map
+    // Preserve original order from track_ids. Clone (don't remove) so a track
+    // appearing twice in a playlist stays twice in the queue — removing
+    // collapsed duplicates and shifted start_index onto the wrong track.
     let tracks: Vec<QueueTrack> = track_ids.iter()
-        .filter_map(|id| loaded.remove(id))
+        .filter_map(|id| loaded.get(id).cloned())
         .collect();
     if tracks.is_empty() {
         return Err("No valid tracks found".to_string());

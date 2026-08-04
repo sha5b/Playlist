@@ -130,31 +130,32 @@ pub fn reorder_playlist(
     from: i64,
     to: i64,
 ) -> Result<(), rusqlite::Error> {
-    // Get the track at the 'from' position
-    let track_id: i64 = conn.query_row(
-        "SELECT track_id FROM playlist_tracks WHERE playlist_id = ?1 AND position = ?2",
-        params![playlist_id, from],
-        |row| row.get(0),
-    )?;
+    // Positions can have gaps (after removals) or duplicates, while the UI
+    // sends list INDICES. Load the ordered list, move in memory, and write
+    // back a dense 0..n position sequence — this both performs the move and
+    // repairs any drifted positions.
+    let mut track_ids: Vec<i64> = conn
+        .prepare(
+            "SELECT track_id FROM playlist_tracks
+             WHERE playlist_id = ?1 ORDER BY position, rowid",
+        )?
+        .query_map(params![playlist_id], |row| row.get(0))?
+        .collect::<Result<Vec<_>, _>>()?;
 
-    if from < to {
-        conn.execute(
-            "UPDATE playlist_tracks SET position = position - 1
-             WHERE playlist_id = ?1 AND position > ?2 AND position <= ?3",
-            params![playlist_id, from, to],
-        )?;
-    } else {
-        conn.execute(
-            "UPDATE playlist_tracks SET position = position + 1
-             WHERE playlist_id = ?1 AND position >= ?2 AND position < ?3",
-            params![playlist_id, to, from],
-        )?;
+    let len = track_ids.len() as i64;
+    if from < 0 || from >= len || to < 0 || to >= len {
+        return Ok(());
     }
 
-    conn.execute(
-        "UPDATE playlist_tracks SET position = ?1 WHERE playlist_id = ?2 AND track_id = ?3",
-        params![to, playlist_id, track_id],
-    )?;
+    let item = track_ids.remove(from as usize);
+    track_ids.insert(to as usize, item);
+
+    for (pos, tid) in track_ids.iter().enumerate() {
+        conn.execute(
+            "UPDATE playlist_tracks SET position = ?1 WHERE playlist_id = ?2 AND track_id = ?3",
+            params![pos as i64, playlist_id, tid],
+        )?;
+    }
 
     Ok(())
 }

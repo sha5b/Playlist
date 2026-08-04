@@ -115,6 +115,16 @@ pub fn run() {
             let device_manager = Arc::new(devices::DeviceManager::new(app.handle().clone()));
             app.manage(device_manager);
 
+            // Keep yt-dlp up to date in the background. An outdated yt-dlp
+            // silently misbehaves when YouTube changes (e.g. playlists
+            // truncated at 100 entries), so update it on every launch.
+            {
+                let bin_dir = download::setup::get_bin_dir(app.handle());
+                tauri::async_runtime::spawn(async move {
+                    download::setup::auto_update_ytdlp(&bin_dir).await;
+                });
+            }
+
             // System tray with playback controls
             let show = MenuItemBuilder::with_id("show", "Show Playlist").build(app)?;
             let play_pause = MenuItemBuilder::with_id("play_pause", "Play / Pause").build(app)?;

@@ -110,7 +110,8 @@ pub async fn sync_playlist_to_device(
         let needs_conversion = device.output_format != "original" && source_format != device.output_format;
 
         let status = if needs_conversion { "converting" } else { "copying" };
-        emit_progress(&app_handle, device_id, playlist_id, i as i64, total, &track.title, status, None);
+        // 1-based: this is the track currently being processed ("1 of N", not "0 of N")
+        emit_progress(&app_handle, device_id, playlist_id, i as i64 + 1, total, &track.title, status, None);
 
         // Build destination path: Artist/Album/TrackNum - Title.ext
         let dest_ext = if device.output_format == "original" {
@@ -228,6 +229,15 @@ async fn transcode_file(
 ) -> Result<(), String> {
     let ffmpeg = ffmpeg_path.unwrap_or("ffmpeg");
 
+    // The stored bitrate is free-form — strip any trailing "k"/"kbps" so a
+    // value like "320k" doesn't become the invalid "320kk", and fall back to
+    // a sane default if it isn't numeric at all.
+    let bitrate: String = {
+        let digits: String = bitrate.chars().take_while(|c| c.is_ascii_digit()).collect();
+        if digits.is_empty() { "320".to_string() } else { digits }
+    };
+    let bitrate = bitrate.as_str();
+
     let mut args = vec![
         "-i".to_string(),
         src.to_string_lossy().to_string(),
@@ -258,8 +268,10 @@ async fn transcode_file(
             ]);
         }
         _ => {
-            // Copy codec as-is
-            args.extend_from_slice(&["-codec:a".to_string(), "copy".to_string()]);
+            // Unknown target format: let ffmpeg pick the container's default
+            // encoder. `-codec:a copy` here put e.g. FLAC data in an .m4a
+            // container, which players reject.
+            args.extend_from_slice(&["-b:a".to_string(), format!("{}k", bitrate)]);
         }
     }
 

@@ -116,6 +116,9 @@ pub async fn manager_add_playlist(
     let manager_clone = manager.inner().clone();
     let app_clone = app_handle.clone();
     let playlist_id = playlist.id;
+    // Fetch with the canonicalized URL — e.g. YouTube watch?v=…&list=… URLs are
+    // rewritten to the playlist page so we get ALL entries, not the first ~100.
+    let fetch_url = parsed.clean_url.clone();
 
     // Spawn track fetching in the background
     tokio::spawn(async move {
@@ -124,14 +127,14 @@ pub async fn manager_add_playlist(
             let fetch_result = if drm_platforms.contains(&parsed.platform.as_str()) {
                 log::info!("Using native API for {} playlist (skipping yt-dlp)", parsed.platform);
                 let sources = manager_clone.sources.read().await;
-                sources.fetch_playlist_entries(&parsed.platform, &url)
+                sources.fetch_playlist_entries(&parsed.platform, &fetch_url)
                     .await
                     .map_err(|e| format!("Native API error: {}", e))?
             } else {
                 crate::download::ytdlp::get_playlist_entries(
                     &ytdlp_binary,
                     ffmpeg_dir.as_deref(),
-                    &url,
+                    &fetch_url,
                     cookies_from_browser.as_deref(),
                 )
                 .await?
@@ -218,6 +221,9 @@ pub async fn manager_sync_playlist(
         let url = playlist.source_url.clone()
             .ok_or_else(|| "Playlist has no source URL".to_string())?;
         let platform = playlist.source_platform.clone().unwrap_or_default();
+        // Re-canonicalize: playlists added before URL cleaning may have stored a
+        // watch?v=…&list=… URL, which only yields the first ~100 entries.
+        let url = crate::download::url_parser::parse_url(&url).clean_url;
         (url, platform)
     };
 
@@ -500,7 +506,7 @@ pub async fn manager_cancel_all(
         let conn = crate::db::lock(&db)?;
         let mut stmt = conn.prepare(
             "SELECT id, download_id FROM monitored_playlist_entries
-             WHERE playlist_id = ?1 AND status IN ('queued', 'downloading')"
+             WHERE playlist_id = ?1 AND status IN ('queued', 'downloading', 'processing')"
         ).map_err(|e| e.to_string())?;
         let rows = stmt.query_map(params![playlist_id], |row| {
             Ok((row.get::<_, i64>(0)?, row.get::<_, Option<i64>>(1)?))
@@ -541,7 +547,7 @@ pub async fn manager_remove_playlist(
         let conn = crate::db::lock(&db)?;
         let mut stmt = conn.prepare(
             "SELECT download_id FROM monitored_playlist_entries
-             WHERE playlist_id = ?1 AND status IN ('queued', 'downloading') AND download_id IS NOT NULL"
+             WHERE playlist_id = ?1 AND status IN ('queued', 'downloading', 'processing') AND download_id IS NOT NULL"
         ).map_err(|e| e.to_string())?;
         let rows: Vec<i64> = stmt.query_map(rusqlite::params![playlist_id], |row| row.get(0))
             .map_err(|e| e.to_string())?

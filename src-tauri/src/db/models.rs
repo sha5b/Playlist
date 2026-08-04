@@ -58,6 +58,9 @@ pub struct Artist {
     pub artist_type: Option<String>,
     pub website_url: Option<String>,
     pub track_count: i64,
+    /// Whether the discography has been enriched from MusicBrainz — the
+    /// frontend uses this to decide if auto-enrichment is needed.
+    pub has_enriched_discography: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

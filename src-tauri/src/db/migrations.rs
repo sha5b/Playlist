@@ -259,7 +259,27 @@ ALTER TABLE downloads ADD COLUMN target_album_name TEXT;
 ALTER TABLE downloads ADD COLUMN target_recording_mbid TEXT;
 ";
 
-const MIGRATIONS: &[&str] = &[MIGRATION_001, MIGRATION_002, MIGRATION_003, MIGRATION_004, MIGRATION_005, MIGRATION_006, MIGRATION_007, MIGRATION_008, MIGRATION_009, MIGRATION_010, MIGRATION_011, MIGRATION_012, MIGRATION_013, MIGRATION_014, MIGRATION_015, MIGRATION_016];
+// Rebuild the FTS index with contentless_delete=1 so rows can be deleted and
+// updated. The old plain-contentless table could only ever grow: re-inserting
+// a rowid added a DUPLICATE index entry (tracks appeared twice in search) and
+// deleted tracks kept matching forever. Repopulating also purges any duplicate
+// or stale entries accumulated under the old schema.
+const MIGRATION_017: &str = "
+DROP TABLE IF EXISTS tracks_fts;
+CREATE VIRTUAL TABLE tracks_fts USING fts5(
+    title, artist_name, album_title, album_artist, genre,
+    content='',
+    contentless_delete=1,
+    tokenize='unicode61 remove_diacritics 2'
+);
+INSERT INTO tracks_fts(rowid, title, artist_name, album_title, album_artist, genre)
+SELECT t.id, t.title, COALESCE(a.name, ''), COALESCE(al.title, ''), COALESCE(t.album_artist, ''), COALESCE(t.genre, '')
+FROM tracks t
+LEFT JOIN artists a ON t.artist_id = a.id
+LEFT JOIN albums al ON t.album_id = al.id;
+";
+
+const MIGRATIONS: &[&str] = &[MIGRATION_001, MIGRATION_002, MIGRATION_003, MIGRATION_004, MIGRATION_005, MIGRATION_006, MIGRATION_007, MIGRATION_008, MIGRATION_009, MIGRATION_010, MIGRATION_011, MIGRATION_012, MIGRATION_013, MIGRATION_014, MIGRATION_015, MIGRATION_016, MIGRATION_017];
 
 pub fn run(conn: &Connection) -> Result<(), Box<dyn std::error::Error>> {
     conn.execute(

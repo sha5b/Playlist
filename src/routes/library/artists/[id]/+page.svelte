@@ -46,7 +46,7 @@
 			}
 
 			// Auto-enrich if artist has no enriched discography
-			if (a && !a.enriched_discography) {
+			if (a && !a.has_enriched_discography) {
 				autoEnrich(a);
 			} else if (a) {
 				// Load missing albums from already enriched data

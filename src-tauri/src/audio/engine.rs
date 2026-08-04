@@ -528,15 +528,25 @@ impl AudioEngine {
                         PlayerCommand::Seek(seconds) => {
                             let pos_ms = (seconds * 1000.0) as u64;
                             log::info!("[audio] Seek to {}ms", pos_ms);
+                            // Seeking an EMPTY sink returns Ok but does nothing —
+                            // don't pretend we're playing something.
+                            if sink.empty() {
+                                log::info!("[audio] Seek ignored: nothing loaded");
+                                continue;
+                            }
                             match sink.try_seek(Duration::from_secs_f64(seconds)) {
                                 Ok(()) => {
+                                    // Preserve the play/pause state: rodio's
+                                    // try_seek does NOT unpause a paused sink,
+                                    // so flipping to "playing" here made the UI
+                                    // count up while audio stayed silent.
                                     accumulated_ms = pos_ms;
-                                    play_start = Some(Instant::now());
-                                    is_playing = true;
+                                    if is_playing {
+                                        play_start = Some(Instant::now());
+                                    }
                                     {
                                         let mut s = write_state(&shared);
                                         s.playback.position_ms = pos_ms;
-                                        s.playback.state = PlayerState::Playing;
                                         emit(PlayerEvent::StateChanged(s.playback.clone()));
                                     }
                                 }
@@ -682,27 +692,63 @@ impl AudioEngine {
 
                             match result {
                                 Ok((new_stream, new_handle)) => {
+                                    // Resume playback on the new device instead of
+                                    // killing it (the old code stopped playback and
+                                    // left a track loaded that Resume couldn't restart).
                                     let vol = sink.volume();
+                                    let was_playing = is_playing;
+                                    let resume_pos = accumulated_ms
+                                        + play_start.as_ref().map(|s| s.elapsed().as_millis() as u64).unwrap_or(0);
+
                                     sink.stop();
                                     _stream = new_stream;
                                     stream_handle = new_handle;
                                     sink = make_sink_or_continue!(&stream_handle, vol, emit);
-                                    sink.pause();
-                                    play_start = None;
-                                    accumulated_ms = 0;
-                                    is_playing = false;
                                     preloaded = None;
                                     current_device_name = device_name.clone().or_else(|| {
                                         use cpal::traits::{DeviceTrait, HostTrait};
                                         cpal::default_host().default_output_device().and_then(|d| d.name().ok())
                                     });
-                                    {
-                                        let mut s = write_state(&shared);
-                                        s.playback.state = PlayerState::Stopped;
-                                        s.playback.position_ms = 0;
-                                        emit(PlayerEvent::StateChanged(s.playback.clone()));
+
+                                    let current_track = read_state(&shared).playback.current_track.clone();
+                                    if let Some(ref track) = current_track {
+                                        match Self::decode_track(&track.file_path, ffmpeg_path.as_deref()) {
+                                            Ok((source, dur)) => {
+                                                if dur > 0 { current_duration_ms = dur; }
+                                                sink.append(source);
+                                                if resume_pos > 0 {
+                                                    sink.try_seek(Duration::from_millis(resume_pos))
+                                                        .unwrap_or_else(|e| log::warn!("[audio] Seek after device switch failed: {}", e));
+                                                }
+                                                accumulated_ms = resume_pos;
+                                                if was_playing {
+                                                    play_start = Some(Instant::now());
+                                                    is_playing = true;
+                                                } else {
+                                                    sink.pause();
+                                                    play_start = None;
+                                                    is_playing = false;
+                                                }
+                                            }
+                                            Err(e) => {
+                                                log::warn!("[audio] Failed to re-decode after device switch: {}", e);
+                                                sink.pause();
+                                                play_start = None;
+                                                accumulated_ms = 0;
+                                                is_playing = false;
+                                                let mut s = write_state(&shared);
+                                                s.playback.state = PlayerState::Stopped;
+                                                s.playback.position_ms = 0;
+                                                emit(PlayerEvent::StateChanged(s.playback.clone()));
+                                            }
+                                        }
+                                    } else {
+                                        sink.pause();
+                                        play_start = None;
+                                        accumulated_ms = 0;
+                                        is_playing = false;
                                     }
-                                    log::info!("[audio] Switched to device: {:?}", device_name);
+                                    log::info!("[audio] Switched to device: {:?} (resumed at {}ms, playing={})", device_name, resume_pos, is_playing);
                                 }
                                 Err(e) => {
                                     log::error!("[audio] Failed to switch device: {}", e);
@@ -786,8 +832,11 @@ impl AudioEngine {
                 last_progress_emit = Instant::now();
             }
 
-            // Check if track finished (sink is empty)
-            if sink.empty() && current_duration_ms > 0 {
+            // Check if track finished (sink is empty). `is_playing` is
+            // guaranteed here (see `continue` above). Don't require a known
+            // duration — tracks whose decoder reports none (duration 0) would
+            // otherwise never auto-advance and stall the queue forever.
+            if sink.empty() {
                 log::info!("[audio] Track finished naturally");
                 let (next_exists, use_preloaded) = {
                     let mut s = write_state(&shared);

@@ -35,7 +35,7 @@ pub fn build_search_query(meta: &TrackMetadata) -> String {
 /// Spotify oEmbed API - works for any public track
 async fn fetch_spotify_metadata(url: &str) -> Option<TrackMetadata> {
     let client = Client::new();
-    let oembed_url = format!("https://open.spotify.com/oembed?url={}", url);
+    let oembed_url = format!("https://open.spotify.com/oembed?url={}", url_encode(url));
     
     let resp = client.get(&oembed_url).send().await.ok()?;
     let data: serde_json::Value = resp.json().await.ok()?;
@@ -337,7 +337,7 @@ fn html_decode(s: &str) -> String {
 }
 
 /// Simple URL encoding for query parameters
-fn url_encode(s: &str) -> String {
+pub(crate) fn url_encode(s: &str) -> String {
     let mut result = String::with_capacity(s.len() * 3);
     for c in s.chars() {
         match c {

@@ -8,6 +8,19 @@ use crate::db::DbPool;
 /// Global cancellation flag for metadata scans
 static METADATA_SCAN_CANCELLED: AtomicBool = AtomicBool::new(false);
 
+/// True while a metadata scan is running. Prevents concurrent scans, which
+/// would double MusicBrainz traffic and clear the cancellation flag of a
+/// still-running scan (un-cancelling it).
+static METADATA_SCAN_RUNNING: AtomicBool = AtomicBool::new(false);
+
+/// RAII guard that marks the scan finished even on early returns/errors.
+struct ScanRunningGuard;
+impl Drop for ScanRunningGuard {
+    fn drop(&mut self) {
+        METADATA_SCAN_RUNNING.store(false, Ordering::Relaxed);
+    }
+}
+
 #[derive(Debug, serde::Serialize)]
 pub struct EnrichResult {
     pub track_id: i64,
@@ -391,36 +404,39 @@ pub async fn enrich_album(
                 }
             }
         }
+    }
 
-        // Download artist image if missing
-        if let Some(aid) = artist_id {
-            let artist_has_image: bool = db.lock().ok()
-                .and_then(|conn| conn.query_row(
-                    "SELECT image_path IS NOT NULL FROM artists WHERE id = ?1",
-                    rusqlite::params![aid],
-                    |row| row.get::<_, bool>(0),
-                ).ok())
-                .unwrap_or(true);
+    // Download artist image if missing — independent of the album cover state.
+    // (This used to be nested inside `existing_cover.is_none()`, so any album
+    // that already had a cover never fetched its artist's image.)
+    if let Some(aid) = artist_id {
+        let artist_has_image: bool = db.lock().ok()
+            .and_then(|conn| conn.query_row(
+                "SELECT image_path IS NOT NULL FROM artists WHERE id = ?1",
+                rusqlite::params![aid],
+                |row| row.get::<_, bool>(0),
+            ).ok())
+            .unwrap_or(true);
 
-            if !artist_has_image {
-                let mut artist_img_bytes: Option<Vec<u8>> = None;
-                if let Some(ref lfm_artist) = lastfm_artist {
-                    if let Some(ref url) = lfm_artist.image_url {
-                        artist_img_bytes = crate::metadata::lastfm::download_image(url).await;
-                    }
+        if !artist_has_image {
+            let mut artist_img_bytes: Option<Vec<u8>> = None;
+            if let Some(ref lfm_artist) = lastfm_artist {
+                if let Some(ref url) = lfm_artist.image_url {
+                    artist_img_bytes = crate::metadata::lastfm::download_image(url).await;
                 }
-                if let Some(bytes) = artist_img_bytes {
-                    if let Ok(covers_dir) = app_handle.path().app_data_dir().map(|d| d.join("covers")) {
-                        let filename = format!("artist_{}.jpg", aid);
-                        let path = covers_dir.join(&filename);
-                        if std::fs::write(&path, &bytes).is_ok() {
-                            let path_str = path.to_string_lossy().to_string();
-                            if let Ok(conn) = db.lock() {
-                                let _ = conn.execute(
-                                    "UPDATE artists SET image_path = ?1 WHERE id = ?2 AND image_path IS NULL",
-                                    rusqlite::params![path_str, aid],
-                                );
-                            }
+            }
+            if let Some(bytes) = artist_img_bytes {
+                if let Ok(covers_dir) = app_handle.path().app_data_dir().map(|d| d.join("covers")) {
+                    let _ = std::fs::create_dir_all(&covers_dir);
+                    let filename = format!("artist_{}.jpg", aid);
+                    let path = covers_dir.join(&filename);
+                    if std::fs::write(&path, &bytes).is_ok() {
+                        let path_str = path.to_string_lossy().to_string();
+                        if let Ok(conn) = db.lock() {
+                            let _ = conn.execute(
+                                "UPDATE artists SET image_path = ?1 WHERE id = ?2 AND image_path IS NULL",
+                                rusqlite::params![path_str, aid],
+                            );
                         }
                     }
                 }
@@ -452,6 +468,16 @@ pub async fn scan_missing_metadata(
     db: State<'_, Arc<DbPool>>,
     app_handle: tauri::AppHandle,
 ) -> Result<ScanMissingResult, String> {
+    // Only one scan at a time — a second scan would double MusicBrainz
+    // traffic and reset the cancellation flag of the running scan.
+    if METADATA_SCAN_RUNNING
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return Err("A metadata scan is already running".to_string());
+    }
+    let _running_guard = ScanRunningGuard;
+
     // Get tracks that need enrichment (completeness < 70 OR completeness = 0)
     // Note: We don't recompute completeness for tracks at 0% before enriching them,
     // because that would prevent re-enrichment after metadata deletion.
@@ -1183,8 +1209,10 @@ pub fn metadata_cleanup_duplicates(
     let conn = crate::db::lock(&db)?;
 
     // === PHASE 1: Merge duplicate albums ===
-    // Group by LOWER(title) only — same album name with different artist_ids
-    // (e.g. different featured artists) should be merged into one album.
+    // Group by LOWER(title), but only merge albums whose artists are
+    // compatible: same artist_id, or one side has no artist yet. Merging on
+    // title alone destroyed data — "Greatest Hits" by two different artists
+    // got collapsed into one album with the wrong artist's metadata.
     let dup_titles: Vec<String> = conn.prepare(
         "SELECT LOWER(title) FROM albums GROUP BY LOWER(title) HAVING COUNT(*) > 1"
     )
@@ -1198,76 +1226,86 @@ pub fn metadata_cleanup_duplicates(
     let mut deleted_albums = 0;
 
     for lower_title in &dup_titles {
-        // Get all album IDs with this title, ordered so the one with the most tracks comes first
-        let album_ids: Vec<i64> = conn.prepare(
-            "SELECT a.id FROM albums a
+        // All albums with this title, the one with the most tracks first
+        let albums: Vec<(i64, Option<i64>)> = conn.prepare(
+            "SELECT a.id, a.artist_id FROM albums a
              LEFT JOIN (SELECT album_id, COUNT(*) as cnt FROM tracks WHERE album_id IS NOT NULL GROUP BY album_id) tc
                ON tc.album_id = a.id
              WHERE LOWER(a.title) = ?1
              ORDER BY COALESCE(tc.cnt, 0) DESC, a.id ASC"
         )
         .map_err(|e| e.to_string())?
-        .query_map(params![lower_title], |row| row.get(0))
+        .query_map(params![lower_title], |row| Ok((row.get(0)?, row.get(1)?)))
         .map_err(|e| e.to_string())?
         .filter_map(|r| r.ok())
         .collect();
 
-        if album_ids.len() <= 1 {
-            continue;
-        }
-
-        let keep_id = album_ids[0];
-        let delete_ids = &album_ids[1..];
-
-        // Merge: move all tracks from duplicate albums to the kept album
-        for &dup_id in delete_ids {
-            conn.execute(
-                "UPDATE tracks SET album_id = ?1 WHERE album_id = ?2",
-                params![keep_id, dup_id],
-            ).map_err(|e| e.to_string())?;
-        }
-
-        // If the kept album has no artist_id but a duplicate does, adopt it
-        let keep_artist: Option<i64> = conn.query_row(
-            "SELECT artist_id FROM albums WHERE id = ?1", params![keep_id], |row| row.get(0),
-        ).map_err(|e| e.to_string())?;
-        if keep_artist.is_none() {
-            for &dup_id in delete_ids {
-                let dup_artist: Option<i64> = conn.query_row(
-                    "SELECT artist_id FROM albums WHERE id = ?1", params![dup_id], |row| row.get(0),
-                ).map_err(|e| e.to_string())?;
-                if dup_artist.is_some() {
-                    conn.execute(
-                        "UPDATE albums SET artist_id = ?2 WHERE id = ?1",
-                        params![keep_id, dup_artist],
-                    ).map_err(|e| e.to_string())?;
-                    break;
+        // Partition into artist-compatible groups. An album with no artist
+        // joins the first group (covers imports that predate artist tagging);
+        // albums with different artists stay separate.
+        let mut groups: Vec<(Option<i64>, Vec<i64>)> = Vec::new();
+        for (id, artist) in albums {
+            let existing = groups.iter_mut().find(|(g_artist, _)| {
+                match (*g_artist, artist) {
+                    (Some(a), Some(b)) => a == b,
+                    _ => true, // either side unknown — compatible
                 }
+            });
+            match existing {
+                Some(group) => {
+                    if group.0.is_none() {
+                        group.0 = artist;
+                    }
+                    group.1.push(id);
+                }
+                None => groups.push((artist, vec![id])),
             }
         }
 
-        // Fill in missing metadata fields from duplicates
-        conn.execute(
-            "UPDATE albums SET
-                cover_art_path = COALESCE(cover_art_path, (SELECT cover_art_path FROM albums WHERE LOWER(title) = ?2 AND cover_art_path IS NOT NULL AND id != ?1 LIMIT 1)),
-                year = COALESCE(year, (SELECT year FROM albums WHERE LOWER(title) = ?2 AND year IS NOT NULL AND id != ?1 LIMIT 1)),
-                genre = COALESCE(genre, (SELECT genre FROM albums WHERE LOWER(title) = ?2 AND genre IS NOT NULL AND id != ?1 LIMIT 1)),
-                musicbrainz_id = COALESCE(musicbrainz_id, (SELECT musicbrainz_id FROM albums WHERE LOWER(title) = ?2 AND musicbrainz_id IS NOT NULL AND id != ?1 LIMIT 1)),
-                label = COALESCE(label, (SELECT label FROM albums WHERE LOWER(title) = ?2 AND label IS NOT NULL AND id != ?1 LIMIT 1)),
-                release_date = COALESCE(release_date, (SELECT release_date FROM albums WHERE LOWER(title) = ?2 AND release_date IS NOT NULL AND id != ?1 LIMIT 1)),
-                description = COALESCE(description, (SELECT description FROM albums WHERE LOWER(title) = ?2 AND description IS NOT NULL AND id != ?1 LIMIT 1))
-             WHERE id = ?1",
-            params![keep_id, lower_title],
-        ).map_err(|e| e.to_string())?;
+        for (group_artist, member_ids) in groups {
+            if member_ids.len() <= 1 {
+                continue;
+            }
+            let keep_id = member_ids[0];
+            let delete_ids = &member_ids[1..];
 
-        // Delete the duplicate albums
-        for &dup_id in delete_ids {
-            conn.execute("DELETE FROM albums WHERE id = ?1", params![dup_id])
-                .map_err(|e| e.to_string())?;
-            deleted_albums += 1;
+            for &dup_id in delete_ids {
+                // Move all tracks from the duplicate to the kept album
+                conn.execute(
+                    "UPDATE tracks SET album_id = ?1 WHERE album_id = ?2",
+                    params![keep_id, dup_id],
+                ).map_err(|e| e.to_string())?;
+
+                // Fill in missing metadata fields FROM THIS DUPLICATE ONLY —
+                // never from unrelated same-title albums by other artists.
+                conn.execute(
+                    "UPDATE albums SET
+                        cover_art_path = COALESCE(cover_art_path, (SELECT cover_art_path FROM albums WHERE id = ?2)),
+                        year           = COALESCE(year,           (SELECT year           FROM albums WHERE id = ?2)),
+                        genre          = COALESCE(genre,          (SELECT genre          FROM albums WHERE id = ?2)),
+                        musicbrainz_id = COALESCE(musicbrainz_id, (SELECT musicbrainz_id FROM albums WHERE id = ?2)),
+                        label          = COALESCE(label,          (SELECT label          FROM albums WHERE id = ?2)),
+                        release_date   = COALESCE(release_date,   (SELECT release_date   FROM albums WHERE id = ?2)),
+                        description    = COALESCE(description,    (SELECT description    FROM albums WHERE id = ?2))
+                     WHERE id = ?1",
+                    params![keep_id, dup_id],
+                ).map_err(|e| e.to_string())?;
+
+                conn.execute("DELETE FROM albums WHERE id = ?1", params![dup_id])
+                    .map_err(|e| e.to_string())?;
+                deleted_albums += 1;
+            }
+
+            // If the kept album has no artist but the group resolved one, adopt it
+            if let Some(artist_id) = group_artist {
+                conn.execute(
+                    "UPDATE albums SET artist_id = COALESCE(artist_id, ?2) WHERE id = ?1",
+                    params![keep_id, artist_id],
+                ).map_err(|e| e.to_string())?;
+            }
+
+            merged_album_groups += 1;
         }
-
-        merged_album_groups += 1;
     }
 
     // Clean up orphaned albums (no tracks)
@@ -1277,91 +1315,7 @@ pub fn metadata_cleanup_duplicates(
     ).map_err(|e| e.to_string())?;
 
     // === PHASE 2: Deduplicate tracks ===
-    // Find tracks with same title + same artist (case-insensitive) that are duplicates.
-    // Keep the one with: highest metadata_completeness, then largest file_size, then lowest id.
-    let dup_track_groups: Vec<(String, Option<i64>)> = conn.prepare(
-        "SELECT LOWER(title), artist_id FROM tracks
-         GROUP BY LOWER(title), artist_id
-         HAVING COUNT(*) > 1"
-    )
-    .map_err(|e| e.to_string())?
-    .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
-    .map_err(|e| e.to_string())?
-    .filter_map(|r| r.ok())
-    .collect();
-
-    let mut merged_track_groups = 0;
-    let mut deleted_tracks = 0;
-
-    for (lower_title, artist_id) in &dup_track_groups {
-        // Get all track IDs for this group, best quality first
-        let track_ids: Vec<i64> = if let Some(aid) = artist_id {
-            conn.prepare(
-                "SELECT id FROM tracks
-                 WHERE LOWER(title) = ?1 AND artist_id = ?2
-                 ORDER BY COALESCE(metadata_completeness, 0) DESC, COALESCE(file_size, 0) DESC, id ASC"
-            )
-            .map_err(|e| e.to_string())?
-            .query_map(params![lower_title, aid], |row| row.get(0))
-            .map_err(|e| e.to_string())?
-            .filter_map(|r| r.ok())
-            .collect()
-        } else {
-            conn.prepare(
-                "SELECT id FROM tracks
-                 WHERE LOWER(title) = ?1 AND artist_id IS NULL
-                 ORDER BY COALESCE(metadata_completeness, 0) DESC, COALESCE(file_size, 0) DESC, id ASC"
-            )
-            .map_err(|e| e.to_string())?
-            .query_map(params![lower_title], |row| row.get(0))
-            .map_err(|e| e.to_string())?
-            .filter_map(|r| r.ok())
-            .collect()
-        };
-
-        if track_ids.len() <= 1 {
-            continue;
-        }
-
-        let keep_id = track_ids[0];
-        let delete_ids = &track_ids[1..];
-
-        // Update playlist_tracks to point to the kept track
-        for &dup_id in delete_ids {
-            // Only update if the kept track isn't already in the same playlist
-            conn.execute(
-                "UPDATE OR IGNORE playlist_tracks SET track_id = ?1 WHERE track_id = ?2",
-                params![keep_id, dup_id],
-            ).map_err(|e| e.to_string())?;
-            // Remove any remaining references that conflicted
-            conn.execute(
-                "DELETE FROM playlist_tracks WHERE track_id = ?1",
-                params![dup_id],
-            ).map_err(|e| e.to_string())?;
-        }
-
-        // Delete duplicate tracks (and their files)
-        for &dup_id in delete_ids {
-            // Get file path before deleting so we can clean up the file
-            let file_path: Option<String> = conn.query_row(
-                "SELECT file_path FROM tracks WHERE id = ?1",
-                params![dup_id],
-                |row| row.get(0),
-            ).ok();
-
-            conn.execute("DELETE FROM tracks WHERE id = ?1", params![dup_id])
-                .map_err(|e| e.to_string())?;
-
-            // Remove the duplicate file from disk
-            if let Some(path) = file_path {
-                let _ = std::fs::remove_file(&path);
-            }
-
-            deleted_tracks += 1;
-        }
-
-        merged_track_groups += 1;
-    }
+    let (merged_track_groups, deleted_tracks) = dedup_duplicate_tracks(&conn)?;
 
     log::info!(
         "Cleanup: merged {} album groups (deleted {}), removed {} orphaned albums, merged {} track groups (deleted {} duplicate tracks)",
@@ -1377,51 +1331,38 @@ pub fn metadata_cleanup_duplicates(
     }))
 }
 
-/// Deduplicate tracks only (same title + artist, keep best quality).
-#[tauri::command]
-pub fn metadata_cleanup_duplicate_tracks(
-    db: State<'_, Arc<DbPool>>,
-) -> Result<serde_json::Value, String> {
-    let conn = crate::db::lock(&db)?;
-
-    let dup_track_groups: Vec<(String, Option<i64>)> = conn.prepare(
-        "SELECT LOWER(title), artist_id FROM tracks
-         GROUP BY LOWER(title), artist_id
+/// Deduplicate tracks with identical (title, artist, album), keeping the copy
+/// with the best metadata/file size. The album is part of the group key on
+/// purpose: the same song on a studio album AND a compilation/single is two
+/// distinct recordings — the old title+artist key deleted one of the audio
+/// files irreversibly.
+fn dedup_duplicate_tracks(conn: &rusqlite::Connection) -> Result<(i64, i64), String> {
+    let dup_track_groups: Vec<(String, Option<i64>, Option<i64>)> = conn.prepare(
+        "SELECT LOWER(title), artist_id, album_id FROM tracks
+         GROUP BY LOWER(title), artist_id, album_id
          HAVING COUNT(*) > 1"
     )
     .map_err(|e| e.to_string())?
-    .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+    .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
     .map_err(|e| e.to_string())?
     .filter_map(|r| r.ok())
     .collect();
 
-    let mut merged_track_groups = 0;
-    let mut deleted_tracks = 0;
+    let mut merged_track_groups = 0i64;
+    let mut deleted_tracks = 0i64;
 
-    for (lower_title, artist_id) in &dup_track_groups {
-        let track_ids: Vec<i64> = if let Some(aid) = artist_id {
-            conn.prepare(
-                "SELECT id FROM tracks
-                 WHERE LOWER(title) = ?1 AND artist_id = ?2
-                 ORDER BY COALESCE(metadata_completeness, 0) DESC, COALESCE(file_size, 0) DESC, id ASC"
-            )
-            .map_err(|e| e.to_string())?
-            .query_map(params![lower_title, aid], |row| row.get(0))
-            .map_err(|e| e.to_string())?
-            .filter_map(|r| r.ok())
-            .collect()
-        } else {
-            conn.prepare(
-                "SELECT id FROM tracks
-                 WHERE LOWER(title) = ?1 AND artist_id IS NULL
-                 ORDER BY COALESCE(metadata_completeness, 0) DESC, COALESCE(file_size, 0) DESC, id ASC"
-            )
-            .map_err(|e| e.to_string())?
-            .query_map(params![lower_title], |row| row.get(0))
-            .map_err(|e| e.to_string())?
-            .filter_map(|r| r.ok())
-            .collect()
-        };
+    for (lower_title, artist_id, album_id) in &dup_track_groups {
+        // All tracks in this group, best quality first (`IS` is NULL-safe)
+        let track_ids: Vec<i64> = conn.prepare(
+            "SELECT id FROM tracks
+             WHERE LOWER(title) = ?1 AND artist_id IS ?2 AND album_id IS ?3
+             ORDER BY COALESCE(metadata_completeness, 0) DESC, COALESCE(file_size, 0) DESC, id ASC"
+        )
+        .map_err(|e| e.to_string())?
+        .query_map(params![lower_title, artist_id, album_id], |row| row.get(0))
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
 
         if track_ids.len() <= 1 {
             continue;
@@ -1430,7 +1371,16 @@ pub fn metadata_cleanup_duplicate_tracks(
         let keep_id = track_ids[0];
         let delete_ids = &track_ids[1..];
 
+        // Keeper's file path — never delete the file the kept row points at
+        // (two DB rows can reference the same file on disk).
+        let keep_path: Option<String> = conn.query_row(
+            "SELECT file_path FROM tracks WHERE id = ?1",
+            params![keep_id],
+            |row| row.get(0),
+        ).ok();
+
         for &dup_id in delete_ids {
+            // Re-point playlist references to the kept track
             conn.execute(
                 "UPDATE OR IGNORE playlist_tracks SET track_id = ?1 WHERE track_id = ?2",
                 params![keep_id, dup_id],
@@ -1448,9 +1398,12 @@ pub fn metadata_cleanup_duplicate_tracks(
 
             conn.execute("DELETE FROM tracks WHERE id = ?1", params![dup_id])
                 .map_err(|e| e.to_string())?;
+            let _ = conn.execute("DELETE FROM tracks_fts WHERE rowid = ?1", params![dup_id]);
 
             if let Some(path) = file_path {
-                let _ = std::fs::remove_file(&path);
+                if keep_path.as_deref() != Some(path.as_str()) {
+                    let _ = std::fs::remove_file(&path);
+                }
             }
 
             deleted_tracks += 1;
@@ -1458,6 +1411,18 @@ pub fn metadata_cleanup_duplicate_tracks(
 
         merged_track_groups += 1;
     }
+
+    Ok((merged_track_groups, deleted_tracks))
+}
+
+/// Deduplicate tracks only (same title + artist + album, keep best quality).
+#[tauri::command]
+pub fn metadata_cleanup_duplicate_tracks(
+    db: State<'_, Arc<DbPool>>,
+) -> Result<serde_json::Value, String> {
+    let conn = crate::db::lock(&db)?;
+
+    let (merged_track_groups, deleted_tracks) = dedup_duplicate_tracks(&conn)?;
 
     log::info!(
         "Track cleanup: merged {} groups, deleted {} duplicate tracks",

@@ -491,11 +491,16 @@ pub async fn download_artist_missing(
                     for medium in media {
                         let disc = medium["position"].as_i64().unwrap_or(1);
                         if let Some(medium_tracks) = medium["tracks"].as_array() {
-                            for track in medium_tracks {
+                            for (idx, track) in medium_tracks.iter().enumerate() {
                                 let title = track["title"].as_str().unwrap_or("").to_string();
-                                let num = track["number"].as_str()
-                                    .and_then(|n| n.parse::<i64>().ok())
-                                    .unwrap_or(0);
+                                // Prefer the numeric "position" — "number" is a
+                                // free-form string ("A1", "B2" on vinyl) and
+                                // collapsing those to 0 made every track of the
+                                // disc overwrite the same slot on import.
+                                let num = track["position"].as_i64()
+                                    .or_else(|| track["number"].as_str()
+                                        .and_then(|n| n.parse::<i64>().ok()))
+                                    .unwrap_or(idx as i64 + 1);
                                 // Duration from recording.length (milliseconds)
                                 let duration_ms = track["recording"]["length"].as_i64()
                                     .or_else(|| track["length"].as_i64());
