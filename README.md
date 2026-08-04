@@ -5,7 +5,7 @@
 <h1 align="center">Playlist</h1>
 
 <p align="center">
-  <strong>Liberate your music. Own your data. Support artists.</strong>
+  <strong>Liberate your music. Own your data.</strong>
 </p>
 
 <p align="center">
@@ -23,8 +23,6 @@
 Streaming platforms decide what you hear, lock your library behind a subscription, and pay artists fractions of a cent. Playlist starts from a simple idea: **your music collection belongs to you, not to a corporation.**
 
 Playlist is a desktop music manager for Windows, macOS, and Linux. It is built with **Tauri 2**, **SvelteKit**, and **Rust**. Download tracks from most platforms, find the albums and tracks your collection misses, and play everything locally. All offline. All yours.
-
-> **Support artists directly.** Buy their albums. Back them on Patreon. Buy them a coffee. Go to their shows. This tool gives you control over your data. Use that freedom to support the people who make the music you love.
 
 ---
 
