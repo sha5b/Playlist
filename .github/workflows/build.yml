@@ -8,6 +8,7 @@ on:
 
 permissions:
   contents: write
+  actions: write
 
 jobs:
   build:
@@ -116,7 +117,7 @@ jobs:
           args: --target ${{ matrix.target }}
           tagName: ${{ github.ref_name }}
           releaseName: 'Playlist ${{ github.ref_name }}'
-          releaseBody: ${{ env.RELEASE_NOTES }}
+          releaseBody: ${{ env.RELEASE_NOTES || 'Download the installer for your platform below.' }}
           releaseDraft: false
           prerelease: false
 
@@ -132,3 +133,20 @@ jobs:
             src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
             src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app
           if-no-files-found: ignore
+
+  # Releases created with GITHUB_TOKEN do not fire the `release: published`
+  # event (GitHub suppresses events caused by that token), so the public-repo
+  # sync never triggered on its own. An explicit workflow_dispatch call is
+  # exempt from that suppression, so dispatch it here after all builds finish.
+  publish-public:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger public repo sync
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh workflow run publish-public.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            -f tag="$GITHUB_REF_NAME"

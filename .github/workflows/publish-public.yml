@@ -30,13 +30,20 @@ jobs:
           fi
 
       - name: Write release body to file
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           if [ "${{ github.event_name }}" = "release" ]; then
             cat <<'BODY_EOF' > /tmp/release-body.md
           ${{ github.event.release.body }}
           BODY_EOF
           else
-            echo "Download the installer for your platform below." > /tmp/release-body.md
+            # Manual/auto dispatch: fetch the real release notes from the
+            # private repo release instead of a placeholder.
+            gh release view "${{ steps.tag.outputs.tag }}" \
+              --repo "$GITHUB_REPOSITORY" \
+              --json body -q .body > /tmp/release-body.md \
+              || echo "Download the installer for your platform below." > /tmp/release-body.md
           fi
 
       - name: Download release assets from private repo
