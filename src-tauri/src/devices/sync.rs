@@ -34,13 +34,31 @@ pub async fn sync_playlist_to_device(
     playlist_id: i64,
     cancel_token: Arc<AtomicBool>,
 ) -> Result<DeviceSyncResult, String> {
+    let result = run_sync(&app_handle, db, device_id, playlist_id, cancel_token).await;
+    if let Err(e) = &result {
+        // Every failure must emit an "error" progress event: the frontend only
+        // clears its progress state on "done"/"error"/"cancelled", so a silent
+        // early return would freeze the sync buttons forever.
+        emit_progress(&app_handle, device_id, playlist_id, 0, 0, "", "error", Some(e.clone()));
+    }
+    result
+}
+
+async fn run_sync(
+    app_handle: &AppHandle,
+    db: Arc<std::sync::Mutex<Connection>>,
+    device_id: i64,
+    playlist_id: i64,
+    cancel_token: Arc<AtomicBool>,
+) -> Result<DeviceSyncResult, String> {
     // Get device config
     let (device, tracks_to_sync) = {
         let conn = crate::db::lock(&db)?;
         let device = db_devices::get_device_by_id(&conn, device_id)
             .map_err(|e| format!("Device not found: {}", e))?;
-        let tracks = db_devices::get_unsynced_tracks(&conn, device_id, playlist_id)
-            .map_err(|e| format!("Failed to get unsynced tracks: {}", e))?;
+        let tracks =
+            db_devices::get_unsynced_tracks(&conn, device_id, playlist_id, &device.output_format)
+                .map_err(|e| format!("Failed to get unsynced tracks: {}", e))?;
         (device, tracks)
     };
 
@@ -57,10 +75,22 @@ pub async fn sync_playlist_to_device(
 
     // Free-space guard: estimate required bytes from source file sizes and refuse to
     // start if the device clearly can't hold them (avoids opaque per-file copy failures).
-    // Transcoded output is usually smaller than the source, so this is conservative.
+    // Scale by target format: transcoding lossy sources to FLAC blows the size up
+    // (~6x); mp3/opus/original stay around 1x (usually smaller, so conservative).
     let estimated_bytes: u64 = tracks_to_sync
         .iter()
-        .filter_map(|t| std::fs::metadata(&t.file_path).ok().map(|m| m.len()))
+        .filter_map(|t| {
+            let len = std::fs::metadata(&t.file_path).ok()?.len();
+            let src_format = t.format.as_deref().unwrap_or("").to_ascii_lowercase();
+            let source_is_lossless =
+                matches!(src_format.as_str(), "flac" | "wav" | "aiff" | "aif" | "alac");
+            let factor = if device.output_format == "flac" && !source_is_lossless {
+                6.0
+            } else {
+                1.0
+            };
+            Some((len as f64 * factor) as u64)
+        })
         .sum();
     if let (_, Some(free)) = detect::get_fs_stats(Path::new(mount_path)) {
         // Keep a 5% headroom margin.
@@ -78,11 +108,11 @@ pub async fn sync_playlist_to_device(
     let mut failed = 0i64;
 
     // Resolve ffmpeg path for potential transcoding
-    let ffmpeg_path = resolve_ffmpeg(&app_handle);
+    let ffmpeg_path = resolve_ffmpeg(app_handle);
 
     for (i, track) in tracks_to_sync.iter().enumerate() {
         if cancel_token.load(Ordering::Relaxed) {
-            emit_progress(&app_handle, device_id, playlist_id, i as i64, total, &track.title, "cancelled", None);
+            emit_progress(app_handle, device_id, playlist_id, i as i64, total, &track.title, "cancelled", None);
             return Ok(DeviceSyncResult {
                 device_id,
                 playlist_id,
@@ -95,7 +125,7 @@ pub async fn sync_playlist_to_device(
         // Detect mid-sync disconnect and abort cleanly rather than failing every
         // remaining track against a dead mount point.
         if !Path::new(mount_path).exists() {
-            emit_progress(&app_handle, device_id, playlist_id, i as i64, total, &track.title, "error", Some("Device disconnected".into()));
+            emit_progress(app_handle, device_id, playlist_id, i as i64, total, &track.title, "error", Some("Device disconnected".into()));
             return Err("Device disconnected during sync".to_string());
         }
 
@@ -111,7 +141,7 @@ pub async fn sync_playlist_to_device(
 
         let status = if needs_conversion { "converting" } else { "copying" };
         // 1-based: this is the track currently being processed ("1 of N", not "0 of N")
-        emit_progress(&app_handle, device_id, playlist_id, i as i64 + 1, total, &track.title, status, None);
+        emit_progress(app_handle, device_id, playlist_id, i as i64 + 1, total, &track.title, status, None);
 
         // Build destination path: Artist/Album/TrackNum - Title.ext
         let dest_ext = if device.output_format == "original" {
@@ -152,7 +182,21 @@ pub async fn sync_playlist_to_device(
             .map(|p| p.to_string_lossy().replace('\\', "/"))
             .unwrap_or_else(|_| filename.clone());
 
-        let result = if needs_conversion {
+        let source_size = std::fs::metadata(source_path).ok().map(|m| m.len() as i64);
+
+        // If this track was already synced under another playlist to the exact
+        // same on-device path, skip the physical copy — but still record the
+        // (device, track, playlist) row so this playlist's M3U/counts include it.
+        let already_on_device = {
+            let conn = crate::db::lock(&db)?;
+            db_devices::is_file_already_on_device(&conn, device_id, track.id, &relative_path)
+                .unwrap_or(false)
+                && dest_path.exists()
+        };
+
+        let result = if already_on_device {
+            Ok(())
+        } else if needs_conversion {
             transcode_file(source_path, &dest_path, &device.output_format, &device.output_bitrate, ffmpeg_path.as_deref()).await
         } else {
             copy_file(source_path, &dest_path).await
@@ -160,6 +204,18 @@ pub async fn sync_playlist_to_device(
 
         match result {
             Ok(()) => {
+                // Flush the copied data to the device before we ever report
+                // success/"done" — USB media is frequently yanked right after.
+                if !already_on_device {
+                    match std::fs::File::open(&dest_path) {
+                        Ok(f) => {
+                            if let Err(e) = f.sync_all() {
+                                log::warn!("Failed to flush {:?} to device: {}", dest_path, e);
+                            }
+                        }
+                        Err(e) => log::warn!("Failed to open {:?} for flush: {}", dest_path, e),
+                    }
+                }
                 let conn = crate::db::lock(&db)?;
                 let _ = db_devices::record_synced_track(
                     &conn,
@@ -168,6 +224,7 @@ pub async fn sync_playlist_to_device(
                     playlist_id,
                     &relative_path,
                     dest_ext,
+                    source_size,
                     None,
                 );
                 synced += 1;
@@ -179,9 +236,37 @@ pub async fn sync_playlist_to_device(
         }
     }
 
+    // Reconcile: drop sync rows for tracks no longer in the playlist, and delete
+    // their files from the device when no other sync row references the same path
+    // (otherwise removed tracks linger in M3Us and files accumulate forever).
+    {
+        let conn = crate::db::lock(&db)?;
+        let stale = db_devices::get_stale_synced_tracks(&conn, device_id, playlist_id)
+            .map_err(|e| format!("Failed to find stale synced tracks: {}", e))?;
+        for (track_id, path_on_device) in stale {
+            if let Err(e) = db_devices::remove_synced_track(&conn, device_id, track_id, playlist_id) {
+                log::warn!("Failed to remove stale sync row for track {}: {}", track_id, e);
+                continue;
+            }
+            let still_referenced =
+                db_devices::is_device_file_referenced(&conn, device_id, &path_on_device)
+                    .unwrap_or(true);
+            if !still_referenced {
+                let abs = music_dir.join(&path_on_device);
+                if abs.exists() {
+                    if let Err(e) = std::fs::remove_file(&abs) {
+                        log::warn!("Failed to remove stale file {:?} from device: {}", abs, e);
+                    } else {
+                        log::info!("Removed stale file from device: {:?}", abs);
+                    }
+                }
+            }
+        }
+    }
+
     // Generate M3U playlist if enabled
     if device.generate_m3u {
-        emit_progress(&app_handle, device_id, playlist_id, total, total, "", "generating_playlist", None);
+        emit_progress(app_handle, device_id, playlist_id, total, total, "", "generating_playlist", None);
 
         let conn = crate::db::lock(&db)?;
         if let Err(e) = generate_m3u(&conn, device_id, playlist_id, &music_dir) {
@@ -195,7 +280,7 @@ pub async fn sync_playlist_to_device(
         let _ = db_devices::update_playlist_sync_time(&conn, device_id, playlist_id);
     }
 
-    emit_progress(&app_handle, device_id, playlist_id, total, total, "", "done", None);
+    emit_progress(app_handle, device_id, playlist_id, total, total, "", "done", None);
 
     Ok(DeviceSyncResult {
         device_id,
@@ -275,17 +360,39 @@ async fn transcode_file(
         }
     }
 
-    args.push(dest.to_string_lossy().to_string());
+    // Like copy_file's ".part" pattern: write to a temp name and rename on
+    // success, so a mid-transcode disconnect/kill never leaves a truncated file
+    // masquerading as a real track. Keep the real extension last so ffmpeg
+    // still infers the output container from it.
+    let dest_ext = dest.extension().and_then(|e| e.to_str()).unwrap_or("tmp");
+    let tmp = dest.with_extension(format!("part.{}", dest_ext));
+    args.push(tmp.to_string_lossy().to_string());
 
     let output = tokio::process::Command::new(ffmpeg)
         .args(&args)
         .output()
         .await
-        .map_err(|e| format!("ffmpeg failed to start: {}", e))?;
+        .map_err(|e| {
+            format!("ffmpeg failed to start: {}", e)
+        });
+
+    let output = match output {
+        Ok(o) => o,
+        Err(e) => {
+            let _ = tokio::fs::remove_file(&tmp).await;
+            return Err(e);
+        }
+    };
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
+        let _ = tokio::fs::remove_file(&tmp).await;
         return Err(format!("ffmpeg error: {}", stderr));
+    }
+
+    if let Err(e) = tokio::fs::rename(&tmp, dest).await {
+        let _ = tokio::fs::remove_file(&tmp).await;
+        return Err(format!("Finalize failed: {}", e));
     }
 
     Ok(())
@@ -304,13 +411,16 @@ fn generate_m3u(
         |row| row.get(0),
     )?;
 
-    // Get synced tracks for this playlist on this device
+    // Get synced tracks for this playlist on this device. The inner join on
+    // playlist_tracks drops tracks that were removed from the playlist (their
+    // sync rows are reconciled separately) and guarantees a non-NULL position.
     let mut stmt = conn.prepare(
         "SELECT dts.file_path_on_device, t.title, t.duration_ms
          FROM device_track_sync dts
+         JOIN playlist_tracks pt ON pt.playlist_id = dts.playlist_id AND pt.track_id = dts.track_id
          JOIN tracks t ON t.id = dts.track_id
          WHERE dts.device_id = ?1 AND dts.playlist_id = ?2
-         ORDER BY (SELECT position FROM playlist_tracks WHERE playlist_id = ?2 AND track_id = dts.track_id)",
+         ORDER BY pt.position",
     )?;
 
     let entries: Vec<(String, String, Option<i64>)> = stmt

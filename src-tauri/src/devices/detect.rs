@@ -36,7 +36,7 @@ async fn detect_linux() -> Result<Vec<DetectedDevice>, String> {
 
     let output = tokio::process::Command::new("lsblk")
         .args([
-            "-J", "-o",
+            "-J", "-b", "-o",
             "NAME,LABEL,SIZE,MOUNTPOINT,HOTPLUG,TRAN,MODEL,SERIAL,UUID,FSSIZE,FSAVAIL",
         ])
         .output()
@@ -76,10 +76,16 @@ fn parse_lsblk_json(json_str: &str) -> Result<Vec<DetectedDevice>, String> {
         let model = device.get("model").and_then(|v| v.as_str()).or(parent_model);
         let serial = device.get("serial").and_then(|v| v.as_str()).or(parent_serial);
         let mountpoint = device.get("mountpoint").and_then(|v| v.as_str());
-        let is_usb = tran.map(|t| t == "usb").unwrap_or(false);
+        let dev_name = device.get("name").and_then(|v| v.as_str()).unwrap_or("");
+        // Removable media isn't only USB: SD cards show up as tran "mmc" (or an
+        // mmcblk* device with no tran), and desktop automounts land under
+        // /run/media regardless of transport.
+        let is_removable_tran = tran.map(|t| t == "usb" || t == "mmc").unwrap_or(false)
+            || dev_name.starts_with("mmcblk")
+            || mountpoint.map(|mp| mp.starts_with("/run/media/")).unwrap_or(false);
 
         let mp = match mountpoint {
-            Some(mp) if hotplug && is_usb && !mp.is_empty() => mp,
+            Some(mp) if hotplug && is_removable_tran && !mp.is_empty() => mp,
             _ => {
                 // Recurse into children (partitions) even if this device doesn't match
                 if let Some(children) = device.get("children").and_then(|v| v.as_array()) {
@@ -93,7 +99,15 @@ fn parse_lsblk_json(json_str: &str) -> Result<Vec<DetectedDevice>, String> {
 
         let label = device.get("label").and_then(|v| v.as_str()).unwrap_or("");
         let uuid = device.get("uuid").and_then(|v| v.as_str()).unwrap_or("");
-        let size_str = device.get("size").and_then(|v| v.as_str()).unwrap_or("");
+        // With `lsblk -b` newer versions emit sizes as JSON numbers, older as strings.
+        let size_str = device
+            .get("size")
+            .map(|v| match v {
+                serde_json::Value::String(s) => s.clone(),
+                serde_json::Value::Number(n) => n.to_string(),
+                _ => String::new(),
+            })
+            .unwrap_or_default();
 
         // Key device identity on the filesystem UUID first — it's stable and matches
         // what the mount-scan fallback derives, so the same stick keeps ONE identity
@@ -114,8 +128,8 @@ fn parse_lsblk_json(json_str: &str) -> Result<Vec<DetectedDevice>, String> {
             mp.rsplit('/').next().unwrap_or("USB Device").to_string()
         };
 
-        let capacity = parse_lsblk_size(device.get("fssize").and_then(|v| v.as_str()));
-        let free = parse_lsblk_size(device.get("fsavail").and_then(|v| v.as_str()));
+        let capacity = parse_lsblk_size(device.get("fssize"));
+        let free = parse_lsblk_size(device.get("fsavail"));
 
         devices.push(DetectedDevice {
             device_uid: uid,
@@ -145,12 +159,22 @@ fn parse_lsblk_json(json_str: &str) -> Result<Vec<DetectedDevice>, String> {
 }
 
 #[cfg(target_os = "linux")]
-fn parse_lsblk_size(size_str: Option<&str>) -> Option<i64> {
-    let s = size_str?.trim();
+fn parse_lsblk_size(value: Option<&serde_json::Value>) -> Option<i64> {
+    let value = value?;
+    // With -b, lsblk reports bytes — as a JSON number on newer versions,
+    // as a numeric string on older ones. Handle both, keeping the
+    // human-readable suffix parser only as a fallback.
+    if let Some(n) = value.as_i64() {
+        return Some(n);
+    }
+    let s = value.as_str()?.trim();
     if s.is_empty() {
         return None;
     }
-    // lsblk SIZE can be like "14.9G", "500M", "1T", etc.
+    if let Ok(n) = s.parse::<i64>() {
+        return Some(n);
+    }
+    // Fallback: lsblk SIZE can be like "14.9G", "500M", "1T", etc.
     let (num_part, suffix) = if let Some(n) = s.strip_suffix('G') {
         (n, 1_073_741_824i64)
     } else if let Some(n) = s.strip_suffix('M') {
@@ -243,18 +267,20 @@ async fn detect_macos() -> Result<Vec<DetectedDevice>, String> {
 
             if let Ok(info) = info_output {
                 let info_str = String::from_utf8_lossy(&info.stdout);
-                let is_removable = info_str.contains("<key>Removable</key>") &&
-                    info_str.contains("<true/>");
-                let is_external = info_str.contains("<key>Internal</key>") &&
-                    // Internal = false means external
-                    info_str.find("<key>Internal</key>")
-                        .and_then(|pos| info_str[pos..].find("<false/>"))
-                        .map(|p| p < 100) // <false/> should be close after the key
-                        .unwrap_or(false);
+                // Parse the value ADJACENT to each key — a bare `contains("<true/>")`
+                // matches anywhere in the plist, so internal volumes passed the check.
+                let is_removable = plist_bool_after_key(&info_str, "Removable") == Some(true);
+                // Internal = false means external
+                let is_external = plist_bool_after_key(&info_str, "Internal") == Some(false);
 
                 if is_removable || is_external {
                     let (capacity, free) = get_fs_stats(&mount_path);
-                    let uid = format!("vol:{}:{}", name, capacity.unwrap_or(0));
+                    // Key identity on the VolumeUUID when present — the volume
+                    // name/capacity combo isn't stable across renames/reformats.
+                    let uid = match plist_string_after_key(&info_str, "VolumeUUID") {
+                        Some(uuid) if !uuid.is_empty() => format!("uuid:{}", uuid),
+                        _ => format!("vol:{}:{}", name, capacity.unwrap_or(0)),
+                    };
                     devices.push(DetectedDevice {
                         device_uid: uid,
                         name,
@@ -272,13 +298,42 @@ async fn detect_macos() -> Result<Vec<DetectedDevice>, String> {
     Ok(devices)
 }
 
+/// Find `<key>KEY</key>` in a plist and return the boolean tag that immediately
+/// follows it (`<true/>` / `<false/>`), or None if the key is absent or followed
+/// by something else.
+#[cfg(target_os = "macos")]
+fn plist_bool_after_key(info: &str, key: &str) -> Option<bool> {
+    let needle = format!("<key>{}</key>", key);
+    let pos = info.find(&needle)?;
+    let rest = info[pos + needle.len()..].trim_start();
+    if rest.starts_with("<true/>") {
+        Some(true)
+    } else if rest.starts_with("<false/>") {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+/// Find `<key>KEY</key>` in a plist and return the `<string>` value that
+/// immediately follows it, if any.
+#[cfg(target_os = "macos")]
+fn plist_string_after_key(info: &str, key: &str) -> Option<String> {
+    let needle = format!("<key>{}</key>", key);
+    let pos = info.find(&needle)?;
+    let rest = info[pos + needle.len()..].trim_start();
+    let value = rest.strip_prefix("<string>")?;
+    let end = value.find("</string>")?;
+    Some(value[..end].to_string())
+}
+
 #[cfg(target_os = "windows")]
 async fn detect_windows() -> Result<Vec<DetectedDevice>, String> {
     let output = tokio::process::Command::new("powershell")
         .args([
             "-NoProfile",
             "-Command",
-            "Get-Volume | Where-Object { $_.DriveType -eq 'Removable' -and $_.DriveLetter } | Select-Object DriveLetter, FileSystemLabel, Size, SizeRemaining | ConvertTo-Json",
+            "Get-Volume | Where-Object { $_.DriveType -eq 'Removable' -and $_.DriveLetter } | Select-Object DriveLetter, FileSystemLabel, Size, SizeRemaining, UniqueId | ConvertTo-Json",
         ])
         .output()
         .await
@@ -289,7 +344,13 @@ async fn detect_windows() -> Result<Vec<DetectedDevice>, String> {
     }
 
     let json_str = String::from_utf8_lossy(&output.stdout);
-    let parsed: serde_json::Value = serde_json::from_str(&json_str)
+    // With no removable volumes plugged in, ConvertTo-Json emits nothing at all —
+    // that's "no devices", not a parse error.
+    let json_str = json_str.trim();
+    if json_str.is_empty() {
+        return Ok(Vec::new());
+    }
+    let parsed: serde_json::Value = serde_json::from_str(json_str)
         .map_err(|e| format!("Failed to parse PowerShell JSON: {}", e))?;
 
     let mut devices = Vec::new();
@@ -314,7 +375,18 @@ async fn detect_windows() -> Result<Vec<DetectedDevice>, String> {
         } else {
             format!("Removable Drive ({}:)", drive_letter)
         };
-        let uid = format!("{}:{}:{}", drive_letter, label, size.unwrap_or(0));
+        // Drive letters change between plugs — key identity on the volume's
+        // UniqueId when available so the same stick keeps one device row.
+        let unique_id = vol
+            .get("UniqueId")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim();
+        let uid = if !unique_id.is_empty() {
+            format!("winvol:{}", unique_id)
+        } else {
+            format!("{}:{}:{}", drive_letter, label, size.unwrap_or(0))
+        };
 
         devices.push(DetectedDevice {
             device_uid: uid,

@@ -90,14 +90,17 @@
 		try {
 			selectedDevice = await getDeviceDetail(deviceId);
 			localPlaylists = await getPlaylists();
-			// Auto-link all playlists that aren't fully synced yet
-			for (const pl of localPlaylists) {
-				const linked = selectedDevice.playlists.find((p) => p.playlist_id === pl.id);
-				if (!linked) {
+			// Auto-link all playlists ONLY when the device is first configured
+			// (no linked playlists and no sync history). Doing it on every open
+			// would resurrect playlists the user deliberately unlinked.
+			const firstConfiguration =
+				selectedDevice.playlists.length === 0 && selectedDevice.synced_track_count === 0;
+			if (firstConfiguration) {
+				for (const pl of localPlaylists) {
 					await addDevicePlaylist(deviceId, pl.id);
 				}
+				selectedDevice = await getDeviceDetail(deviceId);
 			}
-			selectedDevice = await getDeviceDetail(deviceId);
 		} catch (e) {
 			toast.error('Failed to load device', { description: String(e) });
 		} finally {
@@ -140,6 +143,9 @@
 			await syncDevice(selectedDevice.device.id, playlistId);
 			toast.success('Playlist synced');
 		} catch (e) {
+			// Belt-and-braces: if the backend failed without emitting a terminal
+			// progress event, don't leave the sync buttons frozen.
+			deviceSyncProgress = null;
 			if (isCancelled(e)) return;
 			toast.error('Failed to sync', { description: String(e) });
 		}
@@ -155,6 +161,7 @@
 			}
 			toast.success('All playlists synced');
 		} catch (e) {
+			deviceSyncProgress = null;
 			if (!isCancelled(e)) toast.error('Failed to sync', { description: String(e) });
 		} finally {
 			syncingAll = false;
@@ -190,6 +197,14 @@
 			.reduce((sum, p) => sum + Math.max(0, p.total_tracks - p.synced_tracks), 0);
 	}
 
+	async function refreshDeviceDetail(deviceId: number) {
+		try {
+			const detail = await getDeviceDetail(deviceId);
+			deviceDetails.set(deviceId, detail);
+			deviceDetails = new Map(deviceDetails);
+		} catch {}
+	}
+
 	async function handleQuickSyncDevice(e: Event, deviceId: number) {
 		e.stopPropagation();
 		const detail = deviceDetails.get(deviceId);
@@ -201,7 +216,11 @@
 			}
 			toast.success('Device synced');
 		} catch (e) {
+			deviceSyncProgress = null;
 			if (!isCancelled(e)) toast.error('Failed to sync', { description: String(e) });
+		} finally {
+			// Refresh the list-view "Sync N" badge so it reflects the new state.
+			await refreshDeviceDetail(deviceId);
 		}
 	}
 
@@ -224,6 +243,10 @@
 			if (event.payload.status === 'done' || event.payload.status === 'error' || event.payload.status === 'cancelled') {
 				if (selectedDevice) {
 					getDeviceDetail(selectedDevice.device.id).then((d) => { selectedDevice = d; });
+				}
+				if (event.payload.status === 'done') {
+					// Keep the list-view "Sync N" badge in step with the new state.
+					refreshDeviceDetail(event.payload.device_id);
 				}
 				setTimeout(() => { deviceSyncProgress = null; }, 3000);
 			}

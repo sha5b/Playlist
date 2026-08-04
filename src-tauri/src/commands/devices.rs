@@ -31,13 +31,15 @@ pub async fn devices_scan(db: State<'_, Arc<DbPool>>) -> Result<Vec<ScannedDevic
         let known_device = known.iter().find(|k| k.device_uid == d.device_uid);
 
         // Upsert into DB so we track this device
-        let _ = db_devices::upsert_device(
+        if let Err(e) = db_devices::upsert_device(
             &conn,
             &d.device_uid,
             &d.name,
             &d.mount_path,
             d.capacity_bytes,
-        );
+        ) {
+            log::warn!("Failed to upsert device {}: {}", d.device_uid, e);
+        }
 
         let device_id = known_device.map(|k| k.id).or_else(|| {
             db_devices::get_device_by_uid(&conn, &d.device_uid)

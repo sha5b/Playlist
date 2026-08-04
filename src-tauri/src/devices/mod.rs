@@ -35,11 +35,10 @@ impl DeviceManager {
         // Hold the lock for the whole sync so concurrent requests serialize.
         let _guard = self.sync_lock.lock().await;
 
-        // A cancel requested before this sync started should stop the batch, not be
-        // silently cleared. Only reset the flag once we know we're proceeding fresh.
-        if self.cancel_token.swap(false, Ordering::Relaxed) {
-            return Err("Sync cancelled".to_string());
-        }
+        // Clear any stale cancel flag before starting: cancel_sync sets the flag
+        // unconditionally (even when nothing is running), and a leftover flag
+        // would otherwise silently kill this fresh sync.
+        self.cancel_token.swap(false, Ordering::Relaxed);
 
         let cancel = self.cancel_token.clone();
         let app = self.app_handle.clone();
@@ -50,7 +49,9 @@ impl DeviceManager {
                     result.synced,
                     result.failed,
                 );
-                if self.cancel_token.load(Ordering::Relaxed) {
+                // Consume the flag (swap, not load) so a cancel that stopped this
+                // sync can't leak into the next one.
+                if self.cancel_token.swap(false, Ordering::Relaxed) {
                     return Err("Sync cancelled".to_string());
                 }
                 Ok(())

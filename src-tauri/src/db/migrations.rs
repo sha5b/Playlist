@@ -279,7 +279,38 @@ LEFT JOIN artists a ON t.artist_id = a.id
 LEFT JOIN albums al ON t.album_id = al.id;
 ";
 
-const MIGRATIONS: &[&str] = &[MIGRATION_001, MIGRATION_002, MIGRATION_003, MIGRATION_004, MIGRATION_005, MIGRATION_006, MIGRATION_007, MIGRATION_008, MIGRATION_009, MIGRATION_010, MIGRATION_011, MIGRATION_012, MIGRATION_013, MIGRATION_014, MIGRATION_015, MIGRATION_016, MIGRATION_017];
+// Device sync history rework:
+// - PK becomes (device_id, track_id, playlist_id): a track shared by several
+//   playlists keeps one row per playlist instead of ping-ponging between them
+//   (INSERT OR REPLACE on the old (device_id, track_id) PK reassigned the row,
+//   so each playlist's M3U/counts kept losing the track).
+// - file_size records the LOCAL source file size at sync time so re-downloads
+//   trigger a re-sync; format is compared against the requested output format
+//   for the same reason. (format column already existed and is kept.)
+const MIGRATION_018: &str = "
+PRAGMA foreign_keys=OFF;
+CREATE TABLE device_track_sync_new (
+    device_id   INTEGER NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+    track_id    INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
+    playlist_id INTEGER REFERENCES playlists(id) ON DELETE CASCADE,
+    file_path_on_device TEXT NOT NULL,
+    format      TEXT NOT NULL,
+    file_size   INTEGER,
+    synced_at   TEXT NOT NULL DEFAULT (datetime('now')),
+    source_hash TEXT,
+    PRIMARY KEY (device_id, track_id, playlist_id)
+);
+INSERT OR IGNORE INTO device_track_sync_new
+    (device_id, track_id, playlist_id, file_path_on_device, format, synced_at, source_hash)
+SELECT device_id, track_id, playlist_id, file_path_on_device, format, synced_at, source_hash
+FROM device_track_sync;
+DROP TABLE device_track_sync;
+ALTER TABLE device_track_sync_new RENAME TO device_track_sync;
+CREATE INDEX IF NOT EXISTS idx_dts_device ON device_track_sync(device_id);
+PRAGMA foreign_keys=ON;
+";
+
+const MIGRATIONS: &[&str] = &[MIGRATION_001, MIGRATION_002, MIGRATION_003, MIGRATION_004, MIGRATION_005, MIGRATION_006, MIGRATION_007, MIGRATION_008, MIGRATION_009, MIGRATION_010, MIGRATION_011, MIGRATION_012, MIGRATION_013, MIGRATION_014, MIGRATION_015, MIGRATION_016, MIGRATION_017, MIGRATION_018];
 
 pub fn run(conn: &Connection) -> Result<(), Box<dyn std::error::Error>> {
     conn.execute(

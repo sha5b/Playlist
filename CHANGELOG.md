@@ -2,6 +2,21 @@
 
 All notable changes to Playlist are recorded in this file.
 
+## [Unreleased]
+
+### Device sync (USB drives, SD cards, players)
+
+- Files are safe to unplug after "Sync complete". Transcodes now write to a temporary file first, and every synced file is flushed to the device before the app reports success. Before, an early unplug could corrupt or lose files.
+- A track that is in two synced playlists no longer ping-pongs between them. Each playlist now records its own copy reference, and the file is copied once.
+- The same USB stick is recognized again after a re-plug on Windows. Identity now uses the volume ID, not the drive letter, so the app no longer re-copies everything.
+- macOS no longer lists internal volumes as sync targets.
+- SD cards in built-in readers are now detected on Linux.
+- Tracks removed from a playlist are now removed from the device and from the device playlist file. Before, they accumulated forever.
+- Replaced or re-downloaded tracks now re-sync. A change of the output format also re-syncs.
+- Playlists you unlinked from a device stay unlinked. Before, opening the device re-linked all of them.
+- A cancelled sync no longer silently blocks the next sync. Errors during sync no longer freeze the sync buttons until a restart.
+- The Windows device scan no longer reports an error when no device is connected.
+
 ## [0.8.0] - 2026-08-04
 
 This release fixes more than 70 verified bugs across downloads, playback, the database, and the interface. A full audit of the codebase found them. The largest fix: playlist imports no longer stop at ~100 tracks.

@@ -65,6 +65,32 @@ pub fn upsert_device(
     mount_path: &str,
     capacity_bytes: Option<i64>,
 ) -> Result<Device, Box<dyn std::error::Error>> {
+    // This runs on every scan poll (~5s). Avoid constant WAL writes: only write
+    // when the device is new or its fields actually changed, and refresh
+    // last_seen_at at most once per 60 seconds.
+    if let Ok(existing) = get_device_by_uid(conn, device_uid) {
+        let fields_changed = existing.name != name
+            || existing.mount_path.as_deref() != Some(mount_path)
+            || existing.capacity_bytes != capacity_bytes;
+        let seen_stale: bool = conn
+            .query_row(
+                "SELECT last_seen_at <= datetime('now', '-60 seconds') FROM devices WHERE id = ?1",
+                params![existing.id],
+                |row| row.get(0),
+            )
+            .unwrap_or(true);
+        if fields_changed || seen_stale {
+            conn.execute(
+                "UPDATE devices SET name = ?2, mount_path = ?3, capacity_bytes = ?4,
+                        last_seen_at = datetime('now')
+                 WHERE device_uid = ?1",
+                params![device_uid, name, mount_path, capacity_bytes],
+            )?;
+            return get_device_by_uid(conn, device_uid);
+        }
+        return Ok(existing);
+    }
+
     conn.execute(
         "INSERT INTO devices (device_uid, name, mount_path, capacity_bytes, last_seen_at)
          VALUES (?1, ?2, ?3, ?4, datetime('now'))
@@ -120,11 +146,29 @@ pub fn configure_device(
     output_bitrate: &str,
     generate_m3u: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // If the music dir changes, the recorded on-device paths no longer point at
+    // the files the next sync will write — clear the sync history so stale
+    // paths don't poison M3Us and everything re-syncs into the new directory.
+    let old_music_dir: Option<String> = conn
+        .query_row(
+            "SELECT music_dir FROM devices WHERE id = ?1",
+            params![device_id],
+            |row| row.get(0),
+        )
+        .ok();
     conn.execute(
         "UPDATE devices SET music_dir = ?1, output_format = ?2, output_bitrate = ?3, generate_m3u = ?4
          WHERE id = ?5",
         params![music_dir, output_format, output_bitrate, generate_m3u as i64, device_id],
     )?;
+    let old_music_dir = old_music_dir.unwrap_or_else(|| "Music".to_string());
+    if old_music_dir != music_dir {
+        let cleared = clear_device_sync_history(conn, device_id)?;
+        log::info!(
+            "Device {} music_dir changed ({:?} -> {:?}); cleared {} sync history rows",
+            device_id, old_music_dir, music_dir, cleared
+        );
+    }
     Ok(())
 }
 
@@ -197,6 +241,7 @@ pub fn get_device_detail(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn record_synced_track(
     conn: &Connection,
     device_id: i64,
@@ -204,15 +249,87 @@ pub fn record_synced_track(
     playlist_id: i64,
     file_path_on_device: &str,
     format: &str,
+    file_size: Option<i64>,
     source_hash: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // PK is (device_id, track_id, playlist_id): a track shared by several
+    // playlists keeps one row per playlist.
     conn.execute(
         "INSERT OR REPLACE INTO device_track_sync
-         (device_id, track_id, playlist_id, file_path_on_device, format, synced_at, source_hash)
-         VALUES (?1, ?2, ?3, ?4, ?5, datetime('now'), ?6)",
-        params![device_id, track_id, playlist_id, file_path_on_device, format, source_hash],
+         (device_id, track_id, playlist_id, file_path_on_device, format, file_size, synced_at, source_hash)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'), ?7)",
+        params![device_id, track_id, playlist_id, file_path_on_device, format, file_size, source_hash],
     )?;
     Ok(())
+}
+
+/// True if this track already has a synced file at `file_path_on_device` on the
+/// device (under any playlist) — the physical copy can then be skipped.
+pub fn is_file_already_on_device(
+    conn: &Connection,
+    device_id: i64,
+    track_id: i64,
+    file_path_on_device: &str,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    let exists: bool = conn.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM device_track_sync
+            WHERE device_id = ?1 AND track_id = ?2 AND file_path_on_device = ?3
+         )",
+        params![device_id, track_id, file_path_on_device],
+        |row| row.get(0),
+    )?;
+    Ok(exists)
+}
+
+/// Sync rows for (device, playlist) whose track is no longer in the playlist.
+/// Returns (track_id, file_path_on_device) pairs.
+pub fn get_stale_synced_tracks(
+    conn: &Connection,
+    device_id: i64,
+    playlist_id: i64,
+) -> Result<Vec<(i64, String)>, Box<dyn std::error::Error>> {
+    let mut stmt = conn.prepare(
+        "SELECT track_id, file_path_on_device FROM device_track_sync
+         WHERE device_id = ?1 AND playlist_id = ?2
+           AND track_id NOT IN (SELECT track_id FROM playlist_tracks WHERE playlist_id = ?2)",
+    )?;
+    let rows = stmt
+        .query_map(params![device_id, playlist_id], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+pub fn remove_synced_track(
+    conn: &Connection,
+    device_id: i64,
+    track_id: i64,
+    playlist_id: i64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    conn.execute(
+        "DELETE FROM device_track_sync WHERE device_id = ?1 AND track_id = ?2 AND playlist_id = ?3",
+        params![device_id, track_id, playlist_id],
+    )?;
+    Ok(())
+}
+
+/// True if any sync row on this device still references the given on-device path
+/// (e.g. the same track synced via another playlist).
+pub fn is_device_file_referenced(
+    conn: &Connection,
+    device_id: i64,
+    file_path_on_device: &str,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    let exists: bool = conn.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM device_track_sync WHERE device_id = ?1 AND file_path_on_device = ?2
+         )",
+        params![device_id, file_path_on_device],
+        |row| row.get(0),
+    )?;
+    Ok(exists)
 }
 
 pub fn update_playlist_sync_time(
@@ -243,26 +360,78 @@ pub fn clear_device_sync_history(
     Ok(deleted as i64)
 }
 
-/// Get tracks from a playlist that haven't been synced to a device yet
+/// Get tracks from a playlist that need syncing to a device.
+///
+/// A track is considered unsynced when it has no sync row for this
+/// (device, playlist), when the recorded format differs from what the device's
+/// current output format would produce, or when the recorded source file size
+/// differs from the file on disk (re-download / replacement).
 pub fn get_unsynced_tracks(
     conn: &Connection,
     device_id: i64,
     playlist_id: i64,
+    output_format: &str,
 ) -> Result<Vec<crate::db::models::Track>, Box<dyn std::error::Error>> {
     let sql = format!(
-        "SELECT {}
+        "SELECT {},
+                dts.format AS sync_format,
+                dts.file_size AS sync_file_size
          FROM playlist_tracks pt
          JOIN tracks t ON t.id = pt.track_id
          LEFT JOIN artists a ON a.id = t.artist_id
          LEFT JOIN albums al ON al.id = t.album_id
+         LEFT JOIN device_track_sync dts
+             ON dts.device_id = ?2 AND dts.playlist_id = ?1 AND dts.track_id = t.id
          WHERE pt.playlist_id = ?1
-           AND t.id NOT IN (SELECT track_id FROM device_track_sync WHERE device_id = ?2 AND playlist_id = ?1)
          ORDER BY pt.position",
         TRACK_COLUMNS
     );
     let mut stmt = conn.prepare(&sql)?;
-    let tracks = stmt
-        .query_map(params![playlist_id, device_id], row_to_track)?
+    let rows = stmt
+        .query_map(params![playlist_id, device_id], |row| {
+            let track = row_to_track(row)?;
+            let sync_format: Option<String> = row.get("sync_format")?;
+            let sync_file_size: Option<i64> = row.get("sync_file_size")?;
+            Ok((track, sync_format, sync_file_size))
+        })?
         .collect::<Result<Vec<_>, _>>()?;
+
+    let mut tracks = Vec::new();
+    for (track, sync_format, sync_file_size) in rows {
+        let synced_format = match sync_format {
+            None => {
+                // Never synced for this playlist on this device.
+                tracks.push(track);
+                continue;
+            }
+            Some(f) => f,
+        };
+        // What format would a sync produce right now?
+        let expected_format = if output_format == "original" {
+            std::path::Path::new(&track.file_path)
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("mp3")
+                .to_string()
+        } else {
+            output_format.to_string()
+        };
+        if synced_format != expected_format {
+            tracks.push(track);
+            continue;
+        }
+        // Source file replaced (re-download, different rip)? Compare recorded
+        // source size against the current local file. Rows synced before the
+        // size column existed (NULL) are treated as up to date.
+        if let Some(recorded) = sync_file_size {
+            let current = std::fs::metadata(&track.file_path).ok().map(|m| m.len() as i64);
+            if let Some(current) = current {
+                if current != recorded {
+                    tracks.push(track);
+                    continue;
+                }
+            }
+        }
+    }
     Ok(tracks)
 }
