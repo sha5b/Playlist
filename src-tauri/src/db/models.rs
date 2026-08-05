@@ -101,6 +101,10 @@ pub struct Playlist {
     pub is_synced: bool,
     pub last_synced_at: Option<String>,
     pub created_at: String,
+    /// Rule-based auto-updating playlist (tracks computed from `rules`).
+    pub is_smart: bool,
+    /// JSON rule definition for smart playlists (see db::smart::SmartRules).
+    pub rules: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

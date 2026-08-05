@@ -10,6 +10,10 @@ pub struct QueueTrack {
     pub duration_ms: Option<i64>,
     pub file_path: String,
     pub cover_art_path: Option<String>,
+    /// ReplayGain-style gain in dB (target −14 LUFS), applied when the
+    /// "Normalize volume" setting is on. None = not yet measured.
+    #[serde(default)]
+    pub gain_db: Option<f64>,
 }
 
 pub struct PlayQueue {
@@ -135,11 +139,26 @@ impl PlayQueue {
             return;
         }
         self.shuffle = shuffle;
-        let current_track_idx = self.position.and_then(|p| self.order.get(p).copied());
-        self.rebuild_order();
-        // Restore position to current track
-        if let Some(idx) = current_track_idx {
-            self.position = self.order.iter().position(|&i| i == idx);
+        if self.order.is_empty() {
+            return;
+        }
+        if shuffle {
+            // Shuffle only the UPCOMING portion of the play order: already
+            // played entries and the current track stay exactly where they are.
+            let start = self.position.map(|p| p + 1).unwrap_or(0);
+            if start < self.order.len() {
+                let mut rng = rand::thread_rng();
+                self.order[start..].shuffle(&mut rng);
+            }
+        } else {
+            // Restore the original (insertion) order. Sorting the existing
+            // order — instead of rebuilding 0..len — keeps entries that were
+            // removed from the queue removed.
+            let current_track_idx = self.position.and_then(|p| self.order.get(p).copied());
+            self.order.sort_unstable();
+            if let Some(idx) = current_track_idx {
+                self.position = self.order.iter().position(|&i| i == idx);
+            }
         }
     }
 
@@ -246,6 +265,7 @@ mod tests {
             duration_ms: None,
             file_path: String::new(),
             cover_art_path: None,
+            gain_db: None,
         }
     }
 
@@ -291,6 +311,45 @@ mod tests {
         q.skip_to(1); // user explicitly jumps to 3 (order is now [2, 3])
         assert_eq!(q.current().unwrap().id, 3);
         assert!(q.next().is_none()); // end of queue, no phantom repeat
+    }
+
+    #[test]
+    fn shuffle_keeps_current_and_played_in_place() {
+        let mut q = queue_with(10);
+        q.skip_to(3); // playing 4; entries 1..=4 are the played/current portion
+        q.set_shuffle(true);
+        assert_eq!(q.current().unwrap().id, 4);
+        // Played portion + current stay in original positions
+        let ordered = q.get_ordered_tracks();
+        assert_eq!(ordered[0].id, 1);
+        assert_eq!(ordered[1].id, 2);
+        assert_eq!(ordered[2].id, 3);
+        assert_eq!(ordered[3].id, 4);
+        // Upcoming portion is a permutation of 5..=10
+        let mut upcoming: Vec<i64> = ordered[4..].iter().map(|t| t.id).collect();
+        upcoming.sort();
+        assert_eq!(upcoming, vec![5, 6, 7, 8, 9, 10]);
+    }
+
+    #[test]
+    fn unshuffle_restores_original_order() {
+        let mut q = queue_with(10);
+        q.skip_to(2); // playing 3
+        q.set_shuffle(true);
+        q.set_shuffle(false);
+        assert_eq!(q.current().unwrap().id, 3);
+        let ids: Vec<i64> = q.get_ordered_tracks().iter().map(|t| t.id).collect();
+        assert_eq!(ids, (1..=10).collect::<Vec<i64>>());
+    }
+
+    #[test]
+    fn unshuffle_does_not_resurrect_removed_tracks() {
+        let mut q = queue_with(5);
+        q.set_shuffle(true);
+        q.remove_at_order_index(4); // remove last entry in shuffled order
+        let removed_len = q.len();
+        q.set_shuffle(false);
+        assert_eq!(q.len(), removed_len);
     }
 
     #[test]

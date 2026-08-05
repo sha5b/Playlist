@@ -1,6 +1,6 @@
 [package]
 name = "playlist"
-version = "0.8.0"
+version = "0.9.0"
 description = "Liberate your music. Own your data. Support artists. Download tracks, discover missing music, sync across devices, and play everything locally."
 authors = ["sha5b"]
 license = "MIT"
@@ -26,7 +26,7 @@ tokio = { version = "1", features = ["full"] }
 tauri = { version = "2.10.3", features = ["protocol-asset", "tray-icon", "image-png"] }
 tauri-plugin-log = "2.8.0"
 tauri-plugin-fs = "2.4.5"
-tauri-plugin-shell = "2.3.5"
+tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2.6.0"
 tauri-plugin-window-state = "2.4.1"
 tauri-plugin-single-instance = "2.4.0"
@@ -45,6 +45,10 @@ rand = "0.8"
 # Async
 crossbeam-channel = "0.5"
 walkdir = "2"
+
+# Folder watch / auto-import
+notify = "7"
+notify-debouncer-mini = "0.5"
 
 # HTTP / Downloads
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json", "cookies"] }

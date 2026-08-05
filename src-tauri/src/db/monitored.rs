@@ -115,6 +115,8 @@ pub fn create_monitored_playlist(
                 is_synced: row.get(8)?,
                 last_synced_at: row.get(9)?,
                 created_at: row.get(10)?,
+                is_smart: false,
+                rules: None,
             })
         },
     )

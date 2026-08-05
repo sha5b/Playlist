@@ -1,11 +1,12 @@
 <script lang="ts">
 	import { Button } from '$lib/components/ui/button';
+	import * as DropdownMenu from '$lib/components/ui/dropdown-menu';
 	import {
 		Shuffle, SkipBack, Play, Pause, SkipForward,
 		Repeat, Repeat1, Music, Trash2, AudioLines, History,
-		Image, Film, Type, RotateCcw
+		Image, Film, Type, RotateCcw, Infinity, Moon
 	} from 'lucide-svelte';
-	import { player } from '$lib/stores/player.svelte';
+	import { player, SLEEP_TIMER_OPTIONS, formatSleepRemaining } from '$lib/stores/player.svelte';
 	import { getTrack } from '$lib/api/library';
 	import { formatDuration, assetUrl } from '$lib/utils/format';
 	import DndQueueList from '$lib/components/player/DndQueueList.svelte';
@@ -205,6 +206,8 @@
 								size="icon"
 								class={player.shuffle ? 'text-primary hover:text-primary' : 'text-muted-foreground hover:text-foreground'}
 								onclick={() => player.toggleShuffle()}
+								aria-label="Toggle shuffle"
+								title="Shuffle: reorder the upcoming queue randomly"
 							>
 								<Shuffle class="size-5" />
 							</Button>
@@ -254,6 +257,45 @@
 							>
 								<RepeatIcon class="size-5" />
 							</Button>
+							<Button
+								variant="ghost"
+								size="icon"
+								class={player.endless ? 'text-primary hover:text-primary' : 'text-muted-foreground hover:text-foreground'}
+								onclick={() => player.toggleEndless()}
+								aria-label="Toggle endless play"
+								title="Endless play: keep adding random tracks so the music never stops"
+							>
+								<Infinity class="size-5" />
+							</Button>
+							<DropdownMenu.Root>
+								<DropdownMenu.Trigger>
+									<Button
+										variant="ghost"
+										size="icon"
+										class={player.sleepTimerMode !== 'off' ? 'text-primary hover:text-primary' : 'text-muted-foreground hover:text-foreground'}
+										aria-label="Sleep timer"
+										title="Sleep timer: fade out and pause after a while"
+									>
+										<Moon class="size-5" />
+									</Button>
+								</DropdownMenu.Trigger>
+								<DropdownMenu.Content align="end" class="w-40">
+									<DropdownMenu.Label>Sleep timer</DropdownMenu.Label>
+									{#each SLEEP_TIMER_OPTIONS as option (option.label)}
+										<DropdownMenu.Item
+											class={player.sleepTimerMode === option.value ? 'text-primary' : ''}
+											onclick={() => player.setSleepTimer(option.value)}
+										>
+											{option.label}
+										</DropdownMenu.Item>
+									{/each}
+								</DropdownMenu.Content>
+							</DropdownMenu.Root>
+							{#if player.sleepTimerMode !== 'off'}
+								<span class="text-[11px] text-primary tabular-nums -ml-2 select-none" title="Sleep timer active">
+									{formatSleepRemaining(player.sleepTimerMode, player.sleepRemainingMs)}
+								</span>
+							{/if}
 						</div>
 					</div>
 				</div>

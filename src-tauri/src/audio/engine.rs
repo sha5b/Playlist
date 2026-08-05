@@ -55,6 +55,11 @@ pub enum PlayerCommand {
     ClearQueue,
     /// Switch audio output device. None = use OS default.
     SwitchDevice(Option<String>),
+    /// Enable/disable ReplayGain-style volume normalization (applies from the
+    /// next source that is appended — current playback is not re-amplified).
+    SetNormalize(bool),
+    /// Crossfade duration in ms (0 = off/gapless). Clamped to 0..=12000.
+    SetCrossfade(u64),
     /// Graceful shutdown -- audio thread stops and exits
     Shutdown,
 }
@@ -121,8 +126,51 @@ fn write_state(lock: &RwLock<SharedState>) -> std::sync::RwLockWriteGuard<'_, Sh
 /// Uses ~5MB per track (compressed file bytes) instead of ~100MB (raw f32 PCM).
 type PreloadedSource = Decoder<Cursor<Vec<u8>>>;
 
+/// Maximum crossfade duration (ms).
+const MAX_CROSSFADE_MS: u64 = 12_000;
+
+/// An in-progress crossfade: the outgoing track keeps playing on its old sink
+/// while the incoming track (already swapped in as the engine's main sink)
+/// fades in. Fade progress is tracked as accumulated wall time so pausing
+/// freezes the fade.
+struct CrossfadeState {
+    old_sink: Sink,
+    duration_ms: u64,
+    elapsed_ms: u64,
+    last_tick: Instant,
+}
+
+/// Convert a dB gain to a linear amplitude factor.
+fn gain_to_amp(gain_db: f64) -> f32 {
+    10f32.powf(gain_db as f32 / 20.0)
+}
+
+/// Append a source to a sink, applying the track's normalization gain when
+/// normalization is enabled and the track has been measured.
+fn append_with_gain(sink: &Sink, source: PreloadedSource, gain_db: Option<f64>, normalize: bool) {
+    match gain_db.filter(|_| normalize) {
+        Some(g) if g.abs() > 0.01 => sink.append(source.amplify(gain_to_amp(g))),
+        _ => sink.append(source),
+    }
+}
+
+/// End a crossfade immediately: kill the outgoing sink and restore the
+/// incoming (now main) sink to the full user volume. Safe to call when no
+/// crossfade is active.
+fn finish_crossfade(crossfade: &mut Option<CrossfadeState>, sink: &Sink, shared: &RwLock<SharedState>) {
+    if let Some(cf) = crossfade.take() {
+        cf.old_sink.stop();
+        sink.set_volume(read_state(shared).playback.volume as f32);
+    }
+}
+
 impl AudioEngine {
-    pub fn new(ffmpeg_path: Option<String>, event_callback: Box<dyn Fn(PlayerEvent) + Send + 'static>) -> Self {
+    pub fn new(
+        ffmpeg_path: Option<String>,
+        normalize: bool,
+        crossfade_ms: u64,
+        event_callback: Box<dyn Fn(PlayerEvent) + Send + 'static>,
+    ) -> Self {
         let (cmd_tx, cmd_rx) = crossbeam_channel::unbounded();
 
         let shared = Arc::new(RwLock::new(SharedState {
@@ -163,7 +211,7 @@ impl AudioEngine {
                         log::warn!("[audio] Failed to set Unix thread priority (nice), may need elevated permissions");
                     }
                 }
-                Self::audio_thread(cmd_rx, shared_clone, event_callback, ffmpeg_clone);
+                Self::audio_thread(cmd_rx, shared_clone, event_callback, ffmpeg_clone, normalize, crossfade_ms);
             })
             .expect("failed to spawn audio thread");
 
@@ -304,6 +352,8 @@ impl AudioEngine {
         shared: Arc<RwLock<SharedState>>,
         emit: Box<dyn Fn(PlayerEvent) + Send>,
         ffmpeg_path: Option<String>,
+        initial_normalize: bool,
+        initial_crossfade_ms: u64,
     ) {
         // Create audio output on this dedicated thread -- OutputStream must stay alive
         let (mut _stream, mut stream_handle) = match OutputStream::try_default() {
@@ -346,6 +396,9 @@ impl AudioEngine {
         let mut last_progress_emit = Instant::now();
         let mut is_playing = false;
         let mut preloaded: Option<(QueueTrack, PreloadedSource, u64)> = None;
+        let mut normalize = initial_normalize;
+        let mut crossfade_ms = initial_crossfade_ms.min(MAX_CROSSFADE_MS);
+        let mut crossfade: Option<CrossfadeState> = None;
 
         // Track the current default device so we can auto-switch when it changes
         // (e.g., user plugs in Bluetooth headphones)
@@ -373,11 +426,14 @@ impl AudioEngine {
         log::info!("[audio] Audio thread ready, waiting for commands");
 
         loop {
-            match cmd_rx.recv_timeout(Duration::from_millis(CMD_POLL_INTERVAL_MS)) {
+            // Poll faster while a crossfade is active so the volume ramp is smooth.
+            let poll_ms = if crossfade.is_some() { 50 } else { CMD_POLL_INTERVAL_MS };
+            match cmd_rx.recv_timeout(Duration::from_millis(poll_ms)) {
                 Ok(cmd) => {
                     match cmd {
                         PlayerCommand::Play { tracks, start_index, source } => {
                             log::info!("[audio] Play: {} tracks, start_index={}", tracks.len(), start_index);
+                            finish_crossfade(&mut crossfade, &sink, &shared);
                             {
                                 let mut s = write_state(&shared);
                                 s.queue.set_tracks(tracks, start_index);
@@ -394,7 +450,7 @@ impl AudioEngine {
                                     accumulated_ms = 0;
                                     sink.stop();
                                     sink = make_sink_or_continue!(&stream_handle, sink.volume(), emit);
-                                    sink.append(src);
+                                    append_with_gain(&sink, src, track.gain_db, normalize);
                                     play_start = Some(Instant::now());
                                     is_playing = true;
                                     {
@@ -413,21 +469,29 @@ impl AudioEngine {
                                     }
                                 }
                             } else {
-                                Self::play_current(&mut sink, &stream_handle, &shared, &emit, &mut current_duration_ms, &mut play_start, &mut accumulated_ms, &mut is_playing, ffmpeg_path.as_deref());
+                                Self::play_current(&mut sink, &stream_handle, &shared, &emit, &mut current_duration_ms, &mut play_start, &mut accumulated_ms, &mut is_playing, ffmpeg_path.as_deref(), normalize);
                             }
                         }
                         PlayerCommand::PlaySingle(track) => {
                             log::info!("[audio] PlaySingle: {}", track.title);
+                            finish_crossfade(&mut crossfade, &sink, &shared);
                             {
                                 let mut s = write_state(&shared);
                                 s.queue.set_tracks(vec![track], 0);
                             }
                             preloaded = None;
-                            Self::play_current(&mut sink, &stream_handle, &shared, &emit, &mut current_duration_ms, &mut play_start, &mut accumulated_ms, &mut is_playing, ffmpeg_path.as_deref());
+                            Self::play_current(&mut sink, &stream_handle, &shared, &emit, &mut current_duration_ms, &mut play_start, &mut accumulated_ms, &mut is_playing, ffmpeg_path.as_deref(), normalize);
                         }
                         PlayerCommand::Pause => {
                             log::info!("[audio] Pause");
                             sink.pause();
+                            // Pause the outgoing side of an active crossfade too,
+                            // freezing fade progress at its current point.
+                            if let Some(cf) = crossfade.as_mut() {
+                                cf.old_sink.pause();
+                                cf.elapsed_ms += cf.last_tick.elapsed().as_millis() as u64;
+                                cf.last_tick = Instant::now();
+                            }
                             if let Some(start) = play_start.take() {
                                 accumulated_ms += start.elapsed().as_millis() as u64;
                             }
@@ -443,6 +507,10 @@ impl AudioEngine {
                             log::info!("[audio] Resume");
                             if !sink.empty() {
                                 sink.play();
+                                if let Some(cf) = crossfade.as_mut() {
+                                    cf.old_sink.play();
+                                    cf.last_tick = Instant::now();
+                                }
                                 play_start = Some(Instant::now());
                                 is_playing = true;
                                 {
@@ -456,6 +524,7 @@ impl AudioEngine {
                         }
                         PlayerCommand::Stop => {
                             log::info!("[audio] Stop");
+                            finish_crossfade(&mut crossfade, &sink, &shared);
                             // Stop old sink explicitly — dropping only detaches (audio keeps playing)
                             sink.stop();
                             sink = make_sink_or_continue!(&stream_handle, sink.volume(), emit);
@@ -480,6 +549,7 @@ impl AudioEngine {
                         }
                         PlayerCommand::Next => {
                             log::info!("[audio] Next");
+                            finish_crossfade(&mut crossfade, &sink, &shared);
                             let next_track = {
                                 let mut s = write_state(&shared);
                                 let repeat = s.playback.repeat.clone();
@@ -496,7 +566,7 @@ impl AudioEngine {
                             };
                             if next_track.is_some() {
                                 preloaded = None;
-                                Self::play_current(&mut sink, &stream_handle, &shared, &emit, &mut current_duration_ms, &mut play_start, &mut accumulated_ms, &mut is_playing, ffmpeg_path.as_deref());
+                                Self::play_current(&mut sink, &stream_handle, &shared, &emit, &mut current_duration_ms, &mut play_start, &mut accumulated_ms, &mut is_playing, ffmpeg_path.as_deref(), normalize);
                             } else {
                                 log::info!("[audio] Queue ended (Next)");
                                 sink.stop();
@@ -516,11 +586,12 @@ impl AudioEngine {
                         }
                         PlayerCommand::Prev => {
                             log::info!("[audio] Prev");
+                            finish_crossfade(&mut crossfade, &sink, &shared);
                             // Always go to previous track. If there is no previous
                             // track in the queue, restart the current one.
                             let has_prev = write_state(&shared).queue.prev().is_some();
                             preloaded = None;
-                            Self::play_current(&mut sink, &stream_handle, &shared, &emit, &mut current_duration_ms, &mut play_start, &mut accumulated_ms, &mut is_playing, ffmpeg_path.as_deref());
+                            Self::play_current(&mut sink, &stream_handle, &shared, &emit, &mut current_duration_ms, &mut play_start, &mut accumulated_ms, &mut is_playing, ffmpeg_path.as_deref(), normalize);
                             if !has_prev {
                                 log::info!("[audio] No previous track, restarted current");
                             }
@@ -528,6 +599,9 @@ impl AudioEngine {
                         PlayerCommand::Seek(seconds) => {
                             let pos_ms = (seconds * 1000.0) as u64;
                             log::info!("[audio] Seek to {}ms", pos_ms);
+                            // Seeking during an overlap ends the crossfade immediately
+                            // (the seek target refers to the incoming/current track).
+                            finish_crossfade(&mut crossfade, &sink, &shared);
                             // Seeking an EMPTY sink returns Ok but does nothing —
                             // don't pretend we're playing something.
                             if sink.empty() {
@@ -558,7 +632,12 @@ impl AudioEngine {
                         }
                         PlayerCommand::SetVolume(vol) => {
                             let vol = vol.clamp(0.0, 1.0);
-                            sink.set_volume(vol as f32);
+                            // During a crossfade the sink volumes are ramped by the
+                            // fade tick (which reads the shared volume), so don't
+                            // clobber the ramp here.
+                            if crossfade.is_none() {
+                                sink.set_volume(vol as f32);
+                            }
                             {
                                 let mut s = write_state(&shared);
                                 s.playback.volume = vol;
@@ -644,12 +723,14 @@ impl AudioEngine {
                                 s.queue.skip_to(order_idx).is_some()
                             };
                             if found {
+                                finish_crossfade(&mut crossfade, &sink, &shared);
                                 preloaded = None;
-                                Self::play_current(&mut sink, &stream_handle, &shared, &emit, &mut current_duration_ms, &mut play_start, &mut accumulated_ms, &mut is_playing, ffmpeg_path.as_deref());
+                                Self::play_current(&mut sink, &stream_handle, &shared, &emit, &mut current_duration_ms, &mut play_start, &mut accumulated_ms, &mut is_playing, ffmpeg_path.as_deref(), normalize);
                             }
                         }
                         PlayerCommand::ClearQueue => {
                             log::info!("[audio] ClearQueue");
+                            finish_crossfade(&mut crossfade, &sink, &shared);
                             sink.stop();
                             sink = make_sink_or_continue!(&stream_handle, sink.volume(), emit);
                             sink.pause();
@@ -673,6 +754,7 @@ impl AudioEngine {
                         }
                         PlayerCommand::SwitchDevice(device_name) => {
                             log::info!("[audio] SwitchDevice: {:?}", device_name);
+                            finish_crossfade(&mut crossfade, &sink, &shared);
                             explicit_device = device_name.clone();
                             let result = if let Some(ref name) = device_name {
                                 use cpal::traits::{DeviceTrait, HostTrait};
@@ -715,7 +797,7 @@ impl AudioEngine {
                                         match Self::decode_track(&track.file_path, ffmpeg_path.as_deref()) {
                                             Ok((source, dur)) => {
                                                 if dur > 0 { current_duration_ms = dur; }
-                                                sink.append(source);
+                                                append_with_gain(&sink, source, track.gain_db, normalize);
                                                 if resume_pos > 0 {
                                                     sink.try_seek(Duration::from_millis(resume_pos))
                                                         .unwrap_or_else(|e| log::warn!("[audio] Seek after device switch failed: {}", e));
@@ -756,8 +838,26 @@ impl AudioEngine {
                                 }
                             }
                         }
+                        PlayerCommand::SetNormalize(enabled) => {
+                            log::info!("[audio] SetNormalize: {}", enabled);
+                            normalize = enabled;
+                            // Applies from the next appended source; current playback
+                            // keeps its amplification until the track changes.
+                            preloaded = None;
+                        }
+                        PlayerCommand::SetCrossfade(ms) => {
+                            let ms = ms.min(MAX_CROSSFADE_MS);
+                            log::info!("[audio] SetCrossfade: {}ms", ms);
+                            crossfade_ms = ms;
+                            if ms == 0 {
+                                finish_crossfade(&mut crossfade, &sink, &shared);
+                            }
+                        }
                         PlayerCommand::Shutdown => {
                             log::info!("[audio] Audio thread shutting down gracefully");
+                            if let Some(cf) = crossfade.take() {
+                                cf.old_sink.stop();
+                            }
                             return;
                         }
                     }
@@ -783,13 +883,14 @@ impl AudioEngine {
                                 "[audio] Default device changed: {:?} -> {:?}, auto-switching",
                                 current_device_name, new_default
                             );
+                            finish_crossfade(&mut crossfade, &sink, &shared);
                             Self::handle_device_switch(
                                 &mut _stream, &mut stream_handle, &mut sink,
                                 &shared, &emit, &mut current_duration_ms,
                                 &mut play_start, &mut accumulated_ms,
                                 &mut is_playing, &mut preloaded,
                                 &mut current_device_name, new_default,
-                                ffmpeg_path.as_deref(),
+                                ffmpeg_path.as_deref(), normalize,
                             );
                         }
                     }
@@ -805,13 +906,105 @@ impl AudioEngine {
                 continue;
             }
 
-            // Try to preload next track when approaching end (~5s remaining)
-            if preloaded.is_none() && current_duration_ms > 0 {
+            // Advance an active crossfade: equal-power volume ramp between the
+            // outgoing sink and the current (incoming) sink.
+            if crossfade.is_some() {
+                let user_vol = read_state(&shared).playback.volume as f32;
+                let done = {
+                    let cf = crossfade.as_mut().expect("checked is_some above");
+                    cf.elapsed_ms += cf.last_tick.elapsed().as_millis() as u64;
+                    cf.last_tick = Instant::now();
+                    let t = (cf.elapsed_ms as f32 / cf.duration_ms.max(1) as f32).min(1.0);
+                    if t >= 1.0 || cf.old_sink.empty() {
+                        true
+                    } else {
+                        sink.set_volume(user_vol * t.sqrt());
+                        cf.old_sink.set_volume(user_vol * (1.0 - t).sqrt());
+                        false
+                    }
+                };
+                if done {
+                    finish_crossfade(&mut crossfade, &sink, &shared);
+                    log::debug!("[audio] Crossfade complete");
+                }
+            }
+
+            // Try to preload next track when approaching end (~5s remaining, or
+            // earlier so a crossfade has its source ready before the fade point)
+            let preload_threshold_ms = 5000u64.max(crossfade_ms.saturating_add(3000));
+            if preloaded.is_none() && crossfade.is_none() && current_duration_ms > 0 {
                 let pos = accumulated_ms
                     + play_start.as_ref().map(|s| s.elapsed().as_millis() as u64).unwrap_or(0);
                 let remaining = current_duration_ms.saturating_sub(pos);
-                if remaining < 5000 {
+                if remaining < preload_threshold_ms {
                     preloaded = Self::try_preload_next(&shared, ffmpeg_path.as_deref());
+                }
+            }
+
+            // Start a crossfade when entering the last `crossfade_ms` of the
+            // current track. Exclusions (fall back to the normal gapless
+            // transition): repeat-one, no preloaded next source, or a stale
+            // preload that no longer matches the queue's next track.
+            if crossfade_ms > 0 && crossfade.is_none() && preloaded.is_some() && current_duration_ms > 0 {
+                let pos = accumulated_ms
+                    + play_start.as_ref().map(|s| s.elapsed().as_millis() as u64).unwrap_or(0);
+                let remaining = current_duration_ms.saturating_sub(pos);
+                let repeat = read_state(&shared).playback.repeat.clone();
+                if repeat != RepeatMode::One && remaining > 250 && remaining <= crossfade_ms {
+                    let preload_matches = {
+                        let s = read_state(&shared);
+                        s.queue
+                            .peek_next(repeat == RepeatMode::All)
+                            .zip(preloaded.as_ref())
+                            .is_some_and(|(next, (pt, _, _))| next.id == pt.id)
+                    };
+                    if !preload_matches {
+                        preloaded = None; // stale — re-preload on the next tick
+                    } else {
+                        match Self::make_sink(&stream_handle, 0.0) {
+                            Err(e) => {
+                                log::warn!("[audio] Crossfade sink creation failed, falling back to gapless: {}", e);
+                            }
+                            Ok(new_sink) => {
+                                let (track, source, dur) = preloaded.take()
+                                    .expect("preloaded checked above");
+                                // Advance the queue to the incoming track
+                                {
+                                    let mut s = write_state(&shared);
+                                    if s.queue.next().is_none() && s.playback.repeat == RepeatMode::All {
+                                        s.queue.restart();
+                                    }
+                                }
+                                append_with_gain(&new_sink, source, track.gain_db, normalize);
+                                let fade_ms = crossfade_ms.min(remaining).max(1);
+                                let old_sink = std::mem::replace(&mut sink, new_sink);
+                                crossfade = Some(CrossfadeState {
+                                    old_sink,
+                                    duration_ms: fade_ms,
+                                    elapsed_ms: 0,
+                                    last_tick: Instant::now(),
+                                });
+                                // From here on, position/duration refer to the incoming track
+                                current_duration_ms = if dur > 0 { dur } else {
+                                    track.duration_ms.unwrap_or(0) as u64
+                                };
+                                accumulated_ms = 0;
+                                play_start = Some(Instant::now());
+                                {
+                                    let mut s = write_state(&shared);
+                                    s.playback.state = PlayerState::Playing;
+                                    s.playback.current_track = Some(track.clone());
+                                    s.playback.position_ms = 0;
+                                    s.playback.duration_ms = current_duration_ms;
+                                    s.playback.queue_length = s.queue.len();
+                                    s.playback.queue_position = s.queue.position();
+                                    emit(PlayerEvent::TrackChanged(Some(track)));
+                                    emit(PlayerEvent::StateChanged(s.playback.clone()));
+                                }
+                                log::info!("[audio] Crossfade started ({}ms overlap)", fade_ms);
+                            }
+                        }
+                    }
                 }
             }
 
@@ -838,6 +1031,9 @@ impl AudioEngine {
             // otherwise never auto-advance and stall the queue forever.
             if sink.empty() {
                 log::info!("[audio] Track finished naturally");
+                // If the incoming side of a crossfade ended before the fade did
+                // (track shorter than the fade window), end the overlap now.
+                finish_crossfade(&mut crossfade, &sink, &shared);
                 let (next_exists, use_preloaded) = {
                     let mut s = write_state(&shared);
                     let repeat = s.playback.repeat.clone();
@@ -869,7 +1065,7 @@ impl AudioEngine {
                     // Stop old sink, then fresh sink for the new track
                     sink.stop();
                     sink = make_sink_or_continue!(&stream_handle, sink.volume(), emit);
-                    sink.append(source);
+                    append_with_gain(&sink, source, track.gain_db, normalize);
                     play_start = Some(Instant::now());
                     {
                         let mut s = write_state(&shared);
@@ -884,7 +1080,7 @@ impl AudioEngine {
                     }
                 } else if next_exists {
                     preloaded = None;
-                    Self::play_current(&mut sink, &stream_handle, &shared, &emit, &mut current_duration_ms, &mut play_start, &mut accumulated_ms, &mut is_playing, ffmpeg_path.as_deref());
+                    Self::play_current(&mut sink, &stream_handle, &shared, &emit, &mut current_duration_ms, &mut play_start, &mut accumulated_ms, &mut is_playing, ffmpeg_path.as_deref(), normalize);
                 } else {
                     log::info!("[audio] Queue ended");
                     play_start = None;
@@ -922,6 +1118,7 @@ impl AudioEngine {
         current_device_name: &mut Option<String>,
         new_default: Option<String>,
         ffmpeg_path: Option<&str>,
+        normalize: bool,
     ) {
         let (new_stream, new_handle) = match OutputStream::try_default() {
             Ok(pair) => pair,
@@ -956,7 +1153,7 @@ impl AudioEngine {
                 match Self::decode_track(&track.file_path, ffmpeg_path) {
                     Ok((source, dur)) => {
                         *current_duration_ms = if dur > 0 { dur } else { *current_duration_ms };
-                        sink.append(source);
+                        append_with_gain(sink, source, track.gain_db, normalize);
                         if position > 0 {
                             sink.try_seek(std::time::Duration::from_millis(position))
                                 .unwrap_or_else(|e| log::warn!("[audio] Seek after device switch failed: {}", e));
@@ -992,6 +1189,7 @@ impl AudioEngine {
         accumulated_ms: &mut u64,
         is_playing: &mut bool,
         ffmpeg_path: Option<&str>,
+        normalize: bool,
     ) {
         let track = read_state(shared).queue.current().cloned();
 
@@ -1020,7 +1218,7 @@ impl AudioEngine {
                             return;
                         }
                     };
-                    sink.append(source);
+                    append_with_gain(sink, source, track.gain_db, normalize);
                     // New sinks start un-paused, so playback begins immediately
                     *play_start = Some(Instant::now());
                     *is_playing = true;

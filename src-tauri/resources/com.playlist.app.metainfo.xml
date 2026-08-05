@@ -57,6 +57,11 @@
   </requires>
 
   <releases>
+    <release version="0.9.0" date="2026-08-05">
+      <description>
+        <p>Feature release: Last.fm scrobbling, listening statistics, smart playlists, watched folders, loudness normalization, a search palette, keyboard shortcuts, and a tag editor. Device sync and playback fixes.</p>
+      </description>
+    </release>
     <release version="0.8.0" date="2026-08-04">
       <description>
         <p>Large bug-fix release: full playlist imports from YouTube and Spotify, automatic yt-dlp updates, correct download matching, playback and queue fixes, and many UI corrections.</p>

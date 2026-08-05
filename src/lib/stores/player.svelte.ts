@@ -1,5 +1,6 @@
 import { listen } from '@tauri-apps/api/event';
 import * as playerApi from '$lib/api/player';
+import { getSetting, setSetting } from '$lib/api/library';
 import { toast } from 'svelte-sonner';
 import type { PlaybackState, QueueTrack, PlayerEvent, RepeatMode, PlayerStateEnum } from '$lib/types';
 import {
@@ -20,9 +21,60 @@ let repeat: RepeatMode = $state('off');
 let queueTracks: QueueTrack[] = $state([]);
 let queuePosition: number | null = $state(null);
 let queueOpen: boolean = $state(false);
-let autoplay: boolean = $state(false);
+// Endless play: when playback nears the end of the queue, auto-append random
+// tracks from the library so the music never stops.
+let endless: boolean = $state(false);
 let previousTrack: QueueTrack | null = $state(null);
 let playedHistory: Set<number> = new Set();
+
+// --- Sleep timer (frontend-only) ---
+export type SleepTimerMode = 'off' | 'end-of-track' | number; // number = minutes
+
+/** Options offered by the sleep-timer dropdowns. */
+export const SLEEP_TIMER_OPTIONS: { label: string; value: SleepTimerMode }[] = [
+	{ label: 'Off', value: 'off' },
+	{ label: '15 minutes', value: 15 },
+	{ label: '30 minutes', value: 30 },
+	{ label: '45 minutes', value: 45 },
+	{ label: '60 minutes', value: 60 },
+	{ label: 'End of track', value: 'end-of-track' },
+];
+
+/** Compact remaining-time label for an active sleep timer (e.g. "29m", "45s"). */
+export function formatSleepRemaining(mode: SleepTimerMode, remainingMs: number): string {
+	if (mode === 'off') return '';
+	if (mode === 'end-of-track') return 'track end';
+	const totalSeconds = Math.ceil(remainingMs / 1000);
+	if (totalSeconds >= 60) return `${Math.ceil(totalSeconds / 60)}m`;
+	return `${totalSeconds}s`;
+}
+let sleepTimerMode: SleepTimerMode = $state('off');
+let sleepRemainingMs: number = $state(0);
+let sleepDeadline: number | null = null;
+let sleepInterval: ReturnType<typeof setInterval> | null = null;
+let sleepFiring = false;
+let sleepRestoreVolume = 0.75;
+
+// --- Queue persistence ---
+const PERSIST_KEY = 'player.saved_state';
+const POSITION_SAVE_INTERVAL_MS = 5000;
+interface SavedPlayerState {
+	queueIds: number[];
+	currentTrackId: number | null;
+	positionMs: number;
+	volume: number;
+	shuffle: boolean;
+	endless: boolean;
+	repeat: RepeatMode;
+}
+// Blocks saves until the saved state has been read back on launch, so an
+// early (empty) queue event can't clobber what we're about to restore.
+let persistReady = false;
+let saveTimeout: ReturnType<typeof setTimeout> | null = null;
+let lastPositionSave = 0;
+// Suppress play-recording and endless refill while a restore is in flight
+// (events from the restore sequence arrive slightly after the invokes return).
+let suppressSideEffectsUntil = 0;
 
 // --- Event listener setup ---
 let initialized = false;
@@ -51,13 +103,14 @@ function handleEvent(event: PlayerEvent) {
 			queuePosition = event.data.queue_position;
 			updateMediaSessionPlaybackState(state === 'playing');
 			updateMediaSessionMetadata(currentTrack);
-			// Autoplay: when playback stops naturally, start a new random track
-			if (autoplay && prevState === 'playing' && state === 'stopped') {
-				handleAutoplay();
+			// Endless play: if playback stopped naturally before the refill
+			// could land, refill and resume.
+			if (endless && prevState === 'playing' && state === 'stopped' && Date.now() >= suppressSideEffectsUntil) {
+				refillEndlessQueue(true);
 			}
-			// Also check if we should proactively queue the next track
-			checkAutoplayQueue();
-			checkShuffleQueue();
+			// Proactively top up the queue when nearing its end
+			checkEndlessQueue();
+			scheduleSave();
 			break;
 		}
 		case 'track_changed':
@@ -74,10 +127,19 @@ function handleEvent(event: PlayerEvent) {
 				pendingPositionMs = 0;
 				pendingDurationMs = durationMs;
 				playedHistory.add(event.data.id);
-				// Record the play in the database (fire-and-forget)
-				playerApi.recordPlay(event.data.id).catch(() => {});
+				// Record the play in the database (fire-and-forget) — but not
+				// for the track loaded by the launch restore.
+				if (Date.now() >= suppressSideEffectsUntil) {
+					playerApi.recordPlay(event.data.id).catch(() => {});
+				}
+				// Sleep timer set to "end of track": the track just changed,
+				// so the old one finished — stop playback now.
+				if (sleepTimerMode === 'end-of-track') {
+					fireSleepTimer();
+				}
 			}
 			updateMediaSessionMetadata(currentTrack);
+			scheduleSave();
 			break;
 		case 'progress':
 			pendingPositionMs = event.data.position_ms;
@@ -91,12 +153,27 @@ function handleEvent(event: PlayerEvent) {
 					progressRafPending = false;
 				});
 			}
+			// Sleep timer "end of track": start fading ~5s before the track ends
+			if (
+				sleepTimerMode === 'end-of-track' &&
+				!sleepFiring &&
+				state === 'playing' &&
+				event.data.duration_ms > 0 &&
+				event.data.duration_ms - event.data.position_ms <= 5200
+			) {
+				fireSleepTimer();
+			}
+			// Persist the playback position periodically while playing
+			if (Date.now() - lastPositionSave >= POSITION_SAVE_INTERVAL_MS) {
+				lastPositionSave = Date.now();
+				scheduleSave(500);
+			}
 			break;
 		case 'queue_updated':
 			queueTracks = event.data.tracks;
 			queuePosition = event.data.position;
-			checkAutoplayQueue();
-			checkShuffleQueue();
+			checkEndlessQueue();
+			scheduleSave();
 			break;
 		case 'error':
 			console.error('Player error:', event.data);
@@ -140,86 +217,193 @@ async function init() {
 		const [tracks, pos] = await playerApi.getQueue();
 		queueTracks = tracks;
 		queuePosition = pos;
+
+		// Fresh engine (real app launch, not a frontend reload while music
+		// plays): restore the persisted queue, paused at the saved position.
+		if (s.state === 'stopped' && tracks.length === 0) {
+			await restoreSavedState();
+		}
 	} catch {
 		// Engine may not be ready yet
 	}
+	persistReady = true;
 }
 
-let autoplayPending = false; // prevent double-adding
+// --- Queue persistence ---
 
-async function handleAutoplay() {
-	if (autoplayPending) return;
-	autoplayPending = true;
+function scheduleSave(delayMs = 1000) {
+	if (!persistReady) return;
+	if (saveTimeout) clearTimeout(saveTimeout);
+	saveTimeout = setTimeout(() => {
+		saveTimeout = null;
+		saveNow();
+	}, delayMs);
+}
+
+async function saveNow() {
+	if (!persistReady) return;
+	const saved: SavedPlayerState = {
+		queueIds: queueTracks.map((t) => t.id),
+		currentTrackId: currentTrack?.id ?? null,
+		positionMs,
+		// While the sleep timer is fading the volume down, persist the volume
+		// the user actually chose, not a transient fade step.
+		volume: sleepFiring ? sleepRestoreVolume : volume,
+		shuffle,
+		endless,
+		repeat,
+	};
 	try {
-		const excludeIds = Array.from(playedHistory);
-		let ids = await playerApi.getRandomTracks(excludeIds, 1);
-		if (ids.length === 0) {
-			// All tracks played, reset history and try again
-			playedHistory.clear();
-			ids = await playerApi.getRandomTracks([], 1);
-		}
-		if (ids.length > 0) {
-			if (state === 'stopped') {
-				await playerApi.playTracks(ids, 0);
-			} else {
-				await playerApi.addToQueue(ids[0]);
-			}
-		}
+		await setSetting(PERSIST_KEY, JSON.stringify(saved));
 	} catch (e) {
-		console.warn('Autoplay failed:', e);
-	} finally {
-		autoplayPending = false;
+		console.warn('Failed to persist player state:', e);
 	}
 }
 
-function checkAutoplayQueue() {
-	if (!autoplay || autoplayPending) return;
-	if (state !== 'playing' && state !== 'paused') return;
-	// If we're on the last track in the queue, proactively add the next one
-	if (queuePosition !== null && queuePosition >= queueTracks.length - 1) {
-		handleAutoplay();
+async function restoreSavedState() {
+	let saved: SavedPlayerState;
+	try {
+		const raw = await getSetting(PERSIST_KEY);
+		if (!raw) return;
+		saved = JSON.parse(raw) as SavedPlayerState;
+	} catch {
+		return;
+	}
+	try {
+		suppressSideEffectsUntil = Date.now() + 5000;
+		endless = !!saved.endless;
+		const savedVolume = typeof saved.volume === 'number' ? Math.min(Math.max(saved.volume, 0), 1) : 0.75;
+		if (saved.repeat === 'all' || saved.repeat === 'one') {
+			await playerApi.setRepeat(saved.repeat);
+		}
+		const queueIds = Array.isArray(saved.queueIds) ? saved.queueIds : [];
+		// Skip tracks that were deleted from the library since the last run
+		const ids = queueIds.length > 0 ? await playerApi.filterExistingTracks(queueIds) : [];
+		if (ids.length === 0) {
+			await playerApi.setVolume(savedVolume);
+			if (saved.shuffle) await playerApi.setShuffle(true);
+			return;
+		}
+		let startIndex = saved.currentTrackId != null ? ids.indexOf(saved.currentTrackId) : 0;
+		if (startIndex < 0) startIndex = 0;
+		// Load muted, pause immediately, seek, then restore the volume — the
+		// engine has no "load paused" command, so this keeps the restore silent
+		// and the app never autoplays on launch.
+		await playerApi.setVolume(0);
+		await playerApi.playTracks(ids, startIndex);
+		await playerApi.pause();
+		const resumeSameTrack = saved.currentTrackId != null && ids[startIndex] === saved.currentTrackId;
+		const posMs = resumeSameTrack && typeof saved.positionMs === 'number' ? Math.max(0, saved.positionMs) : 0;
+		if (posMs > 0) {
+			await playerApi.seek(posMs / 1000);
+		}
+		await playerApi.setVolume(savedVolume);
+		// The saved queue order already reflects any earlier shuffling; setting
+		// the flag afterwards re-shuffles only the upcoming portion.
+		if (saved.shuffle) await playerApi.setShuffle(true);
+		for (const id of ids) playedHistory.delete(id);
+	} catch (e) {
+		console.warn('Failed to restore player state:', e);
 	}
 }
 
-// --- Shuffle auto-refill ---
-// With shuffle on, the queue should never run dry: whenever playback
+// --- Endless play auto-refill ---
+// With endless play on, the queue never runs dry: whenever playback
 // approaches the end of the queue, append more random tracks from the library.
-const SHUFFLE_REFILL_BATCH = 25;
-let shuffleRefillPending = false;
+const ENDLESS_REFILL_BATCH = 25;
+let endlessRefillPending = false;
 
-async function refillShuffleQueue() {
-	if (shuffleRefillPending) return;
-	shuffleRefillPending = true;
+async function refillEndlessQueue(startPlayback: boolean) {
+	if (endlessRefillPending) return;
+	endlessRefillPending = true;
 	try {
 		// Avoid queuing tracks that are already in the queue or recently played
 		const excludeIds = Array.from(new Set([
 			...queueTracks.map((t) => t.id),
 			...playedHistory,
 		]));
-		let ids = await playerApi.getRandomTracks(excludeIds, SHUFFLE_REFILL_BATCH);
+		let ids = await playerApi.getRandomTracks(excludeIds, ENDLESS_REFILL_BATCH);
 		if (ids.length === 0) {
 			// Library smaller than the queue/history — allow repeats
 			playedHistory.clear();
-			ids = await playerApi.getRandomTracks(queueTracks.map((t) => t.id), SHUFFLE_REFILL_BATCH);
+			ids = await playerApi.getRandomTracks(queueTracks.map((t) => t.id), ENDLESS_REFILL_BATCH);
 		}
-		for (const id of ids) {
-			await playerApi.addToQueue(id);
+		if (ids.length === 0) return;
+		if (startPlayback && (state === 'stopped' || queueTracks.length === 0)) {
+			await playerApi.playTracks(ids, 0);
+		} else {
+			for (const id of ids) {
+				await playerApi.addToQueue(id);
+			}
 		}
 	} catch (e) {
-		console.warn('Shuffle queue refill failed:', e);
+		console.warn('Endless play refill failed:', e);
 	} finally {
-		shuffleRefillPending = false;
+		endlessRefillPending = false;
 	}
 }
 
-function checkShuffleQueue() {
-	if (!shuffle || shuffleRefillPending) return;
+function checkEndlessQueue() {
+	if (!endless || endlessRefillPending) return;
+	if (Date.now() < suppressSideEffectsUntil) return;
 	// Repeat modes intentionally loop the existing queue — don't grow it.
 	if (repeat !== 'off') return;
 	if (state !== 'playing' && state !== 'paused') return;
 	// Refill when the current track is the last (or second to last) in the queue
 	if (queuePosition !== null && queuePosition >= queueTracks.length - 2) {
-		refillShuffleQueue();
+		refillEndlessQueue(false);
+	}
+}
+
+// --- Sleep timer ---
+
+function setSleepTimer(mode: SleepTimerMode) {
+	sleepTimerMode = mode;
+	if (sleepInterval) {
+		clearInterval(sleepInterval);
+		sleepInterval = null;
+	}
+	sleepDeadline = null;
+	sleepRemainingMs = 0;
+	if (mode === 'off' || mode === 'end-of-track') return;
+	sleepDeadline = Date.now() + mode * 60_000;
+	sleepRemainingMs = mode * 60_000;
+	sleepInterval = setInterval(() => {
+		if (sleepDeadline === null) return;
+		sleepRemainingMs = Math.max(0, sleepDeadline - Date.now());
+		if (sleepRemainingMs <= 0) {
+			fireSleepTimer();
+		}
+	}, 1000);
+}
+
+// Fade the volume down over ~5s, pause, then restore the volume setting.
+async function fireSleepTimer() {
+	if (sleepFiring) return;
+	sleepFiring = true;
+	sleepTimerMode = 'off';
+	if (sleepInterval) {
+		clearInterval(sleepInterval);
+		sleepInterval = null;
+	}
+	sleepDeadline = null;
+	sleepRemainingMs = 0;
+	try {
+		if (volume > 0) sleepRestoreVolume = volume;
+		if (state === 'playing') {
+			const startVol = volume;
+			const steps = 20;
+			for (let i = 1; i <= steps; i++) {
+				await playerApi.setVolume(startVol * (1 - i / steps));
+				await new Promise((r) => setTimeout(r, 250));
+			}
+		}
+		await playerApi.pause();
+		await playerApi.setVolume(sleepRestoreVolume);
+	} catch (e) {
+		console.warn('Sleep timer failed:', e);
+	} finally {
+		sleepFiring = false;
 	}
 }
 
@@ -241,7 +425,9 @@ export const player = {
 	get queueTracks() { return queueTracks; },
 	get queuePosition() { return queuePosition; },
 	get queueOpen() { return queueOpen; },
-	get autoplay() { return autoplay; },
+	get endless() { return endless; },
+	get sleepTimerMode() { return sleepTimerMode; },
+	get sleepRemainingMs() { return sleepRemainingMs; },
 	get previousTrack() { return previousTrack; },
 	get isPlaying() { return state === 'playing'; },
 	get isPaused() { return state === 'paused'; },
@@ -254,23 +440,42 @@ export const player = {
 			unlisten();
 			unlisten = null;
 		}
+		if (saveTimeout) {
+			clearTimeout(saveTimeout);
+			saveTimeout = null;
+		}
+		if (sleepInterval) {
+			clearInterval(sleepInterval);
+			sleepInterval = null;
+		}
 		initialized = false;
+		persistReady = false;
 	},
 
 	toggleQueuePanel() {
 		queueOpen = !queueOpen;
 	},
 
-	toggleAutoplay() {
-		autoplay = !autoplay;
-		if (autoplay) {
+	async toggleEndless() {
+		endless = !endless;
+		if (endless) {
 			playedHistory.clear();
 			// Add current queue tracks to history
 			for (const t of queueTracks) {
 				playedHistory.add(t.id);
 			}
+			if (state === 'stopped' || queueTracks.length === 0) {
+				// Nothing playing — fill the queue and start
+				await refillEndlessQueue(true);
+				if (!queueOpen) queueOpen = true;
+			} else {
+				checkEndlessQueue();
+			}
 		}
+		scheduleSave();
 	},
+
+	setSleepTimer,
 
 	async playRandom() {
 		try {
@@ -330,29 +535,11 @@ export const player = {
 	},
 
 	async toggleShuffle() {
+		// Shuffle only reorders the EXISTING queue: upcoming tracks are
+		// shuffled, the current track stays current. Toggling off restores
+		// the original order. (Auto-refilling lives in endless play.)
 		try {
-			const enabling = !shuffle;
-			if (enabling && (state === 'stopped' || queueTracks.length === 0)) {
-				// Turning shuffle on with nothing playing — load random tracks
-				const ids = await playerApi.getRandomTracks([], 50);
-				if (ids.length > 0) {
-					playedHistory.clear();
-					await playerApi.playTracks(ids, 0);
-					await playerApi.setShuffle(true);
-					if (!queueOpen) queueOpen = true;
-				}
-			} else {
-				await playerApi.setShuffle(enabling);
-				// Turning shuffle on with a queue that has no (or almost no)
-				// upcoming tracks — top it up so there is always something next.
-				if (
-					enabling &&
-					queuePosition !== null &&
-					queuePosition >= queueTracks.length - 1
-				) {
-					await refillShuffleQueue();
-				}
-			}
+			await playerApi.setShuffle(!shuffle);
 		} catch (e) {
 			console.error('Failed to toggle shuffle:', e);
 		}

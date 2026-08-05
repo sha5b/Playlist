@@ -3,8 +3,12 @@
 	import { Button } from '$lib/components/ui/button';
 	import { Input } from '$lib/components/ui/input';
 	import { Slider } from '$lib/components/ui/slider';
-	import { FolderOpen, Volume2, RotateCcw, Music, Trash2, Cookie, Sparkles, Loader2, CircleX, Speaker, HardDriveDownload } from 'lucide-svelte';
+	import { FolderOpen, Volume2, RotateCcw, Music, Trash2, Cookie, Sparkles, Loader2, CircleX, Speaker, HardDriveDownload, Eye, FolderPlus, X } from 'lucide-svelte';
+	import { watchGetStatus, watchSetEnabled, watchAddFolder, watchRemoveFolder } from '$lib/api/library';
 	import { getSetting, setSetting, resetLibrary, getMetadataStats, scanMissingMetadata, stopMetadataScan, deleteAllMetadata, exportLibrary } from '$lib/api/library';
+	import { startLastfmAuth, finishLastfmAuth, getLastfmStatus, disconnectLastfm, setLastfmScrobbling } from '$lib/api/lastfm';
+	import type { LastfmStatus } from '$lib/types';
+	import { Radio } from 'lucide-svelte';
 	import { listen } from '@tauri-apps/api/event';
 	import { getAudioDevices, setAudioDevice } from '$lib/api/player';
 	import type { MetadataStats } from '$lib/types';
@@ -76,6 +80,59 @@
 			downloadDir = selected as string;
 			await setSetting('download_dir', downloadDir);
 			toast.success('Download folder updated');
+		}
+	}
+
+	// --- Folder watch / auto-import ---
+	let watchEnabled = $state(false);
+	let watchFolders = $state<string[]>([]);
+
+	async function loadWatch() {
+		try {
+			const status = await watchGetStatus();
+			watchEnabled = status.enabled;
+			watchFolders = status.folders;
+		} catch (e) {
+			console.error('Failed to load watched folders:', e);
+		}
+	}
+
+	async function toggleWatch() {
+		try {
+			const status = await watchSetEnabled(!watchEnabled);
+			watchEnabled = status.enabled;
+			watchFolders = status.folders;
+			toast.success(watchEnabled ? 'Folder watch enabled' : 'Folder watch disabled');
+		} catch (e) {
+			toast.error('Failed to update folder watch', { description: String(e) });
+		}
+	}
+
+	async function addWatchFolder() {
+		// Suggest the download folder as a starting point, but never auto-watch
+		// it — downloads already import themselves.
+		const selected = await open({
+			directory: true,
+			title: 'Choose folder to watch',
+			defaultPath: downloadDir || undefined,
+		});
+		if (!selected) return;
+		try {
+			const status = await watchAddFolder(selected as string);
+			watchFolders = status.folders;
+			toast.success('Folder added to watch list');
+		} catch (e) {
+			toast.error('Failed to add folder', { description: String(e) });
+		}
+	}
+
+	async function removeWatchFolder(path: string) {
+		try {
+			const status = await watchRemoveFolder(path);
+			watchFolders = status.folders;
+			toast.success('Folder removed from watch list');
+		} catch (e) {
+			toast.error('Failed to remove folder', { description: String(e) });
 		}
 	}
 
@@ -221,10 +278,71 @@
 		toast.success('Settings reset to defaults');
 	}
 
+	// --- Last.fm scrobbling state ---
+	let lastfm = $state<LastfmStatus | null>(null);
+	let lastfmToken = $state<string | null>(null);
+	let lastfmBusy = $state(false);
+
+	async function loadLastfm() {
+		try {
+			lastfm = await getLastfmStatus();
+		} catch (e) {
+			console.error('Failed to load Last.fm status:', e);
+		}
+	}
+
+	async function handleLastfmConnect() {
+		lastfmBusy = true;
+		try {
+			const auth = await startLastfmAuth();
+			lastfmToken = auth.token;
+			toast.info('Authorize Playlist on Last.fm in your browser, then come back and confirm.');
+		} catch (e) {
+			toast.error('Failed to start Last.fm authorization', { description: String(e) });
+		} finally {
+			lastfmBusy = false;
+		}
+	}
+
+	async function handleLastfmFinish() {
+		if (!lastfmToken) return;
+		lastfmBusy = true;
+		try {
+			lastfm = await finishLastfmAuth(lastfmToken);
+			lastfmToken = null;
+			toast.success(`Connected to Last.fm as ${lastfm.username ?? 'unknown'}`);
+		} catch (e) {
+			toast.error('Last.fm authorization failed', { description: String(e) });
+		} finally {
+			lastfmBusy = false;
+		}
+	}
+
+	async function handleLastfmDisconnect() {
+		try {
+			lastfm = await disconnectLastfm();
+			lastfmToken = null;
+			toast.success('Disconnected from Last.fm');
+		} catch (e) {
+			toast.error('Failed to disconnect', { description: String(e) });
+		}
+	}
+
+	async function handleLastfmToggleScrobbling() {
+		if (!lastfm) return;
+		try {
+			lastfm = await setLastfmScrobbling(!lastfm.scrobbling_enabled);
+		} catch (e) {
+			toast.error('Failed to update scrobbling', { description: String(e) });
+		}
+	}
+
 	$effect(() => {
 		load();
 		loadMetadataStats();
 		loadAudioDevices();
+		loadWatch();
+		loadLastfm();
 	});
 </script>
 
@@ -300,6 +418,65 @@
 			<p class="text-xs text-muted-foreground">
 				Use cookies from your browser to bypass YouTube's bot detection. Pick the browser where you're logged in to YouTube.
 			</p>
+		</div>
+	</section>
+
+	<Separator />
+
+	<!-- Watched Folders -->
+	<section class="space-y-4">
+		<div>
+			<h2 class="text-lg font-semibold">Watched Folders</h2>
+			<p class="text-sm text-muted-foreground">Automatically import new audio files from these folders</p>
+		</div>
+
+		<div class="flex items-center justify-between gap-4">
+			<div>
+				<p class="text-sm font-medium flex items-center gap-2">
+					<Eye class="size-4 text-muted-foreground" />
+					Watch folders for new music
+				</p>
+				<p class="text-xs text-muted-foreground">
+					New files (e.g. Bandcamp purchases) are imported automatically. Your download folder already self-imports and doesn't need watching.
+				</p>
+			</div>
+			<Button
+				variant={watchEnabled ? 'default' : 'outline'}
+				size="sm"
+				onclick={toggleWatch}
+			>
+				{watchEnabled ? 'On' : 'Off'}
+			</Button>
+		</div>
+
+		<div class="space-y-2">
+			{#if watchFolders.length === 0}
+				<p class="text-xs text-muted-foreground italic">No folders are being watched yet.</p>
+			{:else}
+				<ul class="space-y-1">
+					{#each watchFolders as folder (folder)}
+						<li class="flex items-center justify-between gap-2 rounded-md bg-muted/40 px-3 py-1.5">
+							<span class="flex items-center gap-2 min-w-0 text-sm">
+								<FolderOpen class="size-4 shrink-0 text-muted-foreground" />
+								<span class="truncate">{folder}</span>
+							</span>
+							<Button
+								variant="ghost"
+								size="sm"
+								class="shrink-0 h-7 w-7 p-0"
+								title="Stop watching this folder"
+								onclick={() => removeWatchFolder(folder)}
+							>
+								<X class="size-4" />
+							</Button>
+						</li>
+					{/each}
+				</ul>
+			{/if}
+			<Button variant="outline" size="sm" onclick={addWatchFolder}>
+				<FolderPlus class="size-4" />
+				Add Folder
+			</Button>
 		</div>
 	</section>
 
@@ -478,6 +655,85 @@
 				</Button>
 			</div>
 		</div>
+	</section>
+
+	<Separator />
+
+	<!-- Last.fm -->
+	<section class="space-y-4" id="lastfm">
+		<div>
+			<h2 class="text-lg font-semibold">Last.fm</h2>
+			<p class="text-sm text-muted-foreground">Scrobble your plays to your Last.fm profile</p>
+		</div>
+
+		{#if lastfm?.connected}
+			<div class="flex items-center justify-between gap-4">
+				<div>
+					<p class="text-sm font-medium flex items-center gap-2">
+						<Radio class="size-4 text-success" />
+						Connected as {lastfm.username ?? 'unknown'}
+					</p>
+					<p class="text-xs text-muted-foreground">
+						{#if lastfm.pending_scrobbles > 0}
+							{lastfm.pending_scrobbles} scrobble{lastfm.pending_scrobbles === 1 ? '' : 's'} queued (sent on next play)
+						{:else}
+							Plays are scrobbled after they count as a full play
+						{/if}
+					</p>
+				</div>
+				<Button variant="outline" size="sm" onclick={handleLastfmDisconnect}>
+					<X class="size-4" />
+					Disconnect
+				</Button>
+			</div>
+
+			<div class="flex items-center justify-between gap-4">
+				<div>
+					<p class="text-sm font-medium">Scrobbling</p>
+					<p class="text-xs text-muted-foreground">Send plays and now-playing updates to Last.fm</p>
+				</div>
+				<Button
+					variant={lastfm.scrobbling_enabled ? 'default' : 'outline'}
+					size="sm"
+					onclick={handleLastfmToggleScrobbling}
+				>
+					{lastfm.scrobbling_enabled ? 'On' : 'Off'}
+				</Button>
+			</div>
+		{:else if lastfmToken}
+			<div class="space-y-3 rounded-md bg-muted/50 p-3">
+				<p class="text-sm">
+					A Last.fm authorization page was opened in your browser. Approve access there, then confirm below.
+				</p>
+				<div class="flex gap-2">
+					<Button size="sm" onclick={handleLastfmFinish} disabled={lastfmBusy}>
+						{#if lastfmBusy}
+							<Loader2 class="size-4 animate-spin" />
+						{/if}
+						I've authorized
+					</Button>
+					<Button variant="outline" size="sm" onclick={() => (lastfmToken = null)} disabled={lastfmBusy}>
+						Cancel
+					</Button>
+				</div>
+			</div>
+		{:else}
+			<div class="flex items-center justify-between gap-4">
+				<div>
+					<p class="text-sm font-medium">Connect your Last.fm account</p>
+					<p class="text-xs text-muted-foreground">Opens Last.fm in your browser to authorize Playlist</p>
+				</div>
+				<Button variant="outline" size="sm" onclick={handleLastfmConnect} disabled={lastfmBusy}>
+					{#if lastfmBusy}
+						<Loader2 class="size-4 animate-spin" />
+						Connecting...
+					{:else}
+						<Radio class="size-4" />
+						Connect
+					{/if}
+				</Button>
+			</div>
+		{/if}
 	</section>
 
 	<Separator />

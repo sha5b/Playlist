@@ -7,6 +7,7 @@ import type {
 	Artist,
 	Playlist,
 	PlaylistDetail,
+	SmartRules,
 	SearchResults,
 	EnrichResult,
 	EnrichAlbumResult,
@@ -14,6 +15,8 @@ import type {
 	MetadataStats,
 	Download,
 	TrackMismatch,
+	TrackTagUpdate,
+	M3uImportResult,
 } from '$lib/types';
 
 // --- Simple TTL cache for frequently accessed data ---
@@ -83,6 +86,20 @@ export async function getTracksByGenre(genre: string, limit = 20): Promise<Track
 
 export async function deleteTrack(id: number, deleteFile = false): Promise<void> {
 	const result = await invoke<void>('library_delete_track', { id, deleteFile });
+	invalidateCache();
+	return result;
+}
+
+/** Update tags on one track: writes the audio file, DB row, and search index. */
+export async function updateTrackTags(trackId: number, tags: TrackTagUpdate): Promise<Track> {
+	const result = await invoke<Track>('library_update_track_tags', { trackId, tags });
+	invalidateCache();
+	return result;
+}
+
+/** Apply the provided tag fields to many tracks (omitted fields are kept per track). */
+export async function updateTracksTags(trackIds: number[], tags: TrackTagUpdate): Promise<Track[]> {
+	const result = await invoke<Track[]>('library_update_tracks_tags', { trackIds, tags });
 	invalidateCache();
 	return result;
 }
@@ -192,6 +209,37 @@ export async function deletePlaylist(id: number): Promise<void> {
 	return invoke('library_delete_playlist', { id });
 }
 
+// --- Smart Playlists ---
+
+export async function createSmartPlaylist(
+	name: string,
+	rules: SmartRules,
+	description?: string
+): Promise<Playlist> {
+	return invoke('library_create_smart_playlist', {
+		name,
+		description,
+		rules: JSON.stringify(rules),
+	});
+}
+
+export async function updateSmartPlaylist(
+	id: number,
+	opts: { name?: string; description?: string; rules?: SmartRules }
+): Promise<Playlist> {
+	return invoke('library_update_smart_playlist', {
+		id,
+		name: opts.name,
+		description: opts.description,
+		rules: opts.rules ? JSON.stringify(opts.rules) : undefined,
+	});
+}
+
+/** Count how many tracks a rule set currently matches (live preview). */
+export async function previewSmartPlaylist(rules: SmartRules): Promise<number> {
+	return invoke('library_smart_playlist_preview', { rules: JSON.stringify(rules) });
+}
+
 export async function addToPlaylist(
 	playlistId: number,
 	trackIds: number[]
@@ -242,6 +290,29 @@ export async function getAllSettings(): Promise<[string, string][]> {
 	return invoke('settings_get_all');
 }
 
+// --- Folder watch / auto-import ---
+
+export interface WatchStatus {
+	enabled: boolean;
+	folders: string[];
+}
+
+export async function watchGetStatus(): Promise<WatchStatus> {
+	return invoke('watch_get_status');
+}
+
+export async function watchSetEnabled(enabled: boolean): Promise<WatchStatus> {
+	return invoke('watch_set_enabled', { enabled });
+}
+
+export async function watchAddFolder(path: string): Promise<WatchStatus> {
+	return invoke('watch_add_folder', { path });
+}
+
+export async function watchRemoveFolder(path: string): Promise<WatchStatus> {
+	return invoke('watch_remove_folder', { path });
+}
+
 // --- Search ---
 
 export async function search(
@@ -255,6 +326,27 @@ export async function search(
 
 export async function importFolder(path: string): Promise<number> {
 	const result = await invoke<number>('library_import_folder', { path });
+	invalidateCache();
+	return result;
+}
+
+/** Import a mix of dropped paths (folders are scanned recursively, files must be audio) */
+export async function importPaths(paths: string[]): Promise<number> {
+	const result = await invoke<number>('library_import_paths', { paths });
+	invalidateCache();
+	return result;
+}
+
+// --- Playlist M3U export / import ---
+
+/** Export a playlist as an .m3u file. Returns the number of exported tracks. */
+export async function exportPlaylistM3u(playlistId: number, destPath: string): Promise<number> {
+	return invoke('library_export_playlist', { playlistId, destPath });
+}
+
+/** Import an .m3u/.m3u8 file as a new playlist, matching entries against the library. */
+export async function importM3u(path: string): Promise<M3uImportResult> {
+	const result = await invoke<M3uImportResult>('library_import_m3u', { path });
 	invalidateCache();
 	return result;
 }

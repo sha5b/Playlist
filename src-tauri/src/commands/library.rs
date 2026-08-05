@@ -88,6 +88,196 @@ pub fn library_delete_track(
     Ok(())
 }
 
+// --- Tag Editing ---
+
+/// Editable tag fields. Every field is optional: `None` (or blank) means
+/// "keep the current value" — only provided fields are applied.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct TrackTagUpdate {
+    pub title: Option<String>,
+    pub artist: Option<String>,
+    pub album: Option<String>,
+    pub album_artist: Option<String>,
+    pub genre: Option<String>,
+    pub year: Option<i64>,
+    pub track_number: Option<i64>,
+}
+
+/// Trim a string field and treat empty strings as "not provided".
+fn non_empty(s: &Option<String>) -> Option<String> {
+    s.as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(str::to_string)
+}
+
+/// Apply a tag update to a single track:
+/// 1. write the tags into the audio file (lofty) — if this fails the DB is untouched,
+/// 2. update the DB row, resolving-or-creating artist/album relations,
+/// 3. reindex FTS and refresh metadata completeness.
+///
+/// NOTE: re-assigning artist/album can leave orphaned artist/album rows behind;
+/// there is no shared orphan-cleanup helper, so they are left in place
+/// (metadata_cleanup_duplicates removes orphaned albums on demand).
+fn apply_tag_update(
+    conn: &rusqlite::Connection,
+    track_id: i64,
+    update: &TrackTagUpdate,
+) -> Result<(), String> {
+    let title = non_empty(&update.title);
+    let artist = non_empty(&update.artist);
+    let album = non_empty(&update.album);
+    let album_artist = non_empty(&update.album_artist);
+    let genre = non_empty(&update.genre);
+
+    if title.is_none()
+        && artist.is_none()
+        && album.is_none()
+        && album_artist.is_none()
+        && genre.is_none()
+        && update.year.is_none()
+        && update.track_number.is_none()
+    {
+        return Ok(()); // nothing to apply
+    }
+
+    let (file_path, cur_artist_id, cur_year): (String, Option<i64>, Option<i64>) = conn
+        .query_row(
+            "SELECT file_path, artist_id, year FROM tracks WHERE id = ?1",
+            params![track_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .map_err(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => format!("Track {} not found", track_id),
+            e => e.to_string(),
+        })?;
+
+    // 1) Write into the audio file first so the file and DB can't diverge
+    //    on failure.
+    let tw = tags::TagWrite {
+        title: title.clone(),
+        artist: artist.clone(),
+        album: album.clone(),
+        album_artist: album_artist.clone(),
+        track_number: update.track_number.and_then(|n| u32::try_from(n).ok()),
+        disc_number: None,
+        year: update.year.and_then(|y| u32::try_from(y).ok()),
+        genre: genre.clone(),
+    };
+    tags::write_tags(Path::new(&file_path), &tw)
+        .map_err(|e| format!("Failed to write tags to {}: {}", file_path, e))?;
+
+    // 2) Update DB relations + columns.
+    let new_artist_id = match &artist {
+        Some(name) => {
+            let id = crate::db::artists::find_or_create(conn, name).map_err(|e| e.to_string())?;
+            conn.execute(
+                "UPDATE tracks SET artist_id = ?1 WHERE id = ?2",
+                params![id, track_id],
+            )
+            .map_err(|e| e.to_string())?;
+            Some(id)
+        }
+        None => cur_artist_id,
+    };
+
+    if let Some(album_title) = &album {
+        let album_id = crate::db::albums::find_or_create(
+            conn,
+            album_title,
+            new_artist_id,
+            album_artist.as_deref(),
+            update.year.or(cur_year),
+        )
+        .map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE tracks SET album_id = ?1 WHERE id = ?2",
+            params![album_id, track_id],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+
+    let scalar_updates: [(&str, Option<&dyn rusqlite::types::ToSql>); 5] = [
+        ("title", title.as_ref().map(|v| v as &dyn rusqlite::types::ToSql)),
+        ("album_artist", album_artist.as_ref().map(|v| v as &dyn rusqlite::types::ToSql)),
+        ("genre", genre.as_ref().map(|v| v as &dyn rusqlite::types::ToSql)),
+        ("year", update.year.as_ref().map(|v| v as &dyn rusqlite::types::ToSql)),
+        ("track_number", update.track_number.as_ref().map(|v| v as &dyn rusqlite::types::ToSql)),
+    ];
+    for (column, value) in scalar_updates {
+        if let Some(v) = value {
+            conn.execute(
+                &format!("UPDATE tracks SET {} = ?1 WHERE id = ?2", column),
+                params![v, track_id],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+    }
+
+    // 3) Reindex FTS + refresh completeness.
+    crate::db::tracks::update_fts(conn, track_id).map_err(|e| e.to_string())?;
+    let _ = crate::db::tracks::update_completeness(conn, track_id);
+
+    Ok(())
+}
+
+#[tauri::command]
+pub fn library_update_track_tags(
+    db: State<'_, Arc<DbPool>>,
+    app_handle: tauri::AppHandle,
+    track_id: i64,
+    tags: TrackTagUpdate,
+) -> Result<Track, String> {
+    let track = {
+        let conn = crate::db::lock(&db)?;
+        apply_tag_update(&conn, track_id, &tags)?;
+        crate::db::tracks::get_track(&conn, track_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("Track {} not found", track_id))?
+    };
+    let _ = app_handle.emit("library-updated", ());
+    Ok(track)
+}
+
+/// Apply the provided tag fields to many tracks (e.g. fix album/artist/genre
+/// across a selection). Tracks that fail are skipped; if any fail, an error
+/// listing them is returned after the others were applied.
+#[tauri::command]
+pub fn library_update_tracks_tags(
+    db: State<'_, Arc<DbPool>>,
+    app_handle: tauri::AppHandle,
+    track_ids: Vec<i64>,
+    tags: TrackTagUpdate,
+) -> Result<Vec<Track>, String> {
+    let mut updated: Vec<Track> = Vec::new();
+    let mut errors: Vec<String> = Vec::new();
+    {
+        let conn = crate::db::lock(&db)?;
+        for &track_id in &track_ids {
+            match apply_tag_update(&conn, track_id, &tags) {
+                Ok(()) => match crate::db::tracks::get_track(&conn, track_id) {
+                    Ok(Some(t)) => updated.push(t),
+                    Ok(None) => errors.push(format!("track {}: not found", track_id)),
+                    Err(e) => errors.push(format!("track {}: {}", track_id, e)),
+                },
+                Err(e) => errors.push(format!("track {}: {}", track_id, e)),
+            }
+        }
+    }
+    if !updated.is_empty() {
+        let _ = app_handle.emit("library-updated", ());
+    }
+    if !errors.is_empty() {
+        return Err(format!(
+            "Updated {} of {} tracks; failures: {}",
+            updated.len(),
+            track_ids.len(),
+            errors.join("; ")
+        ));
+    }
+    Ok(updated)
+}
+
 /// Delete all tracks in an album (and their files) but keep the album + enriched tracklist
 /// so greyed-out placeholders remain for re-downloading.
 #[tauri::command]
@@ -351,6 +541,54 @@ pub fn library_update_playlist(
         .map_err(|e| e.to_string())
 }
 
+// --- Smart playlists ---
+
+#[tauri::command]
+pub fn library_create_smart_playlist(
+    db: State<'_, Arc<DbPool>>,
+    name: String,
+    description: Option<String>,
+    rules: String,
+) -> Result<Playlist, String> {
+    crate::db::smart::validate_rules(&rules)?;
+    let conn = crate::db::lock(&db)?;
+    crate::db::playlists::create_smart_playlist(&conn, &name, description.as_deref(), &rules)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn library_update_smart_playlist(
+    db: State<'_, Arc<DbPool>>,
+    id: i64,
+    name: Option<String>,
+    description: Option<String>,
+    rules: Option<String>,
+) -> Result<Playlist, String> {
+    if let Some(ref r) = rules {
+        crate::db::smart::validate_rules(r)?;
+    }
+    let conn = crate::db::lock(&db)?;
+    crate::db::playlists::update_smart_playlist(
+        &conn,
+        id,
+        name.as_deref(),
+        description.as_deref(),
+        rules.as_deref(),
+    )
+    .map_err(|e| e.to_string())
+}
+
+/// Count how many tracks a rule set currently matches (live preview).
+#[tauri::command]
+pub fn library_smart_playlist_preview(
+    db: State<'_, Arc<DbPool>>,
+    rules: String,
+) -> Result<i64, String> {
+    let parsed = crate::db::smart::parse_rules(&rules)?;
+    let conn = crate::db::lock(&db)?;
+    crate::db::smart::count_tracks(&conn, &parsed)
+}
+
 #[tauri::command]
 pub fn library_delete_playlist(db: State<'_, Arc<DbPool>>, id: i64) -> Result<(), String> {
     let conn = crate::db::lock(&db)?;
@@ -567,29 +805,27 @@ pub fn settings_get_all(
 
 // --- Import ---
 
-#[tauri::command]
-pub fn library_import_folder(
-    db: State<'_, Arc<DbPool>>,
-    app_handle: tauri::AppHandle,
-    path: String,
-) -> Result<i64, String> {
-    let conn = crate::db::lock(&db)?;
-
-    let covers_dir = app_handle
-        .path()
-        .app_data_dir()
-        .map_err(|e: tauri::Error| e.to_string())?
-        .join("covers");
-
-    let mut imported = 0i64;
-
-    // Collect all audio file paths first
-    let audio_files: Vec<_> = WalkDir::new(&path)
+/// Recursively collect audio files under a directory.
+fn collect_audio_files(root: &Path) -> Vec<PathBuf> {
+    WalkDir::new(root)
         .follow_links(true)
         .into_iter()
         .filter_map(|e| e.ok())
         .filter(|e| e.path().is_file() && tags::is_audio_file(e.path()))
-        .collect();
+        .map(|e| e.into_path())
+        .collect()
+}
+
+/// Import a list of audio files into the library. Shared by folder import,
+/// dropped-paths import, the folder-watch auto-import service, etc.
+/// Skips files already in the DB by path.
+/// Returns the number of newly imported tracks.
+pub fn import_audio_files(
+    conn: &rusqlite::Connection,
+    covers_dir: &Path,
+    audio_files: &[PathBuf],
+) -> Result<i64, String> {
+    let mut imported = 0i64;
 
     if audio_files.is_empty() {
         return Ok(0);
@@ -612,8 +848,8 @@ pub fn library_import_folder(
 
     let mut fts_ids: Vec<i64> = Vec::new();
 
-    for entry in &audio_files {
-        let file_path = entry.path();
+    for file_path in audio_files {
+        let file_path = file_path.as_path();
         let path_str = file_path.to_string_lossy().to_string();
 
         if existing_paths.contains(&path_str) {
@@ -718,11 +954,301 @@ pub fn library_import_folder(
 
     conn.execute_batch("COMMIT").map_err(|e| e.to_string())?;
 
+    Ok(imported)
+}
+
+#[tauri::command]
+pub fn library_import_folder(
+    db: State<'_, Arc<DbPool>>,
+    app_handle: tauri::AppHandle,
+    path: String,
+) -> Result<i64, String> {
+    let conn = crate::db::lock(&db)?;
+
+    let covers_dir = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|e: tauri::Error| e.to_string())?
+        .join("covers");
+
+    let audio_files = collect_audio_files(Path::new(&path));
+    let imported = import_audio_files(&conn, &covers_dir, &audio_files)?;
+
     log::info!("Imported {} tracks from {}", imported, path);
     if imported > 0 {
         let _ = app_handle.emit("library-updated", ());
     }
     Ok(imported)
+}
+
+/// Import a mix of dropped paths: directories are scanned recursively for
+/// audio files, plain files are imported when they have an audio extension.
+#[tauri::command]
+pub fn library_import_paths(
+    db: State<'_, Arc<DbPool>>,
+    app_handle: tauri::AppHandle,
+    paths: Vec<String>,
+) -> Result<i64, String> {
+    let conn = crate::db::lock(&db)?;
+
+    let covers_dir = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|e: tauri::Error| e.to_string())?
+        .join("covers");
+
+    let mut files: Vec<PathBuf> = Vec::new();
+    for p in &paths {
+        let pb = PathBuf::from(p);
+        if pb.is_dir() {
+            files.extend(collect_audio_files(&pb));
+        } else if pb.is_file() && tags::is_audio_file(&pb) {
+            files.push(pb);
+        }
+    }
+    files.sort();
+    files.dedup();
+
+    let imported = import_audio_files(&conn, &covers_dir, &files)?;
+
+    log::info!("Imported {} tracks from {} dropped path(s)", imported, paths.len());
+    if imported > 0 {
+        let _ = app_handle.emit("library-updated", ());
+    }
+    Ok(imported)
+}
+
+// --- Playlist M3U export / import ---
+
+#[tauri::command]
+pub fn library_export_playlist(
+    db: State<'_, Arc<DbPool>>,
+    playlist_id: i64,
+    dest_path: String,
+) -> Result<i64, String> {
+    let conn = crate::db::lock(&db)?;
+
+    // Ensure the playlist exists (gives a clearer error than an empty file)
+    let _name: String = conn
+        .query_row(
+            "SELECT name FROM playlists WHERE id = ?1",
+            params![playlist_id],
+            |row| row.get(0),
+        )
+        .map_err(|_| "Playlist not found".to_string())?;
+
+    let entries: Vec<(String, String, Option<i64>, Option<String>)> = {
+        let mut stmt = conn
+            .prepare(
+                "SELECT t.file_path, t.title, t.duration_ms, ar.name
+                 FROM playlist_tracks pt
+                 JOIN tracks t ON t.id = pt.track_id
+                 LEFT JOIN artists ar ON ar.id = t.artist_id
+                 WHERE pt.playlist_id = ?1
+                 ORDER BY pt.position",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![playlist_id], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        rows
+    };
+
+    if entries.is_empty() {
+        return Err("Playlist has no tracks to export".to_string());
+    }
+
+    let mut content = String::from("#EXTM3U\n");
+    for (file_path, title, duration_ms, artist) in &entries {
+        let duration_secs = duration_ms.unwrap_or(0) / 1000;
+        let display = match artist {
+            Some(a) if !a.is_empty() => format!("{} - {}", a, title),
+            _ => title.clone(),
+        };
+        content.push_str(&format!("#EXTINF:{},{}\n", duration_secs, display));
+        content.push_str(file_path);
+        content.push('\n');
+    }
+
+    let dest = PathBuf::from(&dest_path);
+    if let Some(parent) = dest.parent() {
+        if !parent.as_os_str().is_empty() && !parent.exists() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+    }
+    std::fs::write(&dest, content).map_err(|e| format!("Failed to write playlist: {}", e))?;
+
+    log::info!("Exported playlist {} ({} tracks) to {}", playlist_id, entries.len(), dest_path);
+    Ok(entries.len() as i64)
+}
+
+#[derive(serde::Serialize)]
+pub struct M3uImportResult {
+    pub playlist_id: i64,
+    pub playlist_name: String,
+    pub matched: i64,
+    pub unmatched: i64,
+    pub unmatched_entries: Vec<String>,
+}
+
+#[tauri::command]
+pub fn library_import_m3u(
+    db: State<'_, Arc<DbPool>>,
+    app_handle: tauri::AppHandle,
+    path: String,
+) -> Result<M3uImportResult, String> {
+    let m3u_path = PathBuf::from(&path);
+    let content = std::fs::read_to_string(&m3u_path)
+        .map_err(|e| format!("Failed to read playlist file: {}", e))?;
+    let base_dir = m3u_path.parent().map(|p| p.to_path_buf());
+
+    // Parse: each non-comment line is a track path; a preceding #EXTINF
+    // carries "duration,artist - title" metadata used for fallback matching.
+    struct M3uEntry {
+        raw_path: String,
+        artist: Option<String>,
+        title: Option<String>,
+    }
+
+    let mut entries: Vec<M3uEntry> = Vec::new();
+    let mut pending: Option<(Option<String>, Option<String>)> = None; // (artist, title)
+
+    for line in content.lines() {
+        let line = line.trim_start_matches('\u{feff}').trim();
+        if line.is_empty() {
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("#EXTINF:") {
+            // "#EXTINF:123,Artist - Title" (fields before the comma are ignored)
+            let desc = rest.split_once(',').map(|(_, d)| d.trim()).unwrap_or("");
+            if desc.is_empty() {
+                pending = None;
+            } else if let Some((artist, title)) = desc.split_once(" - ") {
+                pending = Some((
+                    Some(artist.trim().to_string()).filter(|s| !s.is_empty()),
+                    Some(title.trim().to_string()).filter(|s| !s.is_empty()),
+                ));
+            } else {
+                pending = Some((None, Some(desc.to_string())));
+            }
+            continue;
+        }
+        if line.starts_with('#') {
+            continue;
+        }
+        let (artist, title) = pending.take().unwrap_or((None, None));
+        entries.push(M3uEntry {
+            raw_path: line.to_string(),
+            artist,
+            title,
+        });
+    }
+
+    if entries.is_empty() {
+        return Err("No tracks found in playlist file".to_string());
+    }
+
+    let playlist_name = m3u_path
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "Imported Playlist".to_string());
+
+    let conn = crate::db::lock(&db)?;
+
+    let playlist = crate::db::playlists::create_playlist(&conn, &playlist_name, None)
+        .map_err(|e| e.to_string())?;
+
+    let mut matched = 0i64;
+    let mut unmatched = 0i64;
+    let mut unmatched_entries: Vec<String> = Vec::new();
+
+    for entry in &entries {
+        // Resolve relative paths against the m3u file's directory
+        let entry_path = Path::new(&entry.raw_path);
+        let resolved: PathBuf = if entry_path.is_absolute() {
+            entry_path.to_path_buf()
+        } else if let Some(ref base) = base_dir {
+            base.join(entry_path)
+        } else {
+            entry_path.to_path_buf()
+        };
+
+        // 1) exact file path match (raw, resolved, then canonicalized)
+        let mut candidates: Vec<String> = vec![
+            entry.raw_path.clone(),
+            resolved.to_string_lossy().to_string(),
+        ];
+        if let Ok(canon) = std::fs::canonicalize(&resolved) {
+            candidates.push(canon.to_string_lossy().to_string());
+        }
+        candidates.dedup();
+
+        let mut track_id: Option<i64> = None;
+        for cand in &candidates {
+            match conn.query_row(
+                "SELECT id FROM tracks WHERE file_path = ?1",
+                params![cand],
+                |row| row.get::<_, i64>(0),
+            ) {
+                Ok(id) => {
+                    track_id = Some(id);
+                    break;
+                }
+                Err(rusqlite::Error::QueryReturnedNoRows) => continue,
+                Err(e) => return Err(e.to_string()),
+            }
+        }
+
+        // 2) fallback: (title, artist) from the EXTINF line
+        if track_id.is_none() {
+            if let Some(ref title) = entry.title {
+                let result = conn.query_row(
+                    "SELECT t.id FROM tracks t
+                     LEFT JOIN artists ar ON ar.id = t.artist_id
+                     WHERE t.title = ?1 COLLATE NOCASE
+                       AND (?2 IS NULL OR ar.name = ?2 COLLATE NOCASE)
+                     LIMIT 1",
+                    params![title, entry.artist],
+                    |row| row.get::<_, i64>(0),
+                );
+                match result {
+                    Ok(id) => track_id = Some(id),
+                    Err(rusqlite::Error::QueryReturnedNoRows) => {}
+                    Err(e) => return Err(e.to_string()),
+                }
+            }
+        }
+
+        match track_id {
+            Some(id) => {
+                crate::db::playlists::add_track_to_playlist(&conn, playlist.id, id)
+                    .map_err(|e| e.to_string())?;
+                matched += 1;
+            }
+            None => {
+                unmatched += 1;
+                unmatched_entries.push(entry.raw_path.clone());
+            }
+        }
+    }
+
+    log::info!(
+        "Imported m3u '{}': {} matched, {} unmatched",
+        playlist_name, matched, unmatched
+    );
+    let _ = app_handle.emit("library-updated", ());
+
+    Ok(M3uImportResult {
+        playlist_id: playlist.id,
+        playlist_name,
+        matched,
+        unmatched,
+        unmatched_entries,
+    })
 }
 
 // --- Album Download Status ---

@@ -16,12 +16,15 @@ fn row_to_playlist(row: &Row) -> Result<Playlist, rusqlite::Error> {
         is_synced: row.get::<_, i64>(8)? != 0,
         last_synced_at: row.get(9)?,
         created_at: row.get(10)?,
+        is_smart: row.get::<_, i64>(11)? != 0,
+        rules: row.get(12)?,
     })
 }
 
 const PLAYLIST_COLUMNS: &str =
     "id, name, description, cover_art_path, source_platform, source_url,
-     track_count, total_duration_ms, is_synced, last_synced_at, created_at";
+     track_count, total_duration_ms, is_synced, last_synced_at, created_at,
+     is_smart, rules";
 
 pub fn get_playlists(conn: &Connection) -> Result<Vec<Playlist>, rusqlite::Error> {
     let sql = format!(
@@ -47,6 +50,49 @@ pub fn create_playlist(
 
     let id = conn.last_insert_rowid();
     get_playlist(conn, id)?.ok_or(rusqlite::Error::QueryReturnedNoRows)
+}
+
+pub fn create_smart_playlist(
+    conn: &Connection,
+    name: &str,
+    description: Option<&str>,
+    rules_json: &str,
+) -> Result<Playlist, rusqlite::Error> {
+    conn.execute(
+        "INSERT INTO playlists (name, description, is_smart, rules) VALUES (?1, ?2, 1, ?3)",
+        params![name, description, rules_json],
+    )?;
+
+    let id = conn.last_insert_rowid();
+    get_playlist(conn, id)?.ok_or(rusqlite::Error::QueryReturnedNoRows)
+}
+
+pub fn update_smart_playlist(
+    conn: &Connection,
+    id: i64,
+    name: Option<&str>,
+    description: Option<&str>,
+    rules_json: Option<&str>,
+) -> Result<Playlist, rusqlite::Error> {
+    if let Some(rules) = rules_json {
+        conn.execute(
+            "UPDATE playlists SET rules = ?1, updated_at = datetime('now')
+             WHERE id = ?2 AND is_smart = 1",
+            params![rules, id],
+        )?;
+    }
+    update_playlist(conn, id, name, description)
+}
+
+/// Returns the rule JSON when the playlist is a smart playlist, None otherwise.
+pub fn smart_rules(conn: &Connection, playlist_id: i64) -> Result<Option<String>, rusqlite::Error> {
+    let mut stmt = conn.prepare("SELECT rules FROM playlists WHERE id = ?1 AND is_smart = 1")?;
+    let result = stmt
+        .query_map(params![playlist_id], |row| row.get::<_, Option<String>>(0))?
+        .next()
+        .transpose()
+        .map(|opt| opt.flatten());
+    result
 }
 
 pub fn get_playlist(conn: &Connection, id: i64) -> Result<Option<Playlist>, rusqlite::Error> {
@@ -93,6 +139,9 @@ pub fn add_track_to_playlist(
     playlist_id: i64,
     track_id: i64,
 ) -> Result<(), rusqlite::Error> {
+    if smart_rules(conn, playlist_id)?.is_some() {
+        return Err(smart_readonly_err());
+    }
     let next_pos: i64 = conn
         .query_row(
             "SELECT COALESCE(MAX(position), 0) + 1 FROM playlist_tracks WHERE playlist_id = ?1",
@@ -115,6 +164,9 @@ pub fn remove_track_from_playlist(
     playlist_id: i64,
     track_id: i64,
 ) -> Result<(), rusqlite::Error> {
+    if smart_rules(conn, playlist_id)?.is_some() {
+        return Err(smart_readonly_err());
+    }
     conn.execute(
         "DELETE FROM playlist_tracks WHERE playlist_id = ?1 AND track_id = ?2",
         params![playlist_id, track_id],
@@ -130,6 +182,9 @@ pub fn reorder_playlist(
     from: i64,
     to: i64,
 ) -> Result<(), rusqlite::Error> {
+    if smart_rules(conn, playlist_id)?.is_some() {
+        return Err(smart_readonly_err());
+    }
     // Positions can have gaps (after removals) or duplicates, while the UI
     // sends list INDICES. Load the ordered list, move in memory, and write
     // back a dense 0..n position sequence — this both performs the move and
@@ -163,6 +218,10 @@ pub fn reorder_playlist(
 /// Backfill playlist_tracks from monitored_playlist_entries for downloaded tracks
 /// that haven't been linked yet (e.g. tracks downloaded before auto-link was added).
 pub fn backfill_playlist_tracks(conn: &Connection, playlist_id: i64) -> Result<(), rusqlite::Error> {
+    // Smart playlists have no manual/monitored track links — nothing to backfill.
+    if smart_rules(conn, playlist_id)?.is_some() {
+        return Ok(());
+    }
     let inserted: usize = conn.execute(
         "INSERT OR IGNORE INTO playlist_tracks (playlist_id, track_id, position)
          SELECT ?1, e.track_id,
@@ -179,7 +238,32 @@ pub fn backfill_playlist_tracks(conn: &Connection, playlist_id: i64) -> Result<(
     Ok(())
 }
 
+/// Error used when a manual-edit operation targets a smart playlist.
+fn smart_readonly_err() -> rusqlite::Error {
+    rusqlite::Error::SqliteFailure(
+        rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CONSTRAINT),
+        Some("Smart playlists are rule-based and cannot be edited manually".to_string()),
+    )
+}
+
+/// Map a smart-rule evaluation error into a rusqlite error so smart and
+/// normal playlists share one return type.
+fn smart_eval_err(msg: String) -> rusqlite::Error {
+    rusqlite::Error::SqliteFailure(
+        rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_ERROR),
+        Some(msg),
+    )
+}
+
 pub fn get_playlist_tracks(conn: &Connection, playlist_id: i64) -> Result<Vec<Track>, rusqlite::Error> {
+    // Smart playlists: compute the track list from rules instead of
+    // playlist_tracks, so every caller (detail page, play/queue, pagination)
+    // transparently gets the evaluated tracks.
+    if let Some(rules) = smart_rules(conn, playlist_id)? {
+        let tracks = super::smart::evaluate_all(conn, &rules).map_err(smart_eval_err)?;
+        refresh_smart_playlist_counts(conn, playlist_id, &tracks);
+        return Ok(tracks);
+    }
     let sql = format!(
         "SELECT {}
          FROM playlist_tracks pt
@@ -203,6 +287,13 @@ pub fn get_playlist_tracks_page(
     offset: i64,
     limit: i64,
 ) -> Result<TrackPage, rusqlite::Error> {
+    if let Some(rules) = smart_rules(conn, playlist_id)? {
+        let parsed = super::smart::parse_rules(&rules).map_err(smart_eval_err)?;
+        let page = super::smart::evaluate_page(conn, &parsed, offset, limit)
+            .map_err(smart_eval_err)?;
+        return Ok(page);
+    }
+
     let total: i64 = conn.query_row(
         "SELECT COUNT(*) FROM playlist_tracks WHERE playlist_id = ?1",
         params![playlist_id],
@@ -226,6 +317,17 @@ pub fn get_playlist_tracks_page(
         .collect::<Result<Vec<_>, _>>()?;
 
     Ok(TrackPage { tracks, total })
+}
+
+/// Keep the stored track_count/total_duration_ms of a smart playlist roughly
+/// in sync so the playlists grid shows real numbers. Best-effort (evaluation
+/// already succeeded; a failed stats write shouldn't fail the read).
+fn refresh_smart_playlist_counts(conn: &Connection, playlist_id: i64, tracks: &[Track]) {
+    let total_ms: i64 = tracks.iter().filter_map(|t| t.duration_ms).sum();
+    let _ = conn.execute(
+        "UPDATE playlists SET track_count = ?1, total_duration_ms = ?2 WHERE id = ?3",
+        params![tracks.len() as i64, total_ms, playlist_id],
+    );
 }
 
 fn refresh_playlist_counts(conn: &Connection, playlist_id: i64) -> Result<(), rusqlite::Error> {

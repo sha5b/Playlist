@@ -135,6 +135,11 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Last.fm scrobbling needs a real key/secret pair at compile time.
+          # Unset secrets expand to "", which the Rust side treats as unset
+          # (read-only features then fall back to the community key).
+          LASTFM_API_KEY: ${{ secrets.LASTFM_API_KEY }}
+          LASTFM_API_SECRET: ${{ secrets.LASTFM_API_SECRET }}
         with:
           args: --target ${{ matrix.target }}
           tagName: ${{ github.ref_name }}
@@ -155,20 +160,3 @@ jobs:
             src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
             src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app
           if-no-files-found: ignore
-
-  # Releases created with GITHUB_TOKEN do not fire the `release: published`
-  # event (GitHub suppresses events caused by that token), so the public-repo
-  # sync never triggered on its own. An explicit workflow_dispatch call is
-  # exempt from that suppression, so dispatch it here after all builds finish.
-  publish-public:
-    needs: build
-    if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
-    steps:
-      - name: Trigger public repo sync
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh workflow run publish-public.yml \
-            --repo "$GITHUB_REPOSITORY" \
-            -f tag="$GITHUB_REF_NAME"

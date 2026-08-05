@@ -5,6 +5,7 @@ mod devices;
 mod download;
 mod error;
 mod metadata;
+mod watch;
 
 use std::sync::Arc;
 use tauri::image::Image;
@@ -42,7 +43,7 @@ pub fn run() {
         .plugin(tauri_plugin_single_instance::init(|_app, _args, _cwd| {}))
         .plugin(tauri_plugin_window_state::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_fs::init())
         .setup(|app| {
             // Enable logging in all builds (debug gets more detail)
@@ -79,7 +80,8 @@ pub fn run() {
                     Box::<dyn std::error::Error>::from(format!("Database initialization failed: {}", e))
                 })?;
 
-            app.manage(Arc::new(pool));
+            let pool = Arc::new(pool);
+            app.manage(pool.clone());
 
             // Resolve ffmpeg binary for audio transcoding (opus, wma, etc.)
             let ffmpeg_path = {
@@ -92,9 +94,31 @@ pub fn run() {
                 }
             };
 
+            // Read playback settings (normalization + crossfade) for engine startup
+            let (normalize, crossfade_ms) = {
+                match pool.lock() {
+                    Ok(conn) => {
+                        let normalize = db::settings::get_setting(&conn, "normalize_volume")
+                            .ok().flatten().as_deref() == Some("true");
+                        let crossfade_ms = db::settings::get_setting(&conn, "crossfade_seconds")
+                            .ok().flatten()
+                            .and_then(|s| s.parse::<f64>().ok())
+                            .map(|s| (s.clamp(0.0, 12.0) * 1000.0).round() as u64)
+                            .unwrap_or(0);
+                        (normalize, crossfade_ms)
+                    }
+                    Err(_) => (false, 0),
+                }
+            };
+
             // Initialize audio engine with event forwarding to frontend
             let handle = app.handle().clone();
-            let engine = audio::AudioEngine::new(ffmpeg_path, Box::new(move |event| {
+            let scrobble_db = pool.clone();
+            let engine = audio::AudioEngine::new(ffmpeg_path, normalize, crossfade_ms, Box::new(move |event| {
+                // Last.fm "now playing" notification on track start
+                if let audio::engine::PlayerEvent::TrackChanged(Some(track)) = &event {
+                    metadata::scrobble::on_track_started(scrobble_db.clone(), track.clone());
+                }
                 let _ = handle.emit("player-event", &event);
             }));
             app.manage(Arc::new(engine));
@@ -114,6 +138,13 @@ pub fn run() {
             // Initialize device manager for USB device sync
             let device_manager = Arc::new(devices::DeviceManager::new(app.handle().clone()));
             app.manage(device_manager);
+
+            // Folder watch / auto-import: start watchers if enabled in settings
+            let watch_manager = Arc::new(watch::WatchManager::new(app.handle().clone()));
+            if let Err(e) = watch_manager.refresh() {
+                log::warn!("Failed to start folder watch: {}", e);
+            }
+            app.manage(watch_manager);
 
             // Keep yt-dlp up to date in the background. An outdated yt-dlp
             // silently misbehaves when YouTube changes (e.g. playlists
@@ -251,6 +282,8 @@ pub fn run() {
             commands::library_get_genres,
             commands::library_get_tracks_by_genre,
             commands::library_delete_track,
+            commands::library_update_track_tags,
+            commands::library_update_tracks_tags,
             commands::library_delete_album_tracks,
             commands::library_reset,
             // Albums
@@ -271,6 +304,10 @@ pub fn run() {
             commands::library_add_to_playlist,
             commands::library_remove_from_playlist,
             commands::library_reorder_playlist,
+            // Smart playlists
+            commands::library_create_smart_playlist,
+            commands::library_update_smart_playlist,
+            commands::library_smart_playlist_preview,
             // Detail pages
             commands::library_get_album_tracks,
             commands::library_get_artist_tracks,
@@ -279,6 +316,14 @@ pub fn run() {
             commands::search,
             // Import
             commands::library_import_folder,
+            commands::library_import_paths,
+            commands::library_export_playlist,
+            commands::library_import_m3u,
+            // Folder watch / auto-import
+            commands::watch_get_status,
+            commands::watch_set_enabled,
+            commands::watch_add_folder,
+            commands::watch_remove_folder,
             // Settings
             commands::settings_get,
             commands::settings_set,
@@ -335,9 +380,24 @@ pub fn run() {
             commands::player::player_get_state,
             commands::player::player_get_queue,
             commands::player::player_random_tracks,
+            commands::player::player_filter_existing_tracks,
             commands::player::player_get_audio_devices,
             commands::player::player_set_audio_device,
             commands::player::player_record_play,
+            // Volume normalization + crossfade
+            commands::player::player_set_normalize,
+            commands::player::player_set_crossfade,
+            commands::player::audio_scan_gains,
+            commands::player::audio_cancel_gain_scan,
+            // Listening stats
+            commands::stats_overview,
+            commands::stats_top,
+            // Last.fm scrobbling
+            commands::lastfm_start_auth,
+            commands::lastfm_finish_auth,
+            commands::lastfm_get_status,
+            commands::lastfm_disconnect,
+            commands::lastfm_set_scrobbling,
             // Metadata enrichment
             commands::enrich_track,
             commands::enrich_album,

@@ -2,18 +2,21 @@
 	import { untrack } from 'svelte';
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
-	import { getPlaylist, getPlaylistTracks, deletePlaylist, removeFromPlaylist } from '$lib/api/library';
+	import { getPlaylist, getPlaylistTracks, deletePlaylist, removeFromPlaylist, exportPlaylistM3u } from '$lib/api/library';
+	import { save } from '@tauri-apps/plugin-dialog';
 	import TrackTable from '$lib/components/library/TrackTable.svelte';
+	import SmartPlaylistDialog from '$lib/components/library/SmartPlaylistDialog.svelte';
 	import { Button } from '$lib/components/ui/button';
 	import { player } from '$lib/stores/player.svelte';
 	import { formatDurationLong, assetUrl, shuffleArray, platformLabel, platformColor, timeAgo } from '$lib/utils/format';
 	import { Badge } from '$lib/components/ui/badge';
-	import { ArrowLeft, ListMusic, Play, Shuffle, Trash2, Loader2, ExternalLink, RefreshCw, Clock, ChevronLeft, ChevronRight } from 'lucide-svelte';
+	import { ArrowLeft, ListMusic, Play, Shuffle, Trash2, Loader2, ExternalLink, RefreshCw, Clock, ChevronLeft, ChevronRight, FileDown, Sparkles, Pencil } from 'lucide-svelte';
 	import { toast } from 'svelte-sonner';
 	import * as AlertDialog from '$lib/components/ui/alert-dialog';
 	import type { Playlist, TrackPage, Track } from '$lib/types';
 
 	let deleteOpen = $state(false);
+	let editRulesOpen = $state(false);
 
 	let playlist = $state<Playlist | null>(null);
 	let trackPage = $state<TrackPage | null>(null);
@@ -104,6 +107,21 @@
 		}
 	}
 
+	async function handleExportM3u() {
+		if (!playlist) return;
+		try {
+			const dest = await save({
+				defaultPath: `${playlist.name}.m3u`,
+				filters: [{ name: 'M3U Playlist', extensions: ['m3u', 'm3u8'] }]
+			});
+			if (!dest) return;
+			const count = await exportPlaylistM3u(playlist.id, dest);
+			toast.success(`Exported ${count} track${count !== 1 ? 's' : ''} to .m3u`);
+		} catch (e) {
+			toast.error('Failed to export playlist', { description: String(e) });
+		}
+	}
+
 	async function handleRemoveTrack(track: Track) {
 		if (!playlist) return;
 		try {
@@ -158,7 +176,15 @@
 			<div class="space-y-3 py-2 min-w-0 flex-1">
 				<!-- Type label + badges -->
 				<div class="flex items-center gap-2 flex-wrap">
-					<p class="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Playlist</p>
+					<p class="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+						{playlist.is_smart ? 'Smart Playlist' : 'Playlist'}
+					</p>
+					{#if playlist.is_smart}
+						<Badge variant="secondary" class="text-xs gap-1">
+							<Sparkles class="size-2.5" />
+							Smart
+						</Badge>
+					{/if}
 					{#if playlist.source_platform}
 						<Badge variant={platformColor(playlist.source_platform)} class="text-xs">
 							{platformLabel(playlist.source_platform)}
@@ -221,6 +247,16 @@
 						<Shuffle class="size-4" />
 						Shuffle
 					</Button>
+					<Button variant="outline" onclick={handleExportM3u} disabled={!trackPage || trackPage.tracks.length === 0} class="gap-2">
+						<FileDown class="size-4" />
+						Export .m3u
+					</Button>
+					{#if playlist.is_smart}
+						<Button variant="outline" onclick={() => (editRulesOpen = true)} class="gap-2">
+							<Pencil class="size-4" />
+							Edit rules
+						</Button>
+					{/if}
 					<AlertDialog.Root bind:open={deleteOpen}>
 						<AlertDialog.Trigger>
 							{#snippet child({ props })}
@@ -248,7 +284,8 @@
 
 		<!-- Track list -->
 		{#if trackPage}
-			<TrackTable tracks={trackPage.tracks} ondelete={handleRemoveTrack} referrer={playlist ? { type: 'playlist', id: playlist.id, label: playlist.name } : undefined} />
+			<!-- Smart playlists are rule-based: no manual remove affordance -->
+			<TrackTable tracks={trackPage.tracks} ondelete={playlist.is_smart ? undefined : handleRemoveTrack} referrer={playlist ? { type: 'playlist', id: playlist.id, label: playlist.name } : undefined} />
 
 			{#if totalPages > 1}
 				<div class="flex items-center justify-center gap-3 shrink-0 pb-2">

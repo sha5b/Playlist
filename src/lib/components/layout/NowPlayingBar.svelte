@@ -1,13 +1,14 @@
 <script lang="ts">
 	import { Button } from '$lib/components/ui/button';
 	import { Slider } from '$lib/components/ui/slider';
+	import * as DropdownMenu from '$lib/components/ui/dropdown-menu';
 	import {
 		Shuffle, SkipBack, Play, Pause, SkipForward,
 		Repeat, Repeat1, Volume2, VolumeX, Volume1,
-		ListMusic, Music, Infinity
+		ListMusic, Music, Infinity, Moon
 	} from 'lucide-svelte';
 	import { goto } from '$app/navigation';
-	import { player } from '$lib/stores/player.svelte';
+	import { player, SLEEP_TIMER_OPTIONS, formatSleepRemaining } from '$lib/stores/player.svelte';
 	import { formatDuration } from '$lib/utils/format';
 	import CoverArt from '$lib/components/shared/CoverArt.svelte';
 	import SeekBar from '$lib/components/player/SeekBar.svelte';
@@ -102,7 +103,9 @@
 				size="icon-sm"
 				class={player.shuffle ? 'text-primary hover:text-primary' : 'text-muted-foreground hover:text-foreground'}
 				onclick={() => player.toggleShuffle()}
+				disabled={!hasTrack}
 				aria-label="Toggle shuffle"
+				title="Shuffle: reorder the upcoming queue randomly"
 			>
 				<Shuffle class="size-4" />
 			</Button>
@@ -152,13 +155,42 @@
 			<Button
 				variant="ghost"
 				size="icon-sm"
-				class={player.autoplay ? 'text-primary hover:text-primary' : 'text-muted-foreground hover:text-foreground'}
-				onclick={() => player.toggleAutoplay()}
-				aria-label="Toggle autoplay"
-				title="Autoplay: add random tracks when queue ends"
+				class={player.endless ? 'text-primary hover:text-primary' : 'text-muted-foreground hover:text-foreground'}
+				onclick={() => player.toggleEndless()}
+				aria-label="Toggle endless play"
+				title="Endless play: keep adding random tracks so the music never stops"
 			>
 				<Infinity class="size-4" />
 			</Button>
+			<DropdownMenu.Root>
+				<DropdownMenu.Trigger>
+					<Button
+						variant="ghost"
+						size="icon-sm"
+						class={player.sleepTimerMode !== 'off' ? 'text-primary hover:text-primary' : 'text-muted-foreground hover:text-foreground'}
+						aria-label="Sleep timer"
+						title="Sleep timer: fade out and pause after a while"
+					>
+						<Moon class="size-4" />
+					</Button>
+				</DropdownMenu.Trigger>
+				<DropdownMenu.Content align="end" class="w-40">
+					<DropdownMenu.Label>Sleep timer</DropdownMenu.Label>
+					{#each SLEEP_TIMER_OPTIONS as option (option.label)}
+						<DropdownMenu.Item
+							class={player.sleepTimerMode === option.value ? 'text-primary' : ''}
+							onclick={() => player.setSleepTimer(option.value)}
+						>
+							{option.label}
+						</DropdownMenu.Item>
+					{/each}
+				</DropdownMenu.Content>
+			</DropdownMenu.Root>
+			{#if player.sleepTimerMode !== 'off'}
+				<span class="text-[10px] text-primary tabular-nums -ml-1.5 select-none" title="Sleep timer active">
+					{formatSleepRemaining(player.sleepTimerMode, player.sleepRemainingMs)}
+				</span>
+			{/if}
 		</div>
 		<div class="flex w-full items-center gap-2 px-2">
 			<span class="text-[11px] text-muted-foreground w-10 text-right tabular-nums">

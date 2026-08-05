@@ -40,6 +40,17 @@ export interface TrackPage {
 	total: number;
 }
 
+/** Editable tag fields for the tag editor. Omitted/blank fields keep the current value. */
+export interface TrackTagUpdate {
+	title?: string;
+	artist?: string;
+	album?: string;
+	album_artist?: string;
+	genre?: string;
+	year?: number;
+	track_number?: number;
+}
+
 export interface Artist {
 	id: number;
 	name: string;
@@ -90,6 +101,47 @@ export interface Playlist {
 	is_synced: boolean;
 	last_synced_at: string | null;
 	created_at: string;
+	/** Rule-based auto-updating playlist (tracks computed from `rules`). */
+	is_smart: boolean;
+	/** JSON-encoded SmartRules for smart playlists. */
+	rules: string | null;
+}
+
+// --- Smart Playlist Rules ---
+
+export type SmartRuleField =
+	| 'title'
+	| 'artist'
+	| 'album'
+	| 'genre'
+	| 'format'
+	| 'year'
+	| 'duration_ms'
+	| 'play_count'
+	| 'last_played_at'
+	| 'created_at';
+
+export type SmartRuleOp =
+	| 'contains'
+	| 'equals'
+	| 'not_equals'
+	| 'gt'
+	| 'lt'
+	| 'in_last_days'
+	| 'not_in_last_days'
+	| 'is_null';
+
+export interface SmartRule {
+	field: SmartRuleField;
+	op: SmartRuleOp;
+	value?: string | number | null;
+}
+
+export interface SmartRules {
+	match: 'all' | 'any';
+	rules: SmartRule[];
+	sort?: { field: SmartRuleField; dir: 'asc' | 'desc' } | null;
+	limit?: number | null;
 }
 
 export interface PlaylistDetail {
@@ -375,4 +427,74 @@ export interface TrackMismatch {
 	album_genre: string | null;
 	track_artist: string | null;
 	album_artist: string | null;
+}
+
+export interface M3uImportResult {
+	playlist_id: number;
+	playlist_name: string;
+	matched: number;
+	unmatched: number;
+	unmatched_entries: string[];
+}
+
+// ── Listening stats ─────────────────────────────────────────────────────
+
+export interface DayPlays {
+	day: string;
+	count: number;
+}
+
+export interface StatsOverview {
+	total_plays: number;
+	total_listening_ms: number;
+	distinct_tracks: number;
+	distinct_artists: number;
+	distinct_albums: number;
+	plays_per_day: DayPlays[];
+}
+
+export interface TopTrack {
+	id: number;
+	title: string;
+	artist_id: number | null;
+	artist_name: string | null;
+	cover_art_path: string | null;
+	play_count: number;
+}
+
+export interface TopArtist {
+	id: number;
+	name: string;
+	image_path: string | null;
+	play_count: number;
+}
+
+export interface TopAlbum {
+	id: number;
+	title: string;
+	artist_name: string | null;
+	cover_art_path: string | null;
+	play_count: number;
+}
+
+export interface StatsTop {
+	tracks: TopTrack[];
+	artists: TopArtist[];
+	albums: TopAlbum[];
+}
+
+export type StatsPeriod = 'week' | 'month' | 'year' | 'all';
+
+// ── Last.fm scrobbling ──────────────────────────────────────────────────
+
+export interface LastfmAuth {
+	token: string;
+	url: string;
+}
+
+export interface LastfmStatus {
+	connected: boolean;
+	username: string | null;
+	scrobbling_enabled: boolean;
+	pending_scrobbles: number;
 }

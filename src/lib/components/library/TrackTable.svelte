@@ -1,8 +1,9 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
-	import { Music, Clock, Hash, Play, ListPlus, ListStart, Trash2, MoreHorizontal, Download, ArrowUp, ArrowDown } from 'lucide-svelte';
+	import { Music, Clock, Hash, Play, ListPlus, ListStart, Trash2, MoreHorizontal, Download, ArrowUp, ArrowDown, Pencil } from 'lucide-svelte';
 	import { formatDuration } from '$lib/utils/format';
 	import CoverArt from '$lib/components/shared/CoverArt.svelte';
+	import TagEditorDialog from '$lib/components/library/TagEditorDialog.svelte';
 	import { player } from '$lib/stores/player.svelte';
 	import * as DropdownMenu from '$lib/components/ui/dropdown-menu';
 	import { Button } from '$lib/components/ui/button';
@@ -119,6 +120,15 @@
 	async function handlePlayNext(track: Track) {
 		await player.addNext(track.id);
 		toast.success(`"${track.title}" will play next`);
+	}
+
+	// Tag editor state (per-row edit)
+	let tagEditorOpen = $state(false);
+	let tagEditTrack = $state<Track | null>(null);
+
+	function openTagEditor(track: Track) {
+		tagEditTrack = track;
+		tagEditorOpen = true;
 	}
 
 	// Track drag state to prevent onclick navigation after a drag
@@ -300,6 +310,11 @@
 													<ListPlus class="size-4" />
 													Add to Queue
 												</DropdownMenu.Item>
+												<DropdownMenu.Separator />
+												<DropdownMenu.Item onclick={() => openTagEditor(track)}>
+													<Pencil class="size-4" />
+													Edit Tags
+												</DropdownMenu.Item>
 												{#if ondelete}
 													<DropdownMenu.Separator />
 													<DropdownMenu.Item
@@ -322,3 +337,5 @@
 		</div>
 	</div>
 {/if}
+
+<TagEditorDialog bind:open={tagEditorOpen} tracks={tagEditTrack ? [tagEditTrack] : []} />

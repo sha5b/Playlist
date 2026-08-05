@@ -2,7 +2,35 @@
 
 All notable changes to Playlist are recorded in this file.
 
-## [Unreleased]
+## [0.9.0] - 2026-08-05
+
+This release adds smart playlists, a statistics page, Last.fm scrobbling, watched folders, volume normalization, crossfade, a search palette, keyboard shortcuts, and a tag editor. It also fixes device sync, playback, and many interface problems.
+
+### New features
+
+- **Smart playlists.** A smart playlist fills itself from rules. Rules can filter on title, artist, album, genre, format, year, duration, play count, last played, and date added. Combine rules with "all" or "any", set a sort order and a track limit, and preview the result before you save. The playlist updates automatically as your library changes.
+- **Statistics page.** A new Stats page shows your listening history: total plays, total listening time, distinct tracks, artists, and albums, a plays-per-day chart for the last 90 days, and most-played tracks, artists, and albums for the last week, month, year, or all time. All data stays local.
+- **Last.fm scrobbling.** Connect your Last.fm account in Settings. The app sends "now playing" updates and scrobbles finished tracks. Plays made while offline queue up and submit later. You can pause scrobbling or disconnect at any time.
+- **Watched folders.** Add folders in Settings and the app imports new audio files from them automatically — for example Bandcamp purchases that download outside the app. The watch waits until a file is fully written before import.
+- **Volume normalization.** Turn on "Normalize volume" and all tracks play at a consistent loudness (−14 LUFS target). The app measures each track with ffmpeg; you can scan the whole library once, and unmeasured tracks are measured on first play.
+- **Crossfade.** Set a crossfade of up to 12 seconds between tracks.
+- **Search palette.** Press Ctrl+K (Cmd+K on macOS) anywhere to search the whole library.
+- **Keyboard shortcuts.** Space for play/pause, arrow keys to seek 10 seconds, Ctrl+arrows for previous/next track and volume, M to mute. Press ? to see the full cheat sheet.
+- **Tag editor.** Edit title, artist, album, album artist, genre, year, and track number for one track or many at once. Tags are written into the audio files, not only the database.
+- **Playlist files.** Export a playlist to an M3U file, import M3U playlists, and import audio files or folders directly into the library.
+
+### Playback
+
+- Click the seek bar to jump; the handle no longer sticks at a stale position after a drag.
+- Shuffle refills the queue when it nears the end, so playback no longer stops.
+- The playing page video and lyrics views work and show clear empty states. The track title links to the song detail page.
+
+### Interface
+
+- List pages restore their scroll position when you navigate back.
+- Playlists show the original source thumbnail (YouTube, Spotify, Deezer). Artists show real images, with album art as fallback.
+- The download manager shows a status summary, live speed and ETA, and a retry button on failed rows.
+- The home page and song detail page were restyled, with loading skeletons.
 
 ### Device sync (USB drives, SD cards, players)
 

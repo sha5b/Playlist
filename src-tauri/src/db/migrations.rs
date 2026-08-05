@@ -335,5 +335,65 @@ pub fn run(conn: &Connection) -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    // Guarded, idempotent column additions (run every startup; safe to
+    // re-apply and immune to version-number collisions between branches).
+    // Smart playlists: nullable JSON rules + is_smart flag on playlists.
+    add_column_if_missing(conn, "playlists", "is_smart", "INTEGER NOT NULL DEFAULT 0")?;
+    add_column_if_missing(conn, "playlists", "rules", "TEXT")?;
+
+    // Volume normalization: per-track ReplayGain-style gain in dB
+    // (target -14 LUFS, clamped to +/-12 dB). NULL = not yet measured.
+    add_column_if_missing(conn, "tracks", "gain_db", "REAL")?;
+
+    // Listening history: one row per counted play (drives the stats page).
+    // Last.fm offline scrobble queue: plays waiting to be submitted.
+    // Idempotent (IF NOT EXISTS), run every startup for the same reason as above.
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS plays (
+            id        INTEGER PRIMARY KEY,
+            track_id  INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
+            played_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_plays_track ON plays(track_id);
+        CREATE INDEX IF NOT EXISTS idx_plays_played_at ON plays(played_at);
+
+        CREATE TABLE IF NOT EXISTS pending_scrobbles (
+            id            INTEGER PRIMARY KEY,
+            artist        TEXT NOT NULL,
+            track         TEXT NOT NULL,
+            album         TEXT,
+            duration_secs INTEGER,
+            played_at     INTEGER NOT NULL,
+            created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+        );",
+    )?;
+
+    Ok(())
+}
+
+/// True if `table` already has a column named `column`.
+fn column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool, rusqlite::Error> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let mut rows = stmt.query([])?;
+    while let Some(row) = rows.next()? {
+        let name: String = row.get(1)?;
+        if name == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Idempotent ALTER TABLE ... ADD COLUMN (SQLite has no IF NOT EXISTS for columns).
+fn add_column_if_missing(
+    conn: &Connection,
+    table: &str,
+    column: &str,
+    definition: &str,
+) -> Result<(), rusqlite::Error> {
+    if !column_exists(conn, table, column)? {
+        conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {definition};"))?;
+        log::info!("Added column {}.{}", table, column);
+    }
     Ok(())
 }

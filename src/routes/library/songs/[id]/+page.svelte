@@ -5,7 +5,8 @@
 	import { player } from '$lib/stores/player.svelte';
 	import { mvDownloadStore } from '$lib/stores/mvDownloads.svelte';
 	import { formatDuration, formatFileSize, formatDate, assetUrl, platformLabel } from '$lib/utils/format';
-	import { ArrowLeft, Music, Play, ListStart, ListPlus, Loader2, Sparkles, ExternalLink, User, Disc3, Download } from 'lucide-svelte';
+	import TagEditorDialog from '$lib/components/library/TagEditorDialog.svelte';
+	import { ArrowLeft, Music, Play, ListStart, ListPlus, Loader2, Sparkles, ExternalLink, User, Disc3, Download, Pencil } from 'lucide-svelte';
 	import { toast } from 'svelte-sonner';
 	import type { Track, Album, Artist } from '$lib/types';
 
@@ -15,6 +16,7 @@
 	let loading = $state(true);
 	let enriching = $state(false);
 	let lyricsOpen = $state(true);
+	let tagEditorOpen = $state(false);
 
 	const downloadingMV = $derived(track ? mvDownloadStore.isDownloading(track.id) : false);
 	const mvProgress = $derived(track ? mvDownloadStore.getProgress(track.id) : 0);
@@ -237,6 +239,10 @@
 								<Sparkles class="size-4" />
 							{/if}
 							Enrich
+						</Button>
+						<Button variant="outline" onclick={() => (tagEditorOpen = true)}>
+							<Pencil class="size-4" />
+							Edit Tags
 						</Button>
 					</div>
 				</div>
@@ -497,3 +503,7 @@
 		<p class="text-muted-foreground">Track not found.</p>
 	{/if}
 </div>
+
+{#if track}
+	<TagEditorDialog bind:open={tagEditorOpen} tracks={[track]} onsaved={() => load(trackId)} />
+{/if}

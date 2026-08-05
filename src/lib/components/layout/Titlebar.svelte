@@ -1,6 +1,8 @@
 <script lang="ts">
 	import { getCurrentWindow } from '@tauri-apps/api/window';
-	import { Minus, Square, X, Copy } from 'lucide-svelte';
+	import { Minus, Square, X, Copy, Search } from 'lucide-svelte';
+
+	let { onSearchClick }: { onSearchClick?: () => void } = $props();
 
 	let isMaximized = $state(false);
 	const appWindow = getCurrentWindow();
@@ -49,6 +51,18 @@
 		</svg>
 		<span class="text-xs font-medium tracking-tight text-muted-foreground pointer-events-none">Playlist</span>
 	</div>
+
+	{#if onSearchClick}
+		<button
+			onclick={onSearchClick}
+			class="mr-1 flex h-6 items-center gap-2 rounded-md border border-sidebar-border bg-sidebar-accent/40 px-2.5 text-xs text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground"
+			aria-label="Search library"
+		>
+			<Search class="size-3" />
+			<span>Search</span>
+			<kbd class="rounded border border-sidebar-border bg-sidebar px-1 text-[9px] font-medium">Ctrl K</kbd>
+		</button>
+	{/if}
 
 	<!-- Window controls -->
 	<div class="flex items-center h-full">

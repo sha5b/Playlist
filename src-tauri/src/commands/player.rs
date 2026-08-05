@@ -9,7 +9,7 @@ use crate::db::DbPool;
 /// Build a QueueTrack from a track ID by reading from the database.
 fn track_from_db(conn: &rusqlite::Connection, id: i64) -> Result<QueueTrack, String> {
     let track = conn.query_row(
-        "SELECT t.id, t.title, a.name, al.title, t.duration_ms, t.file_path, t.cover_art_path
+        "SELECT t.id, t.title, a.name, al.title, t.duration_ms, t.file_path, t.cover_art_path, t.gain_db
          FROM tracks t
          LEFT JOIN artists a ON t.artist_id = a.id
          LEFT JOIN albums al ON t.album_id = al.id
@@ -24,12 +24,42 @@ fn track_from_db(conn: &rusqlite::Connection, id: i64) -> Result<QueueTrack, Str
                 duration_ms: row.get(4)?,
                 file_path: row.get(5)?,
                 cover_art_path: row.get(6)?,
+                gain_db: row.get(7)?,
             })
         },
     )
     .map_err(|e| format!("Track not found (id={}): {}", id, e))?;
     log::info!("[player] Loaded track from DB: id={}, title=\"{}\", path=\"{}\"", track.id, track.title, track.file_path);
     Ok(track)
+}
+
+/// Compute-on-first-play fallback: when normalization is enabled and the
+/// track has no measured gain yet, measure it in the background so the gain
+/// applies from the next play of that track.
+fn maybe_compute_gain(
+    db: &Arc<DbPool>,
+    engine: &Arc<AudioEngine>,
+    conn: &rusqlite::Connection,
+    track: &QueueTrack,
+) {
+    if track.gain_db.is_some() {
+        return;
+    }
+    let normalize = crate::db::settings::get_setting(conn, "normalize_volume")
+        .ok()
+        .flatten()
+        .as_deref()
+        == Some("true");
+    if !normalize {
+        return;
+    }
+    let ffmpeg = engine.ffmpeg_path().unwrap_or("ffmpeg").to_string();
+    crate::audio::loudness::compute_gain_if_missing_async(
+        Arc::clone(db),
+        ffmpeg,
+        track.id,
+        track.file_path.clone(),
+    );
 }
 
 #[tauri::command]
@@ -44,6 +74,7 @@ pub fn player_play_track(
         e.to_string()
     })?;
     let queue_track = track_from_db(&conn, track_id)?;
+    maybe_compute_gain(db.inner(), engine.inner(), &conn, &queue_track);
     engine.send(PlayerCommand::PlaySingle(queue_track));
     Ok(())
 }
@@ -66,7 +97,7 @@ pub fn player_play_tracks(
     // Batch-load all tracks in one query, then reorder to match requested order
     let placeholders: Vec<String> = (1..=track_ids.len()).map(|i| format!("?{}", i)).collect();
     let sql = format!(
-        "SELECT t.id, t.title, a.name, al.title, t.duration_ms, t.file_path, t.cover_art_path
+        "SELECT t.id, t.title, a.name, al.title, t.duration_ms, t.file_path, t.cover_art_path, t.gain_db
          FROM tracks t
          LEFT JOIN artists a ON t.artist_id = a.id
          LEFT JOIN albums al ON t.album_id = al.id
@@ -84,6 +115,7 @@ pub fn player_play_tracks(
             duration_ms: row.get(4)?,
             file_path: row.get(5)?,
             cover_art_path: row.get(6)?,
+            gain_db: row.get(7)?,
         })
     }).map_err(|e| e.to_string())?;
     let loaded: std::collections::HashMap<i64, QueueTrack> = rows
@@ -100,6 +132,7 @@ pub fn player_play_tracks(
         return Err("No valid tracks found".to_string());
     }
     let clamped_index = start_index.min(tracks.len() - 1);
+    maybe_compute_gain(db.inner(), engine.inner(), &conn, &tracks[clamped_index]);
     // Pre-decode the starting track on this thread (Tauri thread pool) so the
     // audio thread can start playback instantly without blocking or stuttering.
     let source = AudioEngine::decode_track(&tracks[clamped_index].file_path, engine.ffmpeg_path()).ok();
@@ -264,14 +297,125 @@ pub fn player_set_audio_device(
     Ok(())
 }
 
-/// Record a play for a track (increment play_count, set last_played_at).
+/// Enable/disable ReplayGain-style volume normalization in the engine.
+/// Persist the setting separately via `settings_set("normalize_volume", ...)`.
+#[tauri::command]
+pub fn player_set_normalize(
+    engine: State<'_, Arc<AudioEngine>>,
+    enabled: bool,
+) -> Result<(), String> {
+    engine.send(PlayerCommand::SetNormalize(enabled));
+    Ok(())
+}
+
+/// Set the crossfade duration (seconds, 0-12; 0 = off/gapless).
+/// Persist the setting separately via `settings_set("crossfade_seconds", ...)`.
+#[tauri::command]
+pub fn player_set_crossfade(
+    engine: State<'_, Arc<AudioEngine>>,
+    seconds: f64,
+) -> Result<(), String> {
+    let ms = (seconds.clamp(0.0, 12.0) * 1000.0).round() as u64;
+    engine.send(PlayerCommand::SetCrossfade(ms));
+    Ok(())
+}
+
+/// Start a background loudness scan filling missing `gain_db` values for the
+/// whole library. Returns immediately; progress arrives as
+/// `gain-scan-progress` events. Errors if a scan is already running.
+#[tauri::command]
+pub fn audio_scan_gains(
+    db: State<'_, Arc<DbPool>>,
+    engine: State<'_, Arc<AudioEngine>>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    let ffmpeg = engine.ffmpeg_path().unwrap_or("ffmpeg").to_string();
+    crate::audio::loudness::start_scan(db.inner().clone(), ffmpeg, app)
+}
+
+/// Cancel a running loudness scan (best effort — finishes the current file).
+#[tauri::command]
+pub fn audio_cancel_gain_scan() -> Result<(), String> {
+    crate::audio::loudness::cancel_scan();
+    Ok(())
+}
+
+/// Record a play for a track (increment play_count, set last_played_at),
+/// append a listening-history event, and queue a Last.fm scrobble when
+/// connected + enabled.
 #[tauri::command]
 pub fn player_record_play(
     db: State<'_, Arc<DbPool>>,
     track_id: i64,
 ) -> Result<(), String> {
+    let mut should_flush = false;
+    {
+        let conn = db.lock().map_err(|e| e.to_string())?;
+        crate::db::tracks::record_play(&conn, track_id).map_err(|e| e.to_string())?;
+
+        // Listening-history event row (drives the stats page)
+        conn.execute("INSERT INTO plays (track_id) VALUES (?1)", params![track_id])
+            .map_err(|e| e.to_string())?;
+
+        // Last.fm: queue a scrobble (offline-safe), flushed in the background
+        if crate::metadata::scrobble::scrobbling_session(&conn).is_some() {
+            if let Ok(track) = track_from_db(&conn, track_id) {
+                if let Some(artist) = track.artist_name.as_deref().filter(|a| !a.is_empty()) {
+                    let played_at = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs() as i64)
+                        .unwrap_or(0);
+                    if let Err(e) = crate::metadata::scrobble::queue_scrobble(
+                        &conn,
+                        artist,
+                        &track.title,
+                        track.album_title.as_deref(),
+                        track.duration_ms.map(|ms| ms / 1000),
+                        played_at,
+                    ) {
+                        log::warn!("[lastfm] Failed to queue scrobble: {}", e);
+                    } else {
+                        should_flush = true;
+                    }
+                }
+            }
+        }
+    }
+    if should_flush {
+        let db_arc = db.inner().clone();
+        tauri::async_runtime::spawn(async move {
+            crate::metadata::scrobble::flush_pending(&db_arc).await;
+        });
+    }
+    Ok(())
+}
+
+/// Filter a list of track IDs down to those that still exist in the library,
+/// preserving the input order (duplicates included). Used to restore a
+/// persisted queue while gracefully skipping deleted tracks.
+#[tauri::command]
+pub fn player_filter_existing_tracks(
+    db: State<'_, Arc<DbPool>>,
+    track_ids: Vec<i64>,
+) -> Result<Vec<i64>, String> {
+    if track_ids.is_empty() {
+        return Ok(Vec::new());
+    }
     let conn = db.lock().map_err(|e| e.to_string())?;
-    crate::db::tracks::record_play(&conn, track_id).map_err(|e| e.to_string())
+    let placeholders: Vec<String> = (1..=track_ids.len()).map(|i| format!("?{}", i)).collect();
+    let sql = format!(
+        "SELECT id FROM tracks WHERE id IN ({})",
+        placeholders.join(",")
+    );
+    let params: Vec<&dyn rusqlite::types::ToSql> =
+        track_ids.iter().map(|id| id as &dyn rusqlite::types::ToSql).collect();
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let existing: std::collections::HashSet<i64> = stmt
+        .query_map(params.as_slice(), |row| row.get(0))
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(track_ids.into_iter().filter(|id| existing.contains(id)).collect())
 }
 
 /// Get random tracks from the library, optionally excluding certain track IDs.

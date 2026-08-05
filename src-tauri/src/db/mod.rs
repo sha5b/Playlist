@@ -7,6 +7,7 @@ pub mod models;
 pub mod monitored;
 pub mod playlists;
 pub mod settings;
+pub mod smart;
 pub mod tracks;
 
 use rusqlite::Connection;

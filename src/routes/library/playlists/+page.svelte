@@ -1,10 +1,12 @@
 <script lang="ts">
-	import { getPlaylists, createPlaylist } from '$lib/api/library';
+	import { getPlaylists, createPlaylist, importM3u } from '$lib/api/library';
+	import { open } from '@tauri-apps/plugin-dialog';
 	import { Button } from '$lib/components/ui/button';
 	import { Input } from '$lib/components/ui/input';
 	import * as Dialog from '$lib/components/ui/dialog';
 	import CardGridSkeleton from '$lib/components/shared/CardGridSkeleton.svelte';
-	import { ListMusic, Plus, Play, Music2 } from 'lucide-svelte';
+	import SmartPlaylistDialog from '$lib/components/library/SmartPlaylistDialog.svelte';
+	import { ListMusic, Plus, Play, Music2, FileUp, Loader2, Sparkles } from 'lucide-svelte';
 	import { formatDurationLong, assetUrl } from '$lib/utils/format';
 	import type { Playlist } from '$lib/types';
 	import { toast } from 'svelte-sonner';
@@ -16,6 +18,7 @@
 	let newName = $state('');
 	let newDescription = $state('');
 	let creating = $state(false);
+	let smartOpen = $state(false);
 
 	async function load() {
 		loading = true;
@@ -46,6 +49,35 @@
 		}
 	}
 
+	let importingM3u = $state(false);
+
+	async function handleImportM3u() {
+		const selected = await open({
+			multiple: false,
+			filters: [{ name: 'M3U Playlist', extensions: ['m3u', 'm3u8'] }]
+		});
+		if (!selected || typeof selected !== 'string') return;
+		importingM3u = true;
+		try {
+			const result = await importM3u(selected);
+			if (result.unmatched > 0) {
+				toast.warning(`Imported "${result.playlist_name}"`, {
+					description: `${result.matched} track${result.matched !== 1 ? 's' : ''} matched, ${result.unmatched} not found in library`
+				});
+			} else {
+				toast.success(`Imported "${result.playlist_name}"`, {
+					description: `${result.matched} track${result.matched !== 1 ? 's' : ''} matched`
+				});
+			}
+			await load();
+		} catch (e) {
+			toast.error('Failed to import playlist', { description: String(e) });
+			console.error('Failed to import m3u:', e);
+		} finally {
+			importingM3u = false;
+		}
+	}
+
 	function openCreateDialog() {
 		newName = '';
 		newDescription = '';
@@ -65,10 +97,24 @@
 				{loading ? 'Loading...' : `${playlists.length} playlist${playlists.length !== 1 ? 's' : ''}`}
 			</p>
 		</div>
-		<Button onclick={openCreateDialog} class="gap-2">
-			<Plus class="size-4" />
-			New Playlist
-		</Button>
+		<div class="flex items-center gap-2">
+			<Button variant="outline" onclick={handleImportM3u} disabled={importingM3u} class="gap-2">
+				{#if importingM3u}
+					<Loader2 class="size-4 animate-spin" />
+				{:else}
+					<FileUp class="size-4" />
+				{/if}
+				Import .m3u
+			</Button>
+			<Button variant="outline" onclick={() => (smartOpen = true)} class="gap-2">
+				<Sparkles class="size-4" />
+				New Smart Playlist
+			</Button>
+			<Button onclick={openCreateDialog} class="gap-2">
+				<Plus class="size-4" />
+				New Playlist
+			</Button>
+		</div>
 	</div>
 
 	{#if loading}
@@ -112,7 +158,12 @@
 						</div>
 					</div>
 					<div class="space-y-0.5 px-0.5">
-						<p class="text-sm font-medium truncate group-hover:text-foreground transition-colors">{playlist.name}</p>
+						<p class="text-sm font-medium group-hover:text-foreground transition-colors flex items-center gap-1.5 min-w-0">
+							{#if playlist.is_smart}
+								<Sparkles class="size-3.5 text-primary shrink-0" aria-label="Smart playlist" />
+							{/if}
+							<span class="truncate">{playlist.name}</span>
+						</p>
 						<div class="flex items-center gap-1.5 text-xs text-muted-foreground">
 							<span>{playlist.track_count} track{playlist.track_count !== 1 ? 's' : ''}</span>
 							{#if playlist.total_duration_ms > 0}
@@ -158,3 +209,5 @@
 		</form>
 	</Dialog.Content>
 </Dialog.Root>
+
+<SmartPlaylistDialog bind:open={smartOpen} onsaved={() => load()} />
