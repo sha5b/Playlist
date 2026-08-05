@@ -57,6 +57,11 @@
   </requires>
 
   <releases>
+    <release version="0.9.2" date="2026-08-05">
+      <description>
+        <p>Linux fix: the package upgrade no longer removes the application launcher entry.</p>
+      </description>
+    </release>
     <release version="0.9.1" date="2026-08-05">
       <description>
         <p>Windows fix: background tasks no longer open console windows in front of the app. The app now verifies downloaded yt-dlp and ffmpeg binaries against published checksums.</p>

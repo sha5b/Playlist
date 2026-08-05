@@ -2,6 +2,12 @@
 
 All notable changes to Playlist are recorded in this file.
 
+## [0.9.2] - 2026-08-05
+
+### Fixed
+
+- **Linux: the app stays in the launcher after an upgrade.** The package upgrade removed the desktop entry, so the app did not show in the application menu until you reinstalled it. The package scripts now remove the desktop entry only when you uninstall the app. Note: the upgrade from 0.9.1 to 0.9.2 removes the entry one last time, because the installed 0.9.1 package still contains the old script. Reinstall 0.9.2 once (`sudo dnf reinstall <rpm>` or `sudo apt reinstall <deb>`) to restore it.
+
 ## [0.9.1] - 2026-08-05
 
 ### Fixed
