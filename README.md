@@ -15,34 +15,38 @@
 </p>
 
 <p align="center">
-  <img src="docs/screenshot/main.png" alt="Playlist — Main Library View" width="900">
+  <img src="docs/screenshot/main.png" alt="Playlist — library view" width="900">
 </p>
 
 ---
 
-Streaming platforms decide what you hear, lock your library behind a subscription, and pay artists fractions of a cent. Playlist starts from a simple idea: **your music collection belongs to you, not to a corporation.**
+Streaming platforms decide what you hear and lock your library behind a subscription. Playlist starts from a simple idea: **your music collection belongs to you.**
 
-Playlist is a desktop music manager for Windows, macOS, and Linux. It is built with **Tauri 2**, **SvelteKit**, and **Rust**. Download tracks from most platforms, find the albums and tracks your collection misses, and play everything locally. All offline. All yours.
+Playlist is a desktop music manager for Windows, macOS, and Linux. Download tracks from most platforms, complete your collection, and play everything locally. Your library lives in a local database on your disk. No account. No subscription.
 
 ---
 
 ## Features
 
-| | Feature | Description |
-|---|---|---|
-| **Download** | From almost anywhere | YouTube, SoundCloud, Bandcamp, and hundreds more via yt-dlp |
-| **Discover** | Missing music | Find the missing tracks in your albums, and the missing albums for your artists |
-| **Sync** | Across devices | Keep your library identical between machines |
-| **Metadata** | Automatic | MusicBrainz and Last.fm enrichment: album art, genres, and more |
-| **Playback** | Full local player | Queue, shuffle, repeat, and background playback from the system tray |
-| **Library** | Organized your way | Playlists, album views, artist browsing, and full-text search |
-| **Platform** | Cross-platform | Windows, macOS, and Linux (deb, rpm, Flatpak) |
+| Feature | Description |
+|---|---|
+| **Download** | Get tracks from YouTube, SoundCloud, Bandcamp, and hundreds more sources via yt-dlp |
+| **Discover** | Find the tracks that your albums miss, and the albums that your artists miss |
+| **Smart playlists** | Build playlists from rules (genre, year, play count, and more). They update themselves |
+| **Statistics** | See your listening history: plays per day and your most played tracks, artists, and albums |
+| **Last.fm** | Send "now playing" updates and scrobbles. Offline plays queue and submit later |
+| **Watched folders** | The app imports new audio files from folders that you select |
+| **Device sync** | Copy playlists to USB drives, SD cards, and portable players |
+| **Metadata** | MusicBrainz and Last.fm supply album art, genres, and release data. A tag editor writes tags into your files |
+| **Playback** | Queue, shuffle, repeat, crossfade, volume normalization, and playback from the system tray |
+| **Library** | Playlists, album and artist views, and full-text search (Ctrl+K) |
+| **Shortcuts** | Control playback from the keyboard. Press ? for the full list |
 
 ---
 
 ## Install
 
-Download the latest installer for your platform from the [Releases](https://github.com/sha5b/Playlist/releases/latest) page.
+Download the installer for your platform from the [Releases](https://github.com/sha5b/Playlist/releases/latest) page.
 
 | Platform | Format |
 |----------|--------|
@@ -50,7 +54,7 @@ Download the latest installer for your platform from the [Releases](https://gith
 | macOS | `.dmg` |
 | Linux | `.deb`, `.rpm` |
 
-On the first launch, the app downloads yt-dlp and ffmpeg automatically. On each later launch, the app updates yt-dlp so downloads keep working when platforms change.
+On the first launch, the app downloads yt-dlp and ffmpeg. On each later launch, the app updates yt-dlp, so downloads continue to work when platforms change.
 
 ---
 
@@ -66,13 +70,13 @@ On the first launch, the app downloads yt-dlp and ffmpeg automatically. On each 
 
 ```sh
 npm install          # Install frontend dependencies
-npx tauri dev        # Launch in dev mode (Vite + Tauri window)
+npx tauri dev        # Start the app in dev mode (Vite + Tauri window)
 ```
 
 ### Production Build
 
 ```sh
-npx tauri build      # Outputs installer to src-tauri/target/release/bundle/
+npx tauri build      # Writes the installer to src-tauri/target/release/bundle/
 ```
 
 ### Flatpak
@@ -102,11 +106,11 @@ Flatpak builds have no network access. Fetch the dependencies first with [flatpa
 ```sh
 pip3 install toml aiohttp
 
-# Generate Cargo sources from lockfile
+# Generate Cargo sources from the lockfile
 python3 flatpak-builder-tools/cargo/flatpak-cargo-generator.py \
   src-tauri/Cargo.lock -o cargo-sources.json
 
-# Generate Node.js sources from lockfile
+# Generate Node.js sources from the lockfile
 python3 flatpak-builder-tools/node/flatpak-node-generator.py \
   npm package-lock.json -o node-sources.json
 ```
@@ -127,7 +131,7 @@ flatpak run com.playlist.app
 
 ```
 src/                        SvelteKit frontend (Svelte 5 + shadcn-svelte + Tailwind v4)
-  routes/                   Pages: home, search, library, manager, settings
+  routes/                   Pages: home, search, library, stats, manager, settings
   lib/api/                  Typed Tauri invoke() wrappers
   lib/stores/               Svelte 5 rune stores
   lib/components/           UI components
@@ -136,6 +140,7 @@ src-tauri/                  Rust backend
   src/audio/                Audio playback (rodio + symphonia)
   src/download/             Download engine (yt-dlp + ffmpeg)
   src/metadata/             Metadata enrichment (MusicBrainz, Last.fm)
+  src/watch.rs              Watched folders (auto-import)
   src/commands/             Tauri IPC command handlers
 ```
 

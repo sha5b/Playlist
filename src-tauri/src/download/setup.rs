@@ -140,6 +140,10 @@ async fn redownload_ytdlp(bin_dir: &Path) -> Result<(), String> {
     let dest = get_ytdlp_path(bin_dir);
     let url = ytdlp_download_url();
 
+    // Fetch the published checksum first, then the binary, so both come from
+    // the same release even if "latest" moves between the two requests.
+    let expected = fetch_expected_sha256(YTDLP_SUMS_URL, ytdlp_asset_name()).await?;
+
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::limited(10))
         .connect_timeout(std::time::Duration::from_secs(30))
@@ -157,6 +161,17 @@ async fn redownload_ytdlp(bin_dir: &Path) -> Result<(), String> {
         .bytes()
         .await
         .map_err(|e| format!("Download stream error: {}", e))?;
+
+    {
+        use sha2::{Digest, Sha256};
+        let actual = hex::encode(Sha256::digest(&bytes));
+        if actual != expected {
+            return Err(format!(
+                "yt-dlp checksum mismatch: expected {}, got {}. The download was discarded.",
+                expected, actual
+            ));
+        }
+    }
 
     let tmp_path = dest.with_extension("tmp");
     tokio::fs::write(&tmp_path, &bytes)
@@ -231,7 +246,9 @@ pub async fn ensure_deps(bin_dir: &Path, app_handle: &tauri::AppHandle) -> Resul
 
         let url = ytdlp_download_url();
         let dest = get_ytdlp_path(bin_dir);
+        let expected = fetch_expected_sha256(YTDLP_SUMS_URL, ytdlp_asset_name()).await?;
         download_file(&url, &dest, app_handle, "yt-dlp").await?;
+        verify_sha256(&dest, &expected).await?;
 
         #[cfg(unix)]
         {
@@ -272,7 +289,9 @@ pub async fn ensure_deps(bin_dir: &Path, app_handle: &tauri::AppHandle) -> Resul
 
             let url = ffmpeg_download_url();
             let zip_path = bin_dir.join("ffmpeg.zip");
+            let expected = fetch_expected_sha256(FFMPEG_SUMS_URL, FFMPEG_ASSET_NAME).await?;
             download_file(&url, &zip_path, app_handle, "ffmpeg").await?;
+            verify_sha256(&zip_path, &expected).await?;
 
             emit_progress(
                 app_handle,
@@ -432,19 +451,104 @@ pub async fn ensure_deps(bin_dir: &Path, app_handle: &tauri::AppHandle) -> Resul
     Ok(())
 }
 
-fn ytdlp_download_url() -> String {
+/// Asset file name of the yt-dlp binary for this platform, as listed in the
+/// release's SHA2-256SUMS manifest.
+fn ytdlp_asset_name() -> &'static str {
     if cfg!(windows) {
-        "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe".to_string()
+        "yt-dlp.exe"
     } else if cfg!(target_os = "macos") {
-        "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos".to_string()
+        "yt-dlp_macos"
     } else {
-        "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux".to_string()
+        "yt-dlp_linux"
     }
 }
 
+fn ytdlp_download_url() -> String {
+    format!(
+        "https://github.com/yt-dlp/yt-dlp/releases/latest/download/{}",
+        ytdlp_asset_name()
+    )
+}
+
+const YTDLP_SUMS_URL: &str =
+    "https://github.com/yt-dlp/yt-dlp/releases/latest/download/SHA2-256SUMS";
+
+#[cfg(windows)]
+const FFMPEG_ASSET_NAME: &str = "ffmpeg-master-latest-win64-gpl.zip";
+
 #[cfg(windows)]
 fn ffmpeg_download_url() -> String {
-    "https://github.com/yt-dlp/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip".to_string()
+    format!(
+        "https://github.com/yt-dlp/FFmpeg-Builds/releases/download/latest/{}",
+        FFMPEG_ASSET_NAME
+    )
+}
+
+#[cfg(windows)]
+const FFMPEG_SUMS_URL: &str =
+    "https://github.com/yt-dlp/FFmpeg-Builds/releases/download/latest/checksums.sha256";
+
+/// Fetch the expected SHA-256 for `asset` from a release checksum manifest
+/// (lines of "<hex>  <filename>"). We never execute a downloaded binary that
+/// does not match its published checksum.
+async fn fetch_expected_sha256(sums_url: &str, asset: &str) -> Result<String, String> {
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::limited(10))
+        .connect_timeout(std::time::Duration::from_secs(30))
+        .timeout(std::time::Duration::from_secs(60))
+        .build()
+        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
+
+    let text = client
+        .get(sums_url)
+        .send()
+        .await
+        .map_err(|e| format!("Checksum manifest request failed: {}", e))?
+        .error_for_status()
+        .map_err(|e| format!("Checksum manifest download failed: {}", e))?
+        .text()
+        .await
+        .map_err(|e| format!("Checksum manifest read failed: {}", e))?;
+
+    for line in text.lines() {
+        let mut parts = line.split_whitespace();
+        if let (Some(hash), Some(name)) = (parts.next(), parts.next()) {
+            if name.trim_start_matches('*') == asset {
+                return Ok(hash.to_ascii_lowercase());
+            }
+        }
+    }
+    Err(format!("No checksum for {} in {}", asset, sums_url))
+}
+
+/// SHA-256 of a file, streamed in a blocking task.
+async fn sha256_of_file(path: &Path) -> Result<String, String> {
+    let path = path.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        use sha2::{Digest, Sha256};
+        let mut file =
+            std::fs::File::open(&path).map_err(|e| format!("Failed to open {:?}: {}", path, e))?;
+        let mut hasher = Sha256::new();
+        std::io::copy(&mut file, &mut hasher)
+            .map_err(|e| format!("Failed to read {:?}: {}", path, e))?;
+        Ok(hex::encode(hasher.finalize()))
+    })
+    .await
+    .map_err(|e| format!("Hash task failed: {}", e))?
+}
+
+/// Verify a downloaded file against its published checksum. On mismatch the
+/// file is deleted and an error is returned.
+async fn verify_sha256(path: &Path, expected: &str) -> Result<(), String> {
+    let actual = sha256_of_file(path).await?;
+    if actual != expected {
+        let _ = std::fs::remove_file(path);
+        return Err(format!(
+            "Checksum mismatch for {:?}: expected {}, got {}. The download was discarded.",
+            path, expected, actual
+        ));
+    }
+    Ok(())
 }
 
 async fn download_file(

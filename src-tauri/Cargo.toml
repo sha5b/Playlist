@@ -64,6 +64,7 @@ cbc = "0.1"
 md-5 = "0.10"
 aes = "0.8"
 hex = "0.4"
+sha2 = "0.10"
 
 # Spotify (librespot) — DISABLED: Spotify deprecated password auth (forced OAuth2 mid-2025).
 # Uncomment these if OAuth support is added in the future.
