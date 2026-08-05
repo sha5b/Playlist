@@ -2,6 +2,16 @@
 
 All notable changes to Playlist are recorded in this file.
 
+## [0.9.1] - 2026-08-05
+
+### Fixed
+
+- **Windows: no more console windows.** Background tasks opened black console windows that took focus from the app. The USB device scan opened one every 5 seconds. Device sync, the ffmpeg path lookup, and the yt-dlp self-update opened them too. All background tasks now run without a window.
+
+### Security
+
+- The app now verifies every yt-dlp and ffmpeg download against the SHA-256 checksums that the upstream projects publish. A file that does not match its checksum is deleted and not run.
+
 ## [0.9.0] - 2026-08-05
 
 This release adds smart playlists, a statistics page, Last.fm scrobbling, watched folders, volume normalization, crossfade, a search palette, keyboard shortcuts, and a tag editor. It also fixes device sync, playback, and many interface problems.

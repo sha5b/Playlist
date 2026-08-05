@@ -71,7 +71,15 @@ pub fn resolve_ffmpeg_dir(bin_dir: &Path) -> Option<String> {
     let which_cmd = "which";
     #[cfg(windows)]
     let which_cmd = "where";
-    if let Ok(output) = std::process::Command::new(which_cmd).arg("ffmpeg").output() {
+    let mut which = std::process::Command::new(which_cmd);
+    which.arg("ffmpeg");
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // CREATE_NO_WINDOW: this runs at engine startup and before downloads.
+        which.creation_flags(0x08000000);
+    }
+    if let Ok(output) = which.output() {
         if output.status.success() {
             let path = String::from_utf8_lossy(&output.stdout).lines().next().unwrap_or("").trim().to_string();
             if let Some(parent) = Path::new(&path).parent() {
@@ -106,12 +114,18 @@ pub async fn auto_update_ytdlp(bin_dir: &Path) {
     }
 
     log::info!("Checking for yt-dlp updates ({})", binary);
-    let update = tokio::process::Command::new(&binary)
+    let mut update_cmd = tokio::process::Command::new(&binary);
+    update_cmd
         .arg("-U")
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .output()
-        .await;
+        .stderr(std::process::Stdio::piped());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // IDLE_PRIORITY_CLASS | CREATE_NO_WINDOW: runs on every app launch.
+        update_cmd.creation_flags(0x00000040 | 0x08000000);
+    }
+    let update = update_cmd.output().await;
 
     match update {
         Ok(out) if out.status.success() => {

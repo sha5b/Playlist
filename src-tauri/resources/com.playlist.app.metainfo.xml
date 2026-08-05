@@ -57,6 +57,11 @@
   </requires>
 
   <releases>
+    <release version="0.9.1" date="2026-08-05">
+      <description>
+        <p>Windows fix: background tasks no longer open console windows in front of the app. The app now verifies downloaded yt-dlp and ffmpeg binaries against published checksums.</p>
+      </description>
+    </release>
     <release version="0.9.0" date="2026-08-05">
       <description>
         <p>Feature release: Last.fm scrobbling, listening statistics, smart playlists, watched folders, loudness normalization, a search palette, keyboard shortcuts, and a tag editor. Device sync and playback fixes.</p>

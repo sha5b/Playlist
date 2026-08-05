@@ -329,12 +329,19 @@ fn plist_string_after_key(info: &str, key: &str) -> Option<String> {
 
 #[cfg(target_os = "windows")]
 async fn detect_windows() -> Result<Vec<DetectedDevice>, String> {
-    let output = tokio::process::Command::new("powershell")
-        .args([
-            "-NoProfile",
-            "-Command",
-            "Get-Volume | Where-Object { $_.DriveType -eq 'Removable' -and $_.DriveLetter } | Select-Object DriveLetter, FileSystemLabel, Size, SizeRemaining, UniqueId | ConvertTo-Json",
-        ])
+    let mut cmd = tokio::process::Command::new("powershell");
+    cmd.args([
+        "-NoProfile",
+        "-Command",
+        "Get-Volume | Where-Object { $_.DriveType -eq 'Removable' -and $_.DriveLetter } | Select-Object DriveLetter, FileSystemLabel, Size, SizeRemaining, UniqueId | ConvertTo-Json",
+    ]);
+    {
+        use std::os::windows::process::CommandExt;
+        // CREATE_NO_WINDOW: the device page polls this every few seconds, and
+        // without the flag each scan opens a console window that steals focus.
+        cmd.creation_flags(0x08000000);
+    }
+    let output = cmd
         .output()
         .await
         .map_err(|e| format!("PowerShell failed: {}", e))?;

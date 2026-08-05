@@ -15,6 +15,12 @@
 </p>
 
 <p align="center">
+  <a href="https://sha5b.github.io/Playlist/"><strong>Website</strong></a> ·
+  <a href="https://github.com/sha5b/Playlist/releases/latest"><strong>Download</strong></a> ·
+  <a href="CHANGELOG.md"><strong>Changelog</strong></a>
+</p>
+
+<p align="center">
   <img src="docs/screenshot/main.png" alt="Playlist — library view" width="900">
 </p>
 

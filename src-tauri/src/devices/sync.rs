@@ -368,8 +368,15 @@ async fn transcode_file(
     let tmp = dest.with_extension(format!("part.{}", dest_ext));
     args.push(tmp.to_string_lossy().to_string());
 
-    let output = tokio::process::Command::new(ffmpeg)
-        .args(&args)
+    let mut cmd = tokio::process::Command::new(ffmpeg);
+    cmd.args(&args);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // IDLE_PRIORITY_CLASS | CREATE_NO_WINDOW
+        cmd.creation_flags(0x00000040 | 0x08000000);
+    }
+    let output = cmd
         .output()
         .await
         .map_err(|e| {
