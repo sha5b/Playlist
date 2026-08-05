@@ -61,6 +61,9 @@ pub struct Artist {
     /// Whether the discography has been enriched from MusicBrainz — the
     /// frontend uses this to decide if auto-enrichment is needed.
     pub has_enriched_discography: bool,
+    /// Cover art of one of the artist's albums (or tracks) — frontend fallback
+    /// when the artist has no image of their own.
+    pub fallback_cover_path: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

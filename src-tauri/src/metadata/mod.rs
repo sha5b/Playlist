@@ -1,3 +1,4 @@
+pub mod deezer;
 pub mod lastfm;
 pub mod lyrics;
 pub mod musicbrainz;

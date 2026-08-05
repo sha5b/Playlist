@@ -48,6 +48,8 @@ function placeholderFromEvent(data: DownloadEvent): Download {
 		target_duration_ms: null,
 		target_album_name: null,
 		target_recording_mbid: null,
+		speed: data.speed ?? null,
+		eta: data.eta ?? null,
 	};
 }
 
@@ -56,6 +58,10 @@ function mergeEvent(dl: Download, data: DownloadEvent): Download {
 		...dl,
 		status: data.status,
 		progress: data.progress,
+		// Presentation-only live stats: always overwrite so a stale speed/ETA
+		// never lingers after the download leaves the 'downloading' state.
+		speed: data.speed ?? null,
+		eta: data.eta ?? null,
 		...(data.error ? { error_message: data.error } : {}),
 		...(data.title ? { title: data.title } : {}),
 		...(data.track_id ? { track_id: data.track_id } : {}),

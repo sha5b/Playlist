@@ -155,77 +155,103 @@
 			<Loader2 class="size-6 animate-spin text-muted-foreground" />
 		</div>
 	{:else if track}
-		<div class="flex gap-6 items-end">
-			<div class="size-48 rounded-lg bg-muted flex items-center justify-center overflow-hidden shrink-0 shadow-lg">
-				{#if track.cover_art_path}
-					<img
-						src={assetUrl(track.cover_art_path)}
-						alt={track.title}
-						class="size-full object-cover"
-					/>
-				{:else}
-					<Music class="size-16 text-muted-foreground" />
-				{/if}
-			</div>
-			<div class="space-y-2">
-				<div class="flex items-center gap-2">
-					<p class="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Song</p>
-					<span class="text-xs font-medium {track.metadata_completeness >= 80 ? 'text-success' : track.metadata_completeness >= 50 ? 'text-warning' : 'text-destructive'}">
-						{track.metadata_completeness}% metadata
-					</span>
+		<!-- Hero -->
+		<div class="relative rounded-xl overflow-hidden border border-border/60">
+			<!-- Backdrop glow from cover art -->
+			{#if track.cover_art_path}
+				<div class="absolute inset-0 pointer-events-none">
+					<img src={assetUrl(track.cover_art_path)} alt="" class="size-full object-cover opacity-20 blur-3xl scale-110" />
+					<div class="absolute inset-0 bg-gradient-to-t from-background via-background/70 to-background/30"></div>
 				</div>
-				<h1 class="text-3xl font-bold tracking-tight">{track.title}</h1>
-				<p class="text-sm text-muted-foreground">
-					{#if track.artist_id}
-						<a href="/library/artists/{track.artist_id}" class="hover:text-foreground hover:underline transition-colors">
-							{track.artist_name ?? 'Unknown Artist'}
-						</a>
+			{:else}
+				<div class="absolute inset-0 bg-card/60 pointer-events-none"></div>
+			{/if}
+
+			<div class="relative flex gap-8 items-end p-6 lg:p-8">
+				<div class="size-52 lg:size-60 rounded-xl bg-muted flex items-center justify-center overflow-hidden shrink-0 shadow-2xl shadow-black/50">
+					{#if track.cover_art_path}
+						<img
+							src={assetUrl(track.cover_art_path)}
+							alt={track.title}
+							class="size-full object-cover"
+						/>
 					{:else}
-						{track.artist_name ?? 'Unknown Artist'}
+						<Music class="size-16 text-muted-foreground" strokeWidth={1} />
 					{/if}
-					{#if track.album_id}
-						&middot;
-						<a href="/library/albums/{track.album_id}" class="hover:text-foreground hover:underline transition-colors">
-							{track.album_title ?? 'Unknown Album'}
-						</a>
-					{/if}
-					{#if track.year}&middot; {track.year}{/if}
-					&middot; {formatDuration(track.duration_ms)}
-				</p>
-				<div class="flex gap-2 pt-2">
-					<Button onclick={playTrack}>
-						<Play class="size-4" fill="currentColor" />
-						Play
-					</Button>
-					<Button variant="outline" onclick={playNext}>
-						<ListStart class="size-4" />
-						Play Next
-					</Button>
-					<Button variant="outline" onclick={addToQueue}>
-						<ListPlus class="size-4" />
-						Add to Queue
-					</Button>
-					<Button variant="outline" onclick={handleEnrich} disabled={enriching}>
-						{#if enriching}
-							<Loader2 class="size-4 animate-spin" />
+				</div>
+				<div class="min-w-0 space-y-3 pb-1">
+					<div class="flex items-center gap-2">
+						<p class="text-xs font-semibold uppercase tracking-wider text-primary">Song</p>
+						<span class="text-xs font-medium {track.metadata_completeness >= 80 ? 'text-success' : track.metadata_completeness >= 50 ? 'text-warning' : 'text-destructive'}">
+							{track.metadata_completeness}% metadata
+						</span>
+					</div>
+					<h1 class="text-3xl lg:text-4xl font-bold tracking-tight leading-tight">{track.title}</h1>
+					<p class="text-base text-muted-foreground truncate">
+						{#if track.artist_id}
+							<a href="/library/artists/{track.artist_id}" class="font-medium text-foreground/90 hover:text-foreground hover:underline underline-offset-4 transition-colors">
+								{track.artist_name ?? 'Unknown Artist'}
+							</a>
 						{:else}
-							<Sparkles class="size-4" />
+							<span class="font-medium text-foreground/90">{track.artist_name ?? 'Unknown Artist'}</span>
 						{/if}
-						Enrich
-					</Button>
+						{#if track.album_id}
+							<span class="text-muted-foreground/70">&middot;</span>
+							<a href="/library/albums/{track.album_id}" class="hover:text-foreground hover:underline underline-offset-4 transition-colors">
+								{track.album_title ?? 'Unknown Album'}
+							</a>
+						{/if}
+					</p>
+					<!-- Metadata pills -->
+					<div class="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+						<span class="inline-flex items-center rounded-full border border-border/60 bg-background/40 px-2.5 py-1 tabular-nums">
+							{formatDuration(track.duration_ms)}
+						</span>
+						{#if track.year}
+							<span class="inline-flex items-center rounded-full border border-border/60 bg-background/40 px-2.5 py-1">{track.year}</span>
+						{/if}
+						{#if track.genre}
+							<span class="inline-flex items-center rounded-full border border-border/60 bg-background/40 px-2.5 py-1">{track.genre}</span>
+						{/if}
+						{#if track.format}
+							<span class="inline-flex items-center rounded-full border border-border/60 bg-background/40 px-2.5 py-1 uppercase">{track.format}</span>
+						{/if}
+					</div>
+					<div class="flex flex-wrap gap-2 pt-2">
+						<Button onclick={playTrack}>
+							<Play class="size-4" fill="currentColor" />
+							Play
+						</Button>
+						<Button variant="outline" onclick={playNext}>
+							<ListStart class="size-4" />
+							Play Next
+						</Button>
+						<Button variant="outline" onclick={addToQueue}>
+							<ListPlus class="size-4" />
+							Add to Queue
+						</Button>
+						<Button variant="outline" onclick={handleEnrich} disabled={enriching}>
+							{#if enriching}
+								<Loader2 class="size-4 animate-spin" />
+							{:else}
+								<Sparkles class="size-4" />
+							{/if}
+							Enrich
+						</Button>
+					</div>
 				</div>
 			</div>
 		</div>
 
 		{#if track.description}
-			<div class="rounded-lg border border-border p-6">
+			<div class="rounded-xl border border-border/60 bg-card/40 p-6">
 				<h2 class="text-sm font-semibold uppercase tracking-wider text-muted-foreground mb-3">Description</h2>
 				<p class="text-sm text-foreground/80 whitespace-pre-line">{track.description}</p>
 			</div>
 		{/if}
 
 		{#if parsedTags.length > 0}
-			<div class="rounded-lg border border-border p-5">
+			<div class="rounded-xl border border-border/60 bg-card/40 p-5">
 				<h2 class="text-sm font-semibold uppercase tracking-wider text-muted-foreground mb-3">Tags</h2>
 				<div class="flex flex-wrap gap-2">
 					{#each parsedTags as tag}
@@ -301,8 +327,8 @@
 						{#if artist}
 							<div class="rounded-lg border border-border p-4 flex gap-4 items-center hover:bg-muted/50 transition-colors">
 								<a href="/library/artists/{artist.id}" class="size-12 rounded-md bg-muted overflow-hidden shrink-0">
-									{#if artist.image_path}
-										<img src={assetUrl(artist.image_path)} alt={artist.name} class="size-full object-cover" />
+									{#if artist.image_path ?? artist.fallback_cover_path}
+										<img src={assetUrl(artist.image_path ?? artist.fallback_cover_path)} alt={artist.name} class="size-full object-cover" />
 									{:else}
 										<div class="size-full flex items-center justify-center"><User class="size-5 text-muted-foreground" /></div>
 									{/if}
@@ -335,9 +361,9 @@
 			</div>
 		{/if}
 
-		<div class="rounded-lg border border-border p-6">
+		<div class="rounded-xl border border-border/60 bg-card/40 p-6">
 			<h2 class="text-sm font-semibold uppercase tracking-wider text-muted-foreground mb-4">Details</h2>
-			<div class="grid grid-cols-2 gap-x-8 gap-y-3 text-sm">
+			<div class="grid grid-cols-2 lg:grid-cols-3 gap-x-8 gap-y-4 text-sm">
 				{#if track.track_number}
 					<div>
 						<span class="text-muted-foreground">Track Number</span>

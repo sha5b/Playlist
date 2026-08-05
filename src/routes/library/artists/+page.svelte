@@ -7,6 +7,7 @@
 	import { assetUrl } from '$lib/utils/format';
 	import { libraryStore } from '$lib/stores/library.svelte';
 	import { useSearch } from '$lib/hooks/useSearch.svelte';
+	import { scrollRestore } from '$lib/utils/scrollRestore';
 	import type { Artist } from '$lib/types';
 
 	let artists: Artist[] = $state([]);
@@ -37,7 +38,7 @@
 	});
 </script>
 
-<div class="overflow-y-auto overflow-x-hidden space-y-6">
+<div use:scrollRestore class="overflow-y-auto overflow-x-hidden space-y-6">
 	<div class="flex items-center justify-between">
 		<div>
 			<h1 class="text-3xl font-bold tracking-tight">Artists</h1>
@@ -72,6 +73,7 @@
 	{:else}
 		<div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
 			{#each artists as artist}
+				{@const image = artist.image_path ?? artist.fallback_cover_path}
 				<a
 					href="/library/artists/{artist.id}"
 					class="group text-center rounded-lg p-2 -m-2 transition-colors hover:bg-muted/30"
@@ -84,9 +86,9 @@
 					}}
 				>
 					<div class="aspect-square rounded-full bg-muted flex items-center justify-center overflow-hidden mb-2 mx-auto max-w-32">
-						{#if artist.image_path}
+						{#if image}
 							<img
-								src={assetUrl(artist.image_path)}
+								src={assetUrl(image)}
 								alt={artist.name}
 								class="size-full object-cover group-hover:scale-105 transition-transform"
 								loading="lazy"

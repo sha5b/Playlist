@@ -145,6 +145,16 @@ export async function getArtist(id: number): Promise<Artist | null> {
 	return invoke('library_get_artist', { id });
 }
 
+/**
+ * Lazily fetch a real artist image (Deezer, then Last.fm) and cache it in app data.
+ * Returns the cached image path, or null if none was found.
+ */
+export async function fetchArtistImage(artistId: number): Promise<string | null> {
+	const result = await invoke<string | null>('fetch_artist_image', { artistId });
+	if (result) invalidateCache();
+	return result;
+}
+
 // --- Playlists ---
 
 export async function getPlaylists(): Promise<Playlist[]> {

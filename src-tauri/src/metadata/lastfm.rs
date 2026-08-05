@@ -212,13 +212,21 @@ pub async fn download_image(url: &str) -> Option<Vec<u8>> {
 
 // ── Helpers ───────────────────────────────────────────────────────────────
 
+/// Last.fm stopped serving real artist images in 2019 — artist.getinfo now
+/// returns this generic "star" placeholder for every artist. Treat it as no image.
+const LASTFM_PLACEHOLDER_HASH: &str = "2a96cbd8b46e442fc41c2b86b821562f";
+
+fn is_usable_image_url(url: &str) -> bool {
+    !url.is_empty() && !url.contains(LASTFM_PLACEHOLDER_HASH)
+}
+
 fn get_best_image(images: &Option<Vec<LastfmImage>>) -> Option<String> {
     let imgs = images.as_ref()?;
     // Prefer extralarge > large > medium
     for size in &["extralarge", "large", "medium"] {
         if let Some(img) = imgs.iter().find(|i| i.size.as_deref() == Some(size)) {
             if let Some(url) = &img.url {
-                if !url.is_empty() {
+                if is_usable_image_url(url) {
                     return Some(url.clone());
                 }
             }
@@ -227,7 +235,7 @@ fn get_best_image(images: &Option<Vec<LastfmImage>>) -> Option<String> {
     // Fallback: last image (usually largest)
     imgs.last()
         .and_then(|i| i.url.clone())
-        .filter(|u| !u.is_empty())
+        .filter(|u| is_usable_image_url(u))
 }
 
 fn strip_html_tags(s: &str) -> String {
@@ -245,7 +253,7 @@ fn strip_html_tags(s: &str) -> String {
     result.trim().to_string()
 }
 
-fn urlencoding(s: &str) -> String {
+pub(crate) fn urlencoding(s: &str) -> String {
     // Encode each UTF-8 byte (not Unicode code point) for correct percent-encoding
     s.bytes()
         .map(|b| match b {

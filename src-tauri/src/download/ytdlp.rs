@@ -407,7 +407,26 @@ pub async fn search_music_video(
 /// Result of fetching playlist entries, including the playlist title
 pub struct PlaylistFetchResult {
     pub playlist_title: Option<String>,
+    /// The SOURCE playlist's own thumbnail/cover URL (not a track thumbnail)
+    pub playlist_thumbnail: Option<String>,
     pub entries: Vec<VideoInfo>,
+}
+
+/// Pick the best (largest) thumbnail URL from a yt-dlp JSON object.
+/// Prefers the `thumbnails` array (sorted ascending by quality, entries may
+/// carry `width`), falling back to the flat `thumbnail` field.
+fn best_thumbnail_from_json(json: &serde_json::Value) -> Option<String> {
+    json["thumbnails"]
+        .as_array()
+        .and_then(|arr| {
+            arr.iter()
+                // max_by_key returns the LAST max — when widths are missing
+                // (all key 0) this keeps yt-dlp's ascending-quality order.
+                .max_by_key(|t| t["width"].as_u64().unwrap_or(0))
+                .and_then(|t| t["url"].as_str())
+        })
+        .or_else(|| json["thumbnail"].as_str())
+        .map(|s| s.to_string())
 }
 
 /// Fetch playlist entries
@@ -420,9 +439,11 @@ pub async fn get_playlist_entries(
     let mut cmd = Command::new(binary);
     low_priority(&mut cmd);
     cmd.args([
-        "--dump-json", 
-        "--no-download", 
-        "--no-warnings", 
+        // Single-JSON dump: unlike --dump-json (one line per entry), this keeps
+        // the playlist-level metadata — title AND the playlist's own thumbnail.
+        "--dump-single-json",
+        "--no-download",
+        "--no-warnings",
         "--flat-playlist",
         // Anti-bot detection flags
         "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
@@ -451,19 +472,32 @@ pub async fn get_playlist_entries(
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let mut entries = Vec::new();
-    let mut playlist_title: Option<String> = None;
+    let root: serde_json::Value = serde_json::from_str(stdout.trim())
+        .map_err(|e| format!("Failed to parse yt-dlp output: {}", e))?;
 
-    for line in stdout.lines() {
-        if line.trim().is_empty() {
-            continue;
-        }
-        if let Ok(json) = serde_json::from_str::<serde_json::Value>(line) {
-            // Extract playlist_title from the first entry (yt-dlp includes it in each entry)
-            if playlist_title.is_none() {
-                playlist_title = json["playlist_title"].as_str().map(|s| s.to_string());
-            }
-            let mut info = video_info_from_json(&json);
+    // Playlist-level metadata from the root object. For a bare video URL the
+    // root IS the entry, so treat it as a one-entry "playlist" without title.
+    let is_playlist = root["entries"].is_array();
+    let (playlist_title, playlist_thumbnail) = if is_playlist {
+        (
+            root["title"].as_str().map(|s| s.to_string()),
+            best_thumbnail_from_json(&root),
+        )
+    } else {
+        (None, None)
+    };
+
+    let raw_entries: Vec<&serde_json::Value> = if is_playlist {
+        root["entries"].as_array().map(|a| a.iter().collect()).unwrap_or_default()
+    } else {
+        vec![&root]
+    };
+
+    let mut entries = Vec::new();
+
+    for json in raw_entries {
+        if json.is_object() {
+            let mut info = video_info_from_json(json);
 
             // Debug: log raw yt-dlp fields for URL resolution
             let raw_url = json["url"].as_str().unwrap_or("<missing>");
@@ -497,6 +531,7 @@ pub async fn get_playlist_entries(
 
     Ok(PlaylistFetchResult {
         playlist_title,
+        playlist_thumbnail,
         entries,
     })
 }

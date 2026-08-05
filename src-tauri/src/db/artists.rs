@@ -6,7 +6,15 @@ const ARTIST_COLUMNS: &str =
     "a.id, a.name, a.sort_name, a.musicbrainz_id, a.image_path, a.bio,
      a.country, a.begin_year, a.artist_type, a.website_url,
      COUNT(t.id) as track_count,
-     a.enriched_discography IS NOT NULL as has_enriched_discography";
+     a.enriched_discography IS NOT NULL as has_enriched_discography,
+     COALESCE(
+         (SELECT al.cover_art_path FROM albums al
+          WHERE al.artist_id = a.id AND al.cover_art_path IS NOT NULL
+          ORDER BY al.year DESC LIMIT 1),
+         (SELECT t2.cover_art_path FROM tracks t2
+          WHERE t2.artist_id = a.id AND t2.cover_art_path IS NOT NULL
+          LIMIT 1)
+     ) as fallback_cover_path";
 
 fn row_to_artist(row: &Row) -> Result<Artist, rusqlite::Error> {
     Ok(Artist {
@@ -22,6 +30,7 @@ fn row_to_artist(row: &Row) -> Result<Artist, rusqlite::Error> {
         website_url: row.get(9)?,
         track_count: row.get(10)?,
         has_enriched_discography: row.get(11)?,
+        fallback_cover_path: row.get(12)?,
     })
 }
 

@@ -729,6 +729,7 @@ pub async fn fetch_playlist_entries(url: &str) -> Result<super::ytdlp::PlaylistF
 
     Ok(super::ytdlp::PlaylistFetchResult {
         playlist_title: playlist_name,
+        playlist_thumbnail: cover_url,
         entries,
     })
 }

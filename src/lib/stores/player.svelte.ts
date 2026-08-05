@@ -57,6 +57,7 @@ function handleEvent(event: PlayerEvent) {
 			}
 			// Also check if we should proactively queue the next track
 			checkAutoplayQueue();
+			checkShuffleQueue();
 			break;
 		}
 		case 'track_changed':
@@ -95,6 +96,7 @@ function handleEvent(event: PlayerEvent) {
 			queueTracks = event.data.tracks;
 			queuePosition = event.data.position;
 			checkAutoplayQueue();
+			checkShuffleQueue();
 			break;
 		case 'error':
 			console.error('Player error:', event.data);
@@ -179,12 +181,60 @@ function checkAutoplayQueue() {
 	}
 }
 
+// --- Shuffle auto-refill ---
+// With shuffle on, the queue should never run dry: whenever playback
+// approaches the end of the queue, append more random tracks from the library.
+const SHUFFLE_REFILL_BATCH = 25;
+let shuffleRefillPending = false;
+
+async function refillShuffleQueue() {
+	if (shuffleRefillPending) return;
+	shuffleRefillPending = true;
+	try {
+		// Avoid queuing tracks that are already in the queue or recently played
+		const excludeIds = Array.from(new Set([
+			...queueTracks.map((t) => t.id),
+			...playedHistory,
+		]));
+		let ids = await playerApi.getRandomTracks(excludeIds, SHUFFLE_REFILL_BATCH);
+		if (ids.length === 0) {
+			// Library smaller than the queue/history — allow repeats
+			playedHistory.clear();
+			ids = await playerApi.getRandomTracks(queueTracks.map((t) => t.id), SHUFFLE_REFILL_BATCH);
+		}
+		for (const id of ids) {
+			await playerApi.addToQueue(id);
+		}
+	} catch (e) {
+		console.warn('Shuffle queue refill failed:', e);
+	} finally {
+		shuffleRefillPending = false;
+	}
+}
+
+function checkShuffleQueue() {
+	if (!shuffle || shuffleRefillPending) return;
+	// Repeat modes intentionally loop the existing queue — don't grow it.
+	if (repeat !== 'off') return;
+	if (state !== 'playing' && state !== 'paused') return;
+	// Refill when the current track is the last (or second to last) in the queue
+	if (queuePosition !== null && queuePosition >= queueTracks.length - 2) {
+		refillShuffleQueue();
+	}
+}
+
 // --- Public API ---
 export const player = {
 	get state() { return state; },
 	get currentTrack() { return currentTrack; },
 	get positionMs() { return positionMs; },
-	get durationMs() { return durationMs; },
+	get durationMs() {
+		// The engine's decoder can't always determine a duration (it then
+		// reports 0). Fall back to the track's DB duration so the UI always
+		// shows a length when one is known.
+		if (durationMs > 0) return durationMs;
+		return currentTrack?.duration_ms ?? 0;
+	},
 	get volume() { return volume; },
 	get shuffle() { return shuffle; },
 	get repeat() { return repeat; },
@@ -281,7 +331,8 @@ export const player = {
 
 	async toggleShuffle() {
 		try {
-			if (!shuffle && (state === 'stopped' || queueTracks.length === 0)) {
+			const enabling = !shuffle;
+			if (enabling && (state === 'stopped' || queueTracks.length === 0)) {
 				// Turning shuffle on with nothing playing — load random tracks
 				const ids = await playerApi.getRandomTracks([], 50);
 				if (ids.length > 0) {
@@ -291,7 +342,16 @@ export const player = {
 					if (!queueOpen) queueOpen = true;
 				}
 			} else {
-				await playerApi.setShuffle(!shuffle);
+				await playerApi.setShuffle(enabling);
+				// Turning shuffle on with a queue that has no (or almost no)
+				// upcoming tracks — top it up so there is always something next.
+				if (
+					enabling &&
+					queuePosition !== null &&
+					queuePosition >= queueTracks.length - 1
+				) {
+					await refillShuffleQueue();
+				}
 			}
 		} catch (e) {
 			console.error('Failed to toggle shuffle:', e);

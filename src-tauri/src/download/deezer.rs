@@ -406,6 +406,14 @@ pub async fn fetch_playlist_entries(url: &str) -> Result<super::ytdlp::PlaylistF
 
     let playlist_title = data["title"].as_str().map(|s| s.to_string());
 
+    // The source playlist/album's own cover image (largest first).
+    // Playlists use picture_*, albums use cover_*.
+    let playlist_thumbnail = ["picture_xl", "picture_big", "picture_medium", "picture",
+                              "cover_xl", "cover_big", "cover_medium", "cover"]
+        .iter()
+        .find_map(|k| data[*k].as_str().filter(|s| !s.is_empty()))
+        .map(|s| s.to_string());
+
     // Get tracks — paginated, fetch all pages
     let mut entries = Vec::new();
     let mut tracks_url = format!("{}/{}/{}/tracks?limit=100", DEEZER_API, item_type, item_id);
@@ -473,6 +481,7 @@ pub async fn fetch_playlist_entries(url: &str) -> Result<super::ytdlp::PlaylistF
 
     Ok(super::ytdlp::PlaylistFetchResult {
         playlist_title,
+        playlist_thumbnail,
         entries,
     })
 }

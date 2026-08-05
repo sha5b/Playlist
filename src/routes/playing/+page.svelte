@@ -1,16 +1,16 @@
 <script lang="ts">
 	import { Button } from '$lib/components/ui/button';
-	import { Slider } from '$lib/components/ui/slider';
 	import {
 		Shuffle, SkipBack, Play, Pause, SkipForward,
 		Repeat, Repeat1, Music, Trash2, AudioLines, History,
-		Image, Film, Type, Info
+		Image, Film, Type, RotateCcw
 	} from 'lucide-svelte';
 	import { player } from '$lib/stores/player.svelte';
 	import { getTrack } from '$lib/api/library';
 	import { formatDuration, assetUrl } from '$lib/utils/format';
 	import DndQueueList from '$lib/components/player/DndQueueList.svelte';
 	import SyncedLyrics from '$lib/components/player/SyncedLyrics.svelte';
+	import SeekBar from '$lib/components/player/SeekBar.svelte';
 	import type { Track } from '$lib/types';
 
 	type DisplayMode = 'artwork' | 'video' | 'lyrics';
@@ -95,24 +95,6 @@
 		displayMode === 'video' && hasVideo ? videoPlaying : player.isPlaying
 	);
 
-	// While dragging, show the drag value instead of the live progress so the
-	// backend's ~450ms progress events don't snap the thumb back mid-drag.
-	let seekDragValue = $state<number | null>(null);
-	let seekClearTimeout: ReturnType<typeof setTimeout>;
-
-	function handleProgressChange(value: number) {
-		const seconds = (value / 100) * (player.durationMs / 1000);
-		player.seek(seconds);
-		// Keep showing the committed value briefly to avoid a snap-back flash
-		// before the next progress event reflects the seek.
-		clearTimeout(seekClearTimeout);
-		seekClearTimeout = setTimeout(() => { seekDragValue = null; }, 500);
-	}
-
-	const progressPercent = $derived(
-		player.durationMs > 0 ? (player.positionMs / player.durationMs) * 100 : 0
-	);
-
 	const RepeatIcon = $derived(
 		player.repeat === 'one' ? Repeat1 : Repeat
 	);
@@ -170,7 +152,7 @@
 							variant={preferredMode === 'video' ? 'default' : 'ghost'}
 							size="icon"
 							class="size-7"
-							onclick={() => preferredMode = 'video'}
+							onclick={() => { preferredMode = 'video'; videoPhaseActive = true; }}
 						>
 							<Film class="size-3.5" />
 						</Button>
@@ -185,9 +167,15 @@
 					</div>
 
 					<p class="text-xs font-semibold uppercase tracking-wider text-primary mb-2">Now Playing</p>
-					<h1 class="text-3xl lg:text-4xl font-bold tracking-tight truncate">
-						{player.currentTrack?.title}
-					</h1>
+					<a
+						href="/library/songs/{player.currentTrack?.id}"
+						class="block w-fit max-w-full group"
+						title="Open song details"
+					>
+						<h1 class="text-3xl lg:text-4xl font-bold tracking-tight truncate underline-offset-4 decoration-muted-foreground/40 group-hover:underline transition-colors">
+							{player.currentTrack?.title}
+						</h1>
+					</a>
 					<p class="text-lg text-muted-foreground mt-1 truncate">
 						{player.currentTrack?.artist_name ?? 'Unknown Artist'}
 					</p>
@@ -197,14 +185,6 @@
 						</p>
 					{/if}
 
-					<a
-						href="/library/songs/{player.currentTrack?.id}"
-						class="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors mt-2 w-fit"
-					>
-						<Info class="size-3.5" />
-						Song Details
-					</a>
-
 					<!-- Playback controls -->
 					<div class="flex flex-col gap-3 mt-8 max-w-md">
 						<!-- Progress bar -->
@@ -212,15 +192,7 @@
 							<span class="text-xs text-muted-foreground w-10 text-right tabular-nums">
 								{formatDuration(player.positionMs)}
 							</span>
-							<Slider
-								type="single"
-								value={seekDragValue ?? progressPercent}
-								max={100}
-								step={0.1}
-								class="flex-1"
-								onValueChange={(v: number) => { seekDragValue = v; }}
-								onValueCommit={handleProgressChange}
-							/>
+							<SeekBar class="flex-1" />
 							<span class="text-xs text-muted-foreground w-10 tabular-nums">
 								{formatDuration(player.durationMs)}
 							</span>
@@ -288,26 +260,57 @@
 			</div>
 
 			<!-- Lyrics / Video panel (below hero) -->
-			{#if displayMode === 'video' && fullTrack?.music_video_path}
-				<div class="rounded-xl border border-border bg-black overflow-hidden">
-					<!-- svelte-ignore a11y_media_has_caption -->
-					<video
-						bind:this={videoElement}
-						src={assetUrl(fullTrack.music_video_path)}
-						controls
-						autoplay
-						class="w-full max-h-[28rem] object-contain"
-						onplay={handleVideoPlay}
-						onpause={handleVideoPause}
-						onended={handleVideoEnded}
-					></video>
-				</div>
-			{:else if displayMode === 'lyrics' && fullTrack?.lyrics}
-				<div class="rounded-xl border border-border/60 bg-card/60 backdrop-blur-sm overflow-hidden">
-					<div class="h-[24rem] overflow-hidden">
-						<SyncedLyrics lyrics={fullTrack.lyrics} positionMs={player.positionMs} />
+			{#if preferredMode === 'video'}
+				{#if fullTrack?.music_video_path && videoPhaseActive}
+					<div class="rounded-xl border border-border bg-black overflow-hidden">
+						<!-- svelte-ignore a11y_media_has_caption -->
+						<video
+							bind:this={videoElement}
+							src={assetUrl(fullTrack.music_video_path)}
+							controls
+							autoplay
+							class="w-full max-h-[28rem] object-contain"
+							onplay={handleVideoPlay}
+							onpause={handleVideoPause}
+							onended={handleVideoEnded}
+						></video>
 					</div>
-				</div>
+				{:else if fullTrack?.music_video_path}
+					<!-- Video finished — offer replay instead of silently showing nothing -->
+					<div class="rounded-xl border border-border/60 bg-card/60 flex flex-col items-center justify-center gap-3 h-48">
+						<p class="text-sm text-muted-foreground">Video finished</p>
+						<Button variant="outline" size="sm" onclick={() => videoPhaseActive = true}>
+							<RotateCcw class="size-4" />
+							Replay video
+						</Button>
+					</div>
+				{:else}
+					<div class="rounded-xl border border-dashed border-border/60 bg-card/40 flex flex-col items-center justify-center gap-2 h-48">
+						<Film class="size-8 text-muted-foreground/60" strokeWidth={1.5} />
+						<p class="text-sm text-muted-foreground">No music video available for this track</p>
+						{#if player.currentTrack?.id}
+							<a
+								href="/library/songs/{player.currentTrack.id}"
+								class="text-xs text-muted-foreground/70 hover:text-foreground underline underline-offset-2 transition-colors"
+							>
+								Find one on the song detail page
+							</a>
+						{/if}
+					</div>
+				{/if}
+			{:else if preferredMode === 'lyrics'}
+				{#if fullTrack?.lyrics}
+					<div class="rounded-xl border border-border/60 bg-card/60 backdrop-blur-sm overflow-hidden">
+						<div class="h-[24rem] overflow-hidden">
+							<SyncedLyrics lyrics={fullTrack.lyrics} positionMs={player.positionMs} />
+						</div>
+					</div>
+				{:else}
+					<div class="rounded-xl border border-dashed border-border/60 bg-card/40 flex flex-col items-center justify-center gap-2 h-48">
+						<Type class="size-8 text-muted-foreground/60" strokeWidth={1.5} />
+						<p class="text-sm text-muted-foreground">No lyrics available for this track</p>
+					</div>
+				{/if}
 			{/if}
 
 			<!-- Previously Played (queue-order previous — matches player.prev()) -->

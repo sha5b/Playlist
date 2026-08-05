@@ -354,6 +354,7 @@ pub fn run() {
             commands::library_export,
             // Artist enrichment
             commands::enrich_artist,
+            commands::fetch_artist_image,
             commands::library_get_artist_missing_albums,
             commands::download_artist_missing,
             commands::download_music_video,

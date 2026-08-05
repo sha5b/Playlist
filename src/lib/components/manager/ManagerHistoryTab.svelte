@@ -46,6 +46,11 @@
 			onloadHistory();
 		}
 	}
+
+	// Per-status counts for the current page — quick scan of how the batch went.
+	const pageDone = $derived(history.filter((d) => d.status === 'completed').length);
+	const pageFailed = $derived(history.filter((d) => d.status === 'failed').length);
+	const pageCancelled = $derived(history.filter((d) => d.status === 'cancelled').length);
 </script>
 
 {#if !historyLoaded}
@@ -54,7 +59,22 @@
 	</div>
 {:else}
 	<div class="flex items-center justify-between">
-		<p class="text-sm text-muted-foreground">{historyTotal} total download{historyTotal !== 1 ? 's' : ''}</p>
+		<div class="flex items-center gap-3">
+			<p class="text-sm text-muted-foreground">{historyTotal} total download{historyTotal !== 1 ? 's' : ''}</p>
+			{#if history.length > 0}
+				<div class="flex items-center gap-1.5">
+					{#if pageDone > 0}
+						<Badge variant="outline" class="text-[10px] text-success border-success/30">{pageDone} done</Badge>
+					{/if}
+					{#if pageFailed > 0}
+						<Badge variant="outline" class="text-[10px] text-destructive border-destructive/30">{pageFailed} failed</Badge>
+					{/if}
+					{#if pageCancelled > 0}
+						<Badge variant="outline" class="text-[10px] text-muted-foreground/50">{pageCancelled} cancelled</Badge>
+					{/if}
+				</div>
+			{/if}
+		</div>
 		{#if history.length > 0}
 			<Button variant="ghost" size="sm" onclick={onclearHistory} class="gap-1.5 text-muted-foreground hover:text-destructive">
 				<Trash2 class="size-3.5" />
@@ -94,9 +114,14 @@
 							{/if}
 						</div>
 						<div class="flex-1 min-w-0 pl-3">
-							<p class="text-sm truncate">{dl.title || dl.url}</p>
-							{#if dl.artist}
-								<p class="text-xs text-muted-foreground/60 truncate mt-0.5">{dl.artist}</p>
+							<div class="flex items-center gap-2">
+								<p class="text-sm truncate">{dl.title || dl.url}</p>
+								{#if dl.artist}
+									<span class="text-xs text-muted-foreground/60 truncate shrink-0">{dl.artist}</span>
+								{/if}
+							</div>
+							{#if dl.status === 'failed' && dl.error_message}
+								<p class="text-xs text-destructive/80 truncate mt-0.5" title={dl.error_message}>{dl.error_message}</p>
 							{/if}
 						</div>
 						<div class="w-28 text-center hidden sm:block">

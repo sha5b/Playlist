@@ -140,6 +140,7 @@ pub async fn manager_add_playlist(
                 .await?
             };
 
+            let playlist_thumbnail = fetch_result.playlist_thumbnail.clone();
             let entries = fetch_result.entries;
             if entries.is_empty() {
                 return Err("No entries found. Make sure this is a valid playlist URL.".to_string());
@@ -166,7 +167,7 @@ pub async fn manager_add_playlist(
                 let db_inner = db_clone.clone();
                 let app_inner = app_clone.clone();
                 tokio::spawn(async move {
-                    download_playlist_thumbnails(&db_inner, &app_inner, playlist_id).await;
+                    download_playlist_thumbnails(&db_inner, &app_inner, playlist_id, playlist_thumbnail).await;
                 });
             }
 
@@ -263,12 +264,15 @@ pub async fn manager_sync_playlist(
             .map_err(|e| e.to_string())?
     };
 
-    // Spawn async task to download thumbnails in the background
+    // Spawn async task to download thumbnails in the background.
+    // Passing the source playlist's own thumbnail also BACKFILLS the original
+    // cover for playlists imported before it was captured.
     {
         let db_clone = db.inner().clone();
         let app_clone = app_handle.clone();
+        let playlist_thumbnail = fetch_result.playlist_thumbnail.clone();
         tokio::spawn(async move {
-            download_playlist_thumbnails(&db_clone, &app_clone, playlist_id).await;
+            download_playlist_thumbnails(&db_clone, &app_clone, playlist_id, playlist_thumbnail).await;
         });
     }
 
@@ -564,11 +568,14 @@ pub async fn manager_remove_playlist(
 }
 
 /// Download thumbnails for playlist entries and set the playlist cover.
-/// Runs in the background — errors are logged, not propagated.
+/// The ORIGINAL source playlist's thumbnail (when available) always wins as
+/// the cover; the first entry's thumbnail is only a fallback when the source
+/// provides none. Runs in the background — errors are logged, not propagated.
 async fn download_playlist_thumbnails(
     db: &Arc<crate::db::DbPool>,
     app_handle: &tauri::AppHandle,
     playlist_id: i64,
+    playlist_thumbnail: Option<String>,
 ) {
     use tauri::{Manager, Emitter};
 
@@ -579,6 +586,30 @@ async fn download_playlist_thumbnails(
     if let Err(e) = std::fs::create_dir_all(&thumbnails_dir) {
         log::warn!("Failed to create thumbnails dir: {}", e);
         return;
+    }
+
+    // Download the source playlist's own thumbnail and use it as the cover,
+    // unconditionally — the playlist should always show the original artwork.
+    if let Some(thumb_url) = playlist_thumbnail.as_deref().filter(|u| u.starts_with("http")) {
+        if let Some(bytes) = crate::metadata::lastfm::download_image(thumb_url).await {
+            let ext = if thumb_url.contains(".png") { "png" }
+                else if thumb_url.contains(".webp") { "webp" }
+                else { "jpg" };
+            let local_path = thumbnails_dir.join(format!("playlist_{}.{}", playlist_id, ext));
+            match std::fs::write(&local_path, &bytes) {
+                Ok(()) => {
+                    if let Ok(conn) = db.lock() {
+                        let _ = conn.execute(
+                            "UPDATE playlists SET cover_art_path = ?1 WHERE id = ?2",
+                            rusqlite::params![local_path.to_string_lossy().to_string(), playlist_id],
+                        );
+                    }
+                }
+                Err(e) => log::warn!("Failed to write playlist thumbnail for {}: {}", playlist_id, e),
+            }
+        } else {
+            log::warn!("Failed to download playlist thumbnail for {}: {}", playlist_id, thumb_url);
+        }
     }
 
     // Get entries with remote thumbnail URLs

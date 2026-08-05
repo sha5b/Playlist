@@ -467,6 +467,17 @@
 	);
 	const totalNewAcrossPlaylists = $derived(playlists.reduce((sum, p) => sum + p.new_count, 0));
 
+	// --- Status summary (top-of-page radar) ---
+	// downloading/processing are always retained in the render window (see
+	// downloads store boundList), so those window counts are exact; queued is
+	// derived from the authoritative total to survive window eviction.
+	const downloadingCount = $derived(activeDownloads.filter((d) => d.status === 'downloading').length);
+	const convertingCount = $derived(activeDownloads.filter((d) => d.status === 'processing').length);
+	const queuedCount = $derived(Math.max(0, activeCount - downloadingCount - convertingCount));
+	const failedRecentCount = $derived(allCompletedDownloads.filter((d) => d.status === 'failed').length);
+	const doneRecentCount = $derived(allCompletedDownloads.filter((d) => d.status === 'completed').length);
+	const activeSyncCount = $derived(syncingIds.size + (syncingAll ? 1 : 0));
+
 	// Cache album names for grouped downloads
 	let albumNames: Record<number, string> = $state({});
 	const groupedActiveDownloads = $derived(groupDownloadsByAlbum(activeDownloads, albumNames));
@@ -550,6 +561,70 @@
 			</Button>
 		</div>
 	{:else}
+		<!-- Status summary: everything on the radar at a glance -->
+		<div class="grid grid-cols-3 sm:grid-cols-6 rounded-xl border border-border/60 bg-card divide-x divide-border/40 overflow-hidden">
+			<button
+				class="flex flex-col items-start gap-0.5 px-4 py-3 text-left hover:bg-muted/30 transition-colors"
+				onclick={() => (activeTab = 'downloads')}
+			>
+				<span class="text-[10px] font-medium uppercase tracking-wider text-muted-foreground/70">Queued</span>
+				<span class="text-lg font-semibold tabular-nums {queuedCount > 0 ? '' : 'text-muted-foreground/40'}">{queuedCount}</span>
+			</button>
+			<button
+				class="flex flex-col items-start gap-0.5 px-4 py-3 text-left hover:bg-muted/30 transition-colors"
+				onclick={() => (activeTab = 'downloads')}
+			>
+				<span class="flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground/70">
+					Downloading
+					{#if downloadingCount > 0}
+						<span class="relative flex size-1.5">
+							<span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-info opacity-75"></span>
+							<span class="relative inline-flex rounded-full size-1.5 bg-info"></span>
+						</span>
+					{/if}
+				</span>
+				<span class="text-lg font-semibold tabular-nums {downloadingCount > 0 ? 'text-info' : 'text-muted-foreground/40'}">{downloadingCount}</span>
+			</button>
+			<button
+				class="flex flex-col items-start gap-0.5 px-4 py-3 text-left hover:bg-muted/30 transition-colors"
+				onclick={() => (activeTab = 'downloads')}
+			>
+				<span class="text-[10px] font-medium uppercase tracking-wider text-muted-foreground/70">Converting</span>
+				<span class="text-lg font-semibold tabular-nums {convertingCount > 0 ? 'text-warning' : 'text-muted-foreground/40'}">{convertingCount}</span>
+			</button>
+			<button
+				class="flex flex-col items-start gap-0.5 px-4 py-3 text-left hover:bg-muted/30 transition-colors"
+				onclick={() => (activeTab = 'downloads')}
+			>
+				<span class="text-[10px] font-medium uppercase tracking-wider text-muted-foreground/70">Done</span>
+				<span class="text-lg font-semibold tabular-nums {doneRecentCount > 0 ? 'text-success' : 'text-muted-foreground/40'}">{doneRecentCount}</span>
+			</button>
+			<button
+				class="flex flex-col items-start gap-0.5 px-4 py-3 text-left hover:bg-muted/30 transition-colors"
+				onclick={() => (activeTab = 'downloads')}
+			>
+				<span class="text-[10px] font-medium uppercase tracking-wider text-muted-foreground/70">Failed</span>
+				<span class="text-lg font-semibold tabular-nums {failedRecentCount > 0 ? 'text-destructive' : 'text-muted-foreground/40'}">{failedRecentCount}</span>
+			</button>
+			<button
+				class="flex flex-col items-start gap-0.5 px-4 py-3 text-left hover:bg-muted/30 transition-colors"
+				onclick={() => (activeTab = 'playlists')}
+			>
+				<span class="flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground/70">
+					Playlists
+					{#if activeSyncCount > 0}
+						<Loader2 class="size-2.5 animate-spin text-info" />
+					{/if}
+				</span>
+				<span class="text-lg font-semibold tabular-nums {playlists.length > 0 ? '' : 'text-muted-foreground/40'}">
+					{playlists.length}
+					{#if totalNewAcrossPlaylists > 0}
+						<span class="text-xs font-medium text-primary align-middle">+{totalNewAcrossPlaylists} new</span>
+					{/if}
+				</span>
+			</button>
+		</div>
+
 		<Tabs.Root bind:value={activeTab}>
 			<div class="flex items-center justify-between">
 				<Tabs.List>

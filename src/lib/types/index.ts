@@ -53,6 +53,8 @@ export interface Artist {
 	website_url: string | null;
 	has_enriched_discography: boolean;
 	track_count: number;
+	/** Cover art of one of the artist's albums — fallback when image_path is null. */
+	fallback_cover_path: string | null;
 }
 
 export interface Album {
@@ -173,6 +175,9 @@ export interface Download {
 	target_duration_ms: number | null;
 	target_album_name: string | null;
 	target_recording_mbid: string | null;
+	/** Live transfer stats from download events (not persisted in the DB). */
+	speed?: string | null;
+	eta?: string | null;
 }
 
 export interface UrlInfo {

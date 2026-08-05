@@ -10,21 +10,8 @@
 	import { player } from '$lib/stores/player.svelte';
 	import { formatDuration } from '$lib/utils/format';
 	import CoverArt from '$lib/components/shared/CoverArt.svelte';
+	import SeekBar from '$lib/components/player/SeekBar.svelte';
 	import { processQueueDrop, handleQueueDragOver } from '$lib/utils/queueDrop';
-
-	// While dragging, show the drag value instead of the live progress so the
-	// backend's ~450ms progress events don't snap the thumb back mid-drag.
-	let seekDragValue = $state<number | null>(null);
-	let seekClearTimeout: ReturnType<typeof setTimeout>;
-
-	function handleProgressChange(value: number) {
-		const seconds = (value / 100) * (player.durationMs / 1000);
-		player.seek(seconds);
-		// Keep showing the committed value briefly to avoid a snap-back flash
-		// before the next progress event reflects the seek.
-		clearTimeout(seekClearTimeout);
-		seekClearTimeout = setTimeout(() => { seekDragValue = null; }, 500);
-	}
 
 	let volumeTimeout: ReturnType<typeof setTimeout>;
 	function handleVolumeChange(value: number) {
@@ -42,10 +29,6 @@
 			player.setVolume(0);
 		}
 	}
-
-	const progressPercent = $derived(
-		player.durationMs > 0 ? (player.positionMs / player.durationMs) * 100 : 0
-	);
 
 	const VolumeIcon = $derived(
 		player.volume === 0 ? VolumeX : player.volume < 0.5 ? Volume1 : Volume2
@@ -181,16 +164,7 @@
 			<span class="text-[11px] text-muted-foreground w-10 text-right tabular-nums">
 				{formatDuration(player.positionMs)}
 			</span>
-			<Slider
-				type="single"
-				value={seekDragValue ?? progressPercent}
-				max={100}
-				step={0.1}
-				class="flex-1"
-				disabled={!hasTrack}
-				onValueChange={(v: number) => { seekDragValue = v; }}
-				onValueCommit={handleProgressChange}
-			/>
+			<SeekBar class="flex-1" disabled={!hasTrack} />
 			<span class="text-[11px] text-muted-foreground w-10 tabular-nums">
 				{formatDuration(player.durationMs)}
 			</span>

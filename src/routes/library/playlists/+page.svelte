@@ -8,6 +8,7 @@
 	import { formatDurationLong, assetUrl } from '$lib/utils/format';
 	import type { Playlist } from '$lib/types';
 	import { toast } from 'svelte-sonner';
+	import { scrollRestore } from '$lib/utils/scrollRestore';
 
 	let playlists: Playlist[] = $state([]);
 	let loading = $state(true);
@@ -56,7 +57,7 @@
 	});
 </script>
 
-<div class="flex-1 min-h-0 overflow-y-auto space-y-6">
+<div use:scrollRestore class="flex-1 min-h-0 overflow-y-auto space-y-6">
 	<div class="flex items-center justify-between">
 		<div>
 			<h1 class="text-3xl font-bold tracking-tight">Playlists</h1>

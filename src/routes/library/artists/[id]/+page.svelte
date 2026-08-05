@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { page } from '$app/state';
-	import { getArtist, getArtistTracks, getArtistAlbums, enrichArtist, getArtistMissingAlbums, downloadArtistMissing, getAlbumsDownloadStatus } from '$lib/api/library';
+	import { getArtist, getArtistTracks, getArtistAlbums, enrichArtist, fetchArtistImage, getArtistMissingAlbums, downloadArtistMissing, getAlbumsDownloadStatus } from '$lib/api/library';
 	import type { AlbumDownloadStatus, ArtistDiscographyEntry } from '$lib/api/library';
 	import TrackTable from '$lib/components/library/TrackTable.svelte';
 	import { Button } from '$lib/components/ui/button';
@@ -38,6 +38,18 @@
 			artist = a;
 			tracks = t;
 			albums = al;
+
+			// Lazily fetch a real artist image (Deezer/Last.fm) if we don't have one.
+			// Until it arrives the header falls back to album cover art, so it's never blank.
+			if (a && !a.image_path) {
+				fetchArtistImage(a.id)
+					.then((path) => {
+						if (path && artist && artist.id === a.id) {
+							artist = { ...artist, image_path: path };
+						}
+					})
+					.catch(() => {}); // best-effort — fallback art already shown
+			}
 
 			// Load download statuses for local albums
 			if (al.length > 0) {
@@ -179,7 +191,7 @@
 		<div class="flex gap-6 items-end">
 			<div class="size-48 rounded-full bg-muted flex items-center justify-center overflow-hidden shrink-0 shadow-lg">
 				<CoverArt
-					src={artist.image_path}
+					src={artist.image_path ?? artist.fallback_cover_path}
 					alt={artist.name}
 					class="size-full object-cover"
 					iconClass="size-16 text-muted-foreground"

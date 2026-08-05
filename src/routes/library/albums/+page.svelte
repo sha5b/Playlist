@@ -9,8 +9,7 @@
 	import { libraryStore } from '$lib/stores/library.svelte';
 	import { toast } from 'svelte-sonner';
 	import { useSearch } from '$lib/hooks/useSearch.svelte';
-	import { beforeNavigate, afterNavigate } from '$app/navigation';
-	import { ui } from '$lib/stores/ui.svelte';
+	import { scrollRestore } from '$lib/utils/scrollRestore';
 	import type { Album } from '$lib/types';
 
 	let albums: Album[] = $state([]);
@@ -18,24 +17,6 @@
 	let loading = $state(true);
 	let downloadStatuses: Record<string, AlbumDownloadStatus> = $state({});
 	let cleaningDuplicates = $state(false);
-	let scrollContainer: HTMLDivElement | undefined = $state();
-
-	beforeNavigate(() => {
-		if (scrollContainer) {
-			ui.saveScroll('/library/albums', scrollContainer.scrollTop);
-		}
-	});
-
-	afterNavigate(() => {
-		if (scrollContainer) {
-			const saved = ui.getScroll('/library/albums');
-			if (saved > 0) {
-				requestAnimationFrame(() => {
-					if (scrollContainer) scrollContainer.scrollTop = saved;
-				});
-			}
-		}
-	});
 
 	const search = useSearch(load);
 
@@ -82,7 +63,7 @@
 	});
 </script>
 
-<div bind:this={scrollContainer} class="overflow-y-auto overflow-x-hidden space-y-6">
+<div use:scrollRestore class="overflow-y-auto overflow-x-hidden space-y-6">
 	<div class="flex items-center justify-between">
 		<div>
 			<h1 class="text-3xl font-bold tracking-tight">Albums</h1>

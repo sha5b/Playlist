@@ -21,6 +21,23 @@ impl Drop for ScanRunningGuard {
     }
 }
 
+/// Fetch artist image bytes: Deezer first (Last.fm's artist.getinfo has only
+/// returned a placeholder star since 2019), then any usable Last.fm URL.
+async fn fetch_artist_image_bytes(
+    artist_name: &str,
+    lastfm_url: Option<&str>,
+) -> Option<Vec<u8>> {
+    if let Some(url) = crate::metadata::deezer::get_artist_image_url(artist_name).await {
+        if let Some(bytes) = crate::metadata::lastfm::download_image(&url).await {
+            return Some(bytes);
+        }
+    }
+    if let Some(url) = lastfm_url {
+        return crate::metadata::lastfm::download_image(url).await;
+    }
+    None
+}
+
 #[derive(Debug, serde::Serialize)]
 pub struct EnrichResult {
     pub track_id: i64,
@@ -420,10 +437,9 @@ pub async fn enrich_album(
 
         if !artist_has_image {
             let mut artist_img_bytes: Option<Vec<u8>> = None;
-            if let Some(ref lfm_artist) = lastfm_artist {
-                if let Some(ref url) = lfm_artist.image_url {
-                    artist_img_bytes = crate::metadata::lastfm::download_image(url).await;
-                }
+            if let Some(ref artist) = artist_name {
+                let lfm_url = lastfm_artist.as_ref().and_then(|a| a.image_url.as_deref());
+                artist_img_bytes = fetch_artist_image_bytes(artist, lfm_url).await;
             }
             if let Some(bytes) = artist_img_bytes {
                 if let Ok(covers_dir) = app_handle.path().app_data_dir().map(|d| d.join("covers")) {
@@ -933,21 +949,23 @@ pub async fn auto_enrich_library(
 
         if let Some(aid) = artist_needs_image {
             if let Some(ref artist) = artist_name {
-                if let Ok(lfm) = crate::metadata::lastfm::get_artist_info(artist).await {
-                    if let Some(ref url) = lfm.image_url {
-                        if let Some(bytes) = crate::metadata::lastfm::download_image(url).await {
-                            let filename = format!("artist_{}.jpg", aid);
-                            let path = covers_dir.join(&filename);
-                            if std::fs::write(&path, &bytes).is_ok() {
-                                let path_str = path.to_string_lossy().to_string();
-                                if let Ok(conn) = db.lock() {
-                                    let _ = conn.execute("UPDATE artists SET image_path = ?1 WHERE id = ?2 AND image_path IS NULL", rusqlite::params![path_str, aid]);
-                                    if let Some(ref bio) = lfm.bio {
-                                        let _ = conn.execute("UPDATE artists SET bio = ?1 WHERE id = ?2 AND (bio IS NULL OR bio = '')", rusqlite::params![bio, aid]);
-                                    }
-                                }
-                            }
+                let lfm = crate::metadata::lastfm::get_artist_info(artist).await.ok();
+                let lfm_url = lfm.as_ref().and_then(|l| l.image_url.as_deref());
+                if let Some(bytes) = fetch_artist_image_bytes(artist, lfm_url).await {
+                    let filename = format!("artist_{}.jpg", aid);
+                    let path = covers_dir.join(&filename);
+                    if std::fs::write(&path, &bytes).is_ok() {
+                        let path_str = path.to_string_lossy().to_string();
+                        if let Ok(conn) = db.lock() {
+                            let _ = conn.execute("UPDATE artists SET image_path = ?1 WHERE id = ?2 AND image_path IS NULL", rusqlite::params![path_str, aid]);
                         }
+                    }
+                }
+                // Bio still comes from Last.fm even when the image comes from Deezer
+                // (or when no image was found at all).
+                if let Some(bio) = lfm.as_ref().and_then(|l| l.bio.as_ref()) {
+                    if let Ok(conn) = db.lock() {
+                        let _ = conn.execute("UPDATE artists SET bio = ?1 WHERE id = ?2 AND (bio IS NULL OR bio = '')", rusqlite::params![bio, aid]);
                     }
                 }
             }
@@ -1202,6 +1220,94 @@ pub fn metadata_delete_all(
     Ok(())
 }
 
+/// Artist names that legitimately contain a comma, so the comma must not be read
+/// as a credit separator. Lowercase, compared whole.
+const COMMA_IN_NAME: &[&str] = &[
+    "earth, wind & fire",
+    "tyler, the creator",
+    "crosby, stills & nash",
+    "crosby, stills, nash & young",
+    "emerson, lake & palmer",
+    "blood, sweat & tears",
+    "peter, paul and mary",
+    "hannah williams, the affirmations",
+    "kool, rock-ski",
+];
+
+/// Scrape labels that end up glued to the front of an artist name. The library
+/// holds a dozen of these — `PREMIERE: Aleksandir`, `Lyrics: Miracle Musical` —
+/// each of which forks an album away from its clean twin.
+const SCRAPE_PREFIXES: &[&str] = &[
+    "premiere", "première", "premier", "lyrics", "full album", "out now",
+    "free download", "video", "audio",
+];
+
+/// The artist's own name, for deciding whether two same-titled albums are the
+/// same album.
+///
+/// Album identity has to survive three things ingest does to a credit line:
+///
+/// 1. **Featured artists appended.** `Princess Nokia, Wiki` and `Princess Nokia`
+///    are one album, and `Dr. Dre, Eminem, Xzibit` and `Dr. Dre, Hittman,
+///    Six-Two, Nate Dogg, Kurupt` are one album, so the key is the credit line's
+///    *first* name and not the whole string or its id.
+/// 2. **A scraped label in front.** `PREMIERE : Aleksandir` is Aleksandir.
+/// 3. **A scraped counter behind.** `JUN FUKAMACHI...02` is Jun Fukamachi.
+///
+/// The comma is not always a separator, which is why `COMMA_IN_NAME` exists:
+/// splitting `Earth, Wind & Fire` at its comma would key that album on "earth".
+/// The blast radius of a wrong split is bounded — this decides album *grouping*
+/// only and never edits the artists table — but the guard costs nothing.
+///
+/// Returns `None` for a missing or empty name, which callers treat as "unknown
+/// artist, compatible with anything".
+fn primary_artist_key(name: Option<&str>) -> Option<String> {
+    let raw = name?.trim();
+    if raw.is_empty() {
+        return None;
+    }
+
+    // 1. a leading scrape label, up to the first ':' — "PREMIERE : X", "Lyrics: X"
+    let mut s = raw;
+    if let Some((head, tail)) = s.split_once(':') {
+        let head = head.trim().to_lowercase();
+        if SCRAPE_PREFIXES.contains(&head.as_str()) && !tail.trim().is_empty() {
+            s = tail.trim();
+        }
+    }
+
+    // 2. a trailing "...NN" counter, and a trailing " Official"
+    if let Some(idx) = s.rfind("..") {
+        let tail = s[idx..].trim_start_matches('.');
+        if !tail.is_empty() && tail.chars().all(|c| c.is_ascii_digit()) {
+            // `rfind` lands inside the run of dots, so the rest of the run has to
+            // go too — "JUN FUKAMACHI...02" must not keep a trailing dot.
+            s = s[..idx].trim_end_matches('.').trim_end();
+        }
+    }
+    if let Some(stripped) = s.strip_suffix(" Official") {
+        if !stripped.trim().is_empty() {
+            s = stripped.trim_end();
+        }
+    }
+
+    if s.is_empty() {
+        s = raw;
+    }
+    let lower = s.to_lowercase();
+    if COMMA_IN_NAME.contains(&lower.as_str()) {
+        return Some(lower);
+    }
+
+    // 3. the first credit in the line
+    let primary = lower.split(", ").next().unwrap_or(&lower).trim().to_string();
+    if primary.is_empty() {
+        Some(lower)
+    } else {
+        Some(primary)
+    }
+}
+
 #[tauri::command]
 pub fn metadata_cleanup_duplicates(
     db: State<'_, Arc<DbPool>>,
@@ -1210,9 +1316,18 @@ pub fn metadata_cleanup_duplicates(
 
     // === PHASE 1: Merge duplicate albums ===
     // Group by LOWER(title), but only merge albums whose artists are
-    // compatible: same artist_id, or one side has no artist yet. Merging on
-    // title alone destroyed data — "Greatest Hits" by two different artists
-    // got collapsed into one album with the wrong artist's metadata.
+    // compatible: same primary artist, or one side has no artist yet. Merging on
+    // title alone destroyed data — "Greatest Hits" by two different artists got
+    // collapsed into one album with the wrong artist's metadata.
+    //
+    // Compatibility is decided on the artist's *primary name* and not on
+    // artist_id, because artist_id splits one album into several. Ingest stores a
+    // whole credit line as a single artists row, so an album arrives under as
+    // many artist rows as it has featured line-ups: "1992 Deluxe" sat under both
+    // `Princess Nokia` and `Princess Nokia, Wiki`, and "2001" under
+    // `Dr. Dre, Eminem, Xzibit` and `Dr. Dre, Hittman, Six-Two, Nate Dogg,
+    // Kurupt`. Different ids, so the old rule read them as different albums and
+    // left every such pair on the shelf. See `primary_artist_key`.
     let dup_titles: Vec<String> = conn.prepare(
         "SELECT LOWER(title) FROM albums GROUP BY LOWER(title) HAVING COUNT(*) > 1"
     )
@@ -1227,26 +1342,30 @@ pub fn metadata_cleanup_duplicates(
 
     for lower_title in &dup_titles {
         // All albums with this title, the one with the most tracks first
-        let albums: Vec<(i64, Option<i64>)> = conn.prepare(
-            "SELECT a.id, a.artist_id FROM albums a
+        let albums: Vec<(i64, Option<i64>, Option<String>)> = conn.prepare(
+            "SELECT a.id, a.artist_id, ar.name FROM albums a
+             LEFT JOIN artists ar ON ar.id = a.artist_id
              LEFT JOIN (SELECT album_id, COUNT(*) as cnt FROM tracks WHERE album_id IS NOT NULL GROUP BY album_id) tc
                ON tc.album_id = a.id
              WHERE LOWER(a.title) = ?1
              ORDER BY COALESCE(tc.cnt, 0) DESC, a.id ASC"
         )
         .map_err(|e| e.to_string())?
-        .query_map(params![lower_title], |row| Ok((row.get(0)?, row.get(1)?)))
+        .query_map(params![lower_title], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })
         .map_err(|e| e.to_string())?
         .filter_map(|r| r.ok())
         .collect();
 
         // Partition into artist-compatible groups. An album with no artist
         // joins the first group (covers imports that predate artist tagging);
-        // albums with different artists stay separate.
-        let mut groups: Vec<(Option<i64>, Vec<i64>)> = Vec::new();
-        for (id, artist) in albums {
-            let existing = groups.iter_mut().find(|(g_artist, _)| {
-                match (*g_artist, artist) {
+        // albums with different primary artists stay separate.
+        let mut groups: Vec<(Option<String>, Option<i64>, Vec<i64>)> = Vec::new();
+        for (id, artist_id, artist_name) in albums {
+            let key = primary_artist_key(artist_name.as_deref());
+            let existing = groups.iter_mut().find(|(g_key, _, _)| {
+                match (g_key.as_deref(), key.as_deref()) {
                     (Some(a), Some(b)) => a == b,
                     _ => true, // either side unknown — compatible
                 }
@@ -1254,15 +1373,18 @@ pub fn metadata_cleanup_duplicates(
             match existing {
                 Some(group) => {
                     if group.0.is_none() {
-                        group.0 = artist;
+                        group.0 = key;
                     }
-                    group.1.push(id);
+                    if group.1.is_none() {
+                        group.1 = artist_id;
+                    }
+                    group.2.push(id);
                 }
-                None => groups.push((artist, vec![id])),
+                None => groups.push((key, artist_id, vec![id])),
             }
         }
 
-        for (group_artist, member_ids) in groups {
+        for (_group_key, group_artist, member_ids) in groups {
             if member_ids.len() <= 1 {
                 continue;
             }
@@ -1664,4 +1786,122 @@ pub async fn enrich_artist(
         "total_releases": discography.len(),
         "discography": discography,
     }))
+}
+
+/// Lazily fetch an artist's image (Deezer first, Last.fm fallback), cache it
+/// to the covers dir in app data, and store the path in the DB.
+/// Called by the artist detail page when the artist has no image yet.
+/// Returns the cached image path, or None if no image could be found.
+#[tauri::command]
+pub async fn fetch_artist_image(
+    db: State<'_, Arc<DbPool>>,
+    app_handle: tauri::AppHandle,
+    artist_id: i64,
+) -> Result<Option<String>, String> {
+    let (name, existing): (String, Option<String>) = {
+        let conn = crate::db::lock(&db)?;
+        conn.query_row(
+            "SELECT name, image_path FROM artists WHERE id = ?1",
+            params![artist_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        ).map_err(|e| e.to_string())?
+    };
+
+    // Already have an image on disk — nothing to do.
+    if let Some(ref p) = existing {
+        if std::path::Path::new(p).exists() {
+            return Ok(Some(p.clone()));
+        }
+    }
+
+    let lfm = crate::metadata::lastfm::get_artist_info(&name).await.ok();
+    let lfm_url = lfm.as_ref().and_then(|l| l.image_url.as_deref());
+    let Some(bytes) = fetch_artist_image_bytes(&name, lfm_url).await else {
+        return Ok(None);
+    };
+
+    let covers_dir = app_handle
+        .path()
+        .app_data_dir()
+        .map(|d| d.join("covers"))
+        .map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&covers_dir).map_err(|e| e.to_string())?;
+    let path = covers_dir.join(format!("artist_{}.jpg", artist_id));
+    std::fs::write(&path, &bytes).map_err(|e| e.to_string())?;
+    let path_str = path.to_string_lossy().to_string();
+
+    {
+        let conn = crate::db::lock(&db)?;
+        conn.execute(
+            "UPDATE artists SET image_path = ?1 WHERE id = ?2",
+            params![path_str, artist_id],
+        ).map_err(|e| e.to_string())?;
+        // Opportunistically fill the bio while we have Last.fm data in hand.
+        if let Some(bio) = lfm.as_ref().and_then(|l| l.bio.as_ref()) {
+            let _ = conn.execute(
+                "UPDATE artists SET bio = ?1 WHERE id = ?2 AND (bio IS NULL OR bio = '')",
+                params![bio, artist_id],
+            );
+        }
+    }
+
+    Ok(Some(path_str))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::primary_artist_key;
+
+    fn key(name: &str) -> String {
+        primary_artist_key(Some(name)).expect("a non-empty name has a key")
+    }
+
+    #[test]
+    fn featured_artists_do_not_fork_an_album() {
+        // The duplicates seen in the library: same album, different credit line.
+        assert_eq!(key("Princess Nokia, Wiki"), key("Princess Nokia"));
+        assert_eq!(
+            key("Dr. Dre, Hittman, Six-Two, Nate Dogg, Kurupt"),
+            key("Dr. Dre, Eminem, Xzibit")
+        );
+        assert_eq!(key("Gorillaz, Moonchild Sanelly"), key("Gorillaz, Robert Smith"));
+        assert_eq!(key("DANGERDOOM, MF DOOM, Danger Mouse"), key("DANGERDOOM"));
+        assert_eq!(key("Şatellites, Vicky Ashkenazy"), key("Şatellites"));
+    }
+
+    #[test]
+    fn scrape_labels_are_stripped() {
+        assert_eq!(key("PREMIERE : Aleksandir"), key("Aleksandir"));
+        assert_eq!(key("PREMIERE: Aleksandir"), key("Aleksandir"));
+        assert_eq!(key("Lyrics: Miracle Musical"), key("Miracle Musical"));
+        assert_eq!(key("JUN FUKAMACHI...02"), key("Jun Fukamachi"));
+        assert_eq!(key("Birdy Nam Nam Official"), key("Birdy Nam Nam"));
+    }
+
+    #[test]
+    fn different_artists_stay_apart() {
+        // Both pairs share an album title in the library and must NOT merge.
+        assert_ne!(key("The Little Dippers, Buddy Killen"), key("Flight Facilities"));
+        assert_ne!(key("The Wolfgang Press"), key("AUDREY NUNA"));
+    }
+
+    #[test]
+    fn a_comma_inside_a_name_is_not_a_separator() {
+        assert_eq!(key("Earth, Wind & Fire"), "earth, wind & fire");
+        assert_eq!(key("Tyler, The Creator"), "tyler, the creator");
+        // ...and such a name must not collide with the bare first word.
+        assert_ne!(key("Earth, Wind & Fire"), key("Earth"));
+    }
+
+    #[test]
+    fn a_missing_name_has_no_key() {
+        assert_eq!(primary_artist_key(None), None);
+        assert_eq!(primary_artist_key(Some("   ")), None);
+    }
+
+    #[test]
+    fn a_name_that_is_only_a_label_survives() {
+        // "PREMIERE" alone is not a prefix to strip — there is nothing behind it.
+        assert_eq!(key("PREMIERE"), "premiere");
+    }
 }

@@ -7,6 +7,7 @@
 	import * as DropdownMenu from '$lib/components/ui/dropdown-menu';
 	import { Button } from '$lib/components/ui/button';
 	import { toast } from 'svelte-sonner';
+	import { scrollRestore } from '$lib/utils/scrollRestore';
 	import type { Track } from '$lib/types';
 
 	interface Placeholder {
@@ -79,15 +80,18 @@
 	// Reset scroll to top when sort/filter changes (not on every tracks reference change)
 	// Include the first track's id so page changes (same length) also reset scroll
 	let scrollKey = $derived(`${sortBy}-${sortDir}-${tracks.length}-${tracks[0]?.id}`);
-	let prevScrollKey = '';
+	// null until the first run: skip resetting on mount so the scrollRestore
+	// action (which restores the saved position for back-navigation) isn't
+	// immediately clobbered back to 0.
+	let prevScrollKey: string | null = null;
 	$effect(() => {
-		if (scrollKey !== prevScrollKey) {
-			prevScrollKey = scrollKey;
+		if (prevScrollKey !== null && scrollKey !== prevScrollKey) {
 			if (scrollContainer) {
 				scrollContainer.scrollTop = 0;
 				scrollTop = 0;
 			}
 		}
+		prevScrollKey = scrollKey;
 	});
 
 	function onScroll() {
@@ -172,6 +176,7 @@
 			bind:this={scrollContainer}
 			bind:clientHeight={containerHeight}
 			onscroll={onScroll}
+			use:scrollRestore
 			class="overflow-y-auto flex-1"
 		>
 			<div style="height: {totalHeight}px; position: relative;">

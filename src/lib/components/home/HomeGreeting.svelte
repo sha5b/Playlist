@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { formatDurationLong, formatFileSize } from '$lib/utils/format';
+	import { formatDurationLong } from '$lib/utils/format';
 	import type { LibraryStats } from '$lib/types';
 
 	let { stats }: { stats: LibraryStats | null } = $props();
@@ -16,12 +16,20 @@
 	<h1 class="text-2xl font-bold tracking-tight">{greeting}</h1>
 	{#if stats && stats.total_tracks > 0}
 		<p class="text-sm text-muted-foreground">
-			{stats.total_tracks.toLocaleString()} tracks
+			<a href="/library/songs" class="hover:text-foreground hover:underline underline-offset-2 transition-colors">
+				{stats.total_tracks.toLocaleString()} tracks
+			</a>
 			{#if stats.total_albums > 0}
-				&middot; {stats.total_albums.toLocaleString()} albums
+				&middot;
+				<a href="/library/albums" class="hover:text-foreground hover:underline underline-offset-2 transition-colors">
+					{stats.total_albums.toLocaleString()} albums
+				</a>
 			{/if}
 			{#if stats.total_artists > 0}
-				&middot; {stats.total_artists.toLocaleString()} artists
+				&middot;
+				<a href="/library/artists" class="hover:text-foreground hover:underline underline-offset-2 transition-colors">
+					{stats.total_artists.toLocaleString()} artists
+				</a>
 			{/if}
 			{#if stats.total_duration_ms > 0}
 				&middot; {formatDurationLong(stats.total_duration_ms)}

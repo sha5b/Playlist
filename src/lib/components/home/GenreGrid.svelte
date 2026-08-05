@@ -4,6 +4,8 @@
 	import { libraryStore } from '$lib/stores/library.svelte';
 	import { toast } from 'svelte-sonner';
 	import { Tags, Play, ListPlus, LoaderCircle } from 'lucide-svelte';
+	import Skeleton from '$lib/components/shared/Skeleton.svelte';
+	import SectionHeader from './SectionHeader.svelte';
 
 	const MIN_TRACKS = 3;
 	const MAX_GENRES = 12;
@@ -90,12 +92,18 @@
 	});
 </script>
 
-{#if !loading && genres.length > 0}
+{#if loading && genres.length === 0}
 	<section class="space-y-2.5">
-		<div class="flex items-center gap-2">
-			<Tags class="size-4 text-muted-foreground/60" />
-			<h2 class="text-sm font-semibold tracking-wide">Genres</h2>
+		<SectionHeader title="Genres" icon={Tags} />
+		<div class="flex flex-wrap gap-2">
+			{#each ['w-28', 'w-20', 'w-32', 'w-24', 'w-20', 'w-28'] as width}
+				<Skeleton class="h-9 rounded-full {width}" />
+			{/each}
 		</div>
+	</section>
+{:else if genres.length > 0}
+	<section class="space-y-2.5">
+		<SectionHeader title="Genres" icon={Tags} />
 
 		<div class="flex flex-wrap gap-2">
 			{#each genres as genre, i (genre.name)}

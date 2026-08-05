@@ -17,6 +17,8 @@
 		ChevronLeft,
 		Info,
 		Square,
+		Gauge,
+		Timer,
 	} from 'lucide-svelte';
 	import * as Tooltip from '$lib/components/ui/tooltip';
 	import type { Download as DownloadType } from '$lib/types';
@@ -56,10 +58,96 @@
 		allCompletedDownloads.slice(completedPage * completedPageSize, (completedPage + 1) * completedPageSize)
 	);
 
+	// Per-state counts for the section headers (window counts; downloading and
+	// converting are always retained in the window so those are exact).
+	const downloadingCount = $derived(activeDownloads.filter((d) => d.status === 'downloading').length);
+	const convertingCount = $derived(activeDownloads.filter((d) => d.status === 'processing').length);
+	const queuedCount = $derived(Math.max(0, activeCount - downloadingCount - convertingCount));
+	const doneCount = $derived(allCompletedDownloads.filter((d) => d.status === 'completed').length);
+	const failedCount = $derived(allCompletedDownloads.filter((d) => d.status === 'failed').length);
+
 	function handleKeydown(e: KeyboardEvent) {
 		if (e.key === 'Enter') onsubmit();
 	}
 </script>
+
+{#snippet statusBadge(status: string)}
+	{#if status === 'downloading'}
+		<Badge variant="outline" class="text-[10px] text-info border-info/30">downloading</Badge>
+	{:else if status === 'processing'}
+		<Badge variant="outline" class="text-[10px] text-warning border-warning/30">converting</Badge>
+	{:else}
+		<Badge variant="outline" class="text-[10px] text-muted-foreground/60">queued</Badge>
+	{/if}
+{/snippet}
+
+{#snippet activeRow(dl: DownloadType, showPlatform: boolean)}
+	<div
+		class="flex items-center gap-3 px-4 py-2.5 transition-colors group border-l-2
+			{dl.status === 'downloading' ? 'border-info/60 bg-info/[0.04]' : ''}
+			{dl.status === 'processing' ? 'border-warning/60 bg-warning/[0.04]' : ''}
+			{dl.status === 'queued' ? 'border-transparent hover:bg-muted/30' : ''}"
+	>
+		<!-- Cover / status tile -->
+		<div class="size-9 rounded-md bg-muted/40 flex items-center justify-center shrink-0">
+			{#if dl.status === 'downloading'}
+				<Loader2 class="size-4 animate-spin text-info" />
+			{:else if dl.status === 'processing'}
+				<Loader2 class="size-4 animate-spin text-warning" />
+			{:else}
+				<Clock class="size-4 text-muted-foreground/40" />
+			{/if}
+		</div>
+		<div class="flex-1 min-w-0">
+			<div class="flex items-center gap-2">
+				<p class="text-sm truncate">{dl.title || dl.url || 'Untitled'}</p>
+				{#if dl.artist}
+					<span class="text-xs text-muted-foreground/60 truncate shrink-0">{dl.artist}</span>
+				{/if}
+			</div>
+			{#if dl.status === 'downloading'}
+				<div class="flex items-center gap-2 mt-1">
+					<Progress value={dl.progress} class="h-1 flex-1" />
+					<span class="text-[10px] text-info tabular-nums shrink-0 w-8 text-right">{Math.round(dl.progress)}%</span>
+					{#if dl.speed}
+						<span class="hidden sm:inline-flex items-center gap-1 text-[10px] text-muted-foreground tabular-nums shrink-0">
+							<Gauge class="size-3 text-muted-foreground/50" />
+							{dl.speed}
+						</span>
+					{/if}
+					{#if dl.eta}
+						<span class="hidden sm:inline-flex items-center gap-1 text-[10px] text-muted-foreground tabular-nums shrink-0">
+							<Timer class="size-3 text-muted-foreground/50" />
+							{dl.eta}
+						</span>
+					{/if}
+				</div>
+			{:else if dl.status === 'processing'}
+				<p class="text-[10px] text-warning/80 mt-0.5">Converting and importing into library...</p>
+			{/if}
+		</div>
+		{#if showPlatform && dl.platform}
+			<div class="w-24 hidden sm:flex justify-center shrink-0">
+				<Badge variant={platformColor(dl.platform)} class="text-[10px]">
+					{platformLabel(dl.platform)}
+				</Badge>
+			</div>
+		{/if}
+		<div class="w-24 flex justify-center shrink-0">
+			{@render statusBadge(dl.status)}
+		</div>
+		<div class="w-8 flex justify-center shrink-0">
+			<Button
+				variant="ghost"
+				size="icon-sm"
+				class="size-6 opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground"
+				onclick={() => oncancel(dl.id)}
+			>
+				<X class="size-3.5" />
+			</Button>
+		</div>
+	</div>
+{/snippet}
 
 <!-- URL Input -->
 <div class="flex gap-2">
@@ -105,10 +193,30 @@
 {#if activeCount > 0}
 	<div class="space-y-3">
 		<div class="flex items-center justify-between gap-2">
-			<h2 class="text-sm font-semibold uppercase tracking-wider text-muted-foreground">
-				Active ({activeCount})
-			</h2>
-			<Button variant="destructive" size="sm" onclick={onstopAll} class="gap-1.5">
+			<div class="flex items-center gap-3 min-w-0">
+				<h2 class="text-sm font-semibold uppercase tracking-wider text-muted-foreground shrink-0">
+					Active ({activeCount})
+				</h2>
+				<div class="flex items-center gap-1.5 flex-wrap">
+					{#if downloadingCount > 0}
+						<Badge variant="outline" class="text-[10px] text-info border-info/30 gap-1">
+							<Loader2 class="size-2.5 animate-spin" />
+							{downloadingCount} downloading
+						</Badge>
+					{/if}
+					{#if convertingCount > 0}
+						<Badge variant="outline" class="text-[10px] text-warning border-warning/30">
+							{convertingCount} converting
+						</Badge>
+					{/if}
+					{#if queuedCount > 0}
+						<Badge variant="outline" class="text-[10px] text-muted-foreground/60">
+							{queuedCount} queued
+						</Badge>
+					{/if}
+				</div>
+			</div>
+			<Button variant="destructive" size="sm" onclick={onstopAll} class="gap-1.5 shrink-0">
 				<Square class="size-3.5" />
 				Stop all
 			</Button>
@@ -124,58 +232,9 @@
 							{group.downloads.length} track{group.downloads.length !== 1 ? 's' : ''}
 						</Badge>
 					</div>
-					<div class="border-b border-border/40 bg-muted/15 text-xs text-muted-foreground uppercase tracking-wider flex items-center px-4 py-2">
-						<div class="w-7"></div>
-						<div class="flex-1 pl-3">Title</div>
-						<div class="w-24 text-center">Status</div>
-						<div class="w-8"></div>
-					</div>
 					<div class="divide-y divide-border/40">
 						{#each group.downloads.slice(0, 30) as dl (dl.id)}
-							<div class="flex items-center px-4 py-2.5 hover:bg-muted/30 transition-colors group">
-								<div class="w-7 flex items-center justify-center shrink-0">
-									{#if dl.status === 'downloading'}
-										<Loader2 class="size-3.5 animate-spin text-info" />
-									{:else if dl.status === 'processing'}
-										<Loader2 class="size-3.5 animate-spin text-success" />
-									{:else}
-										<Clock class="size-3.5 text-muted-foreground/40" />
-									{/if}
-								</div>
-								<div class="flex-1 min-w-0 pl-3">
-									<div class="flex items-center gap-2">
-										<p class="text-sm truncate">{dl.title || dl.url || 'Untitled'}</p>
-										{#if dl.artist}
-											<span class="text-xs text-muted-foreground/60 truncate shrink-0">{dl.artist}</span>
-										{/if}
-									</div>
-									{#if dl.status === 'downloading'}
-										<div class="flex items-center gap-2 mt-1">
-											<Progress value={dl.progress} class="h-1 flex-1" />
-											<span class="text-[10px] text-info tabular-nums shrink-0">{Math.round(dl.progress)}%</span>
-										</div>
-									{/if}
-								</div>
-								<div class="w-24 flex justify-center">
-									{#if dl.status === 'downloading'}
-										<Badge variant="outline" class="text-[10px] text-info border-info/30">downloading</Badge>
-									{:else if dl.status === 'processing'}
-										<Badge variant="outline" class="text-[10px] text-success border-success/30">importing</Badge>
-									{:else}
-										<Badge variant="outline" class="text-[10px] text-muted-foreground/60">queued</Badge>
-									{/if}
-								</div>
-								<div class="w-8 flex justify-center">
-									<Button
-										variant="ghost"
-										size="icon-sm"
-										class="size-6 opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground"
-										onclick={() => oncancel(dl.id)}
-									>
-										<X class="size-3.5" />
-									</Button>
-								</div>
-							</div>
+							{@render activeRow(dl, false)}
 						{/each}
 						{#if group.downloads.length > 30}
 							<div class="text-xs text-muted-foreground/50 text-center py-2.5 bg-muted/10">
@@ -189,55 +248,7 @@
 				<div class="rounded-xl border border-border/60 overflow-hidden">
 					<div class="divide-y divide-border/40">
 						{#each group.downloads.slice(0, 30) as dl (dl.id)}
-							<div class="flex items-center px-4 py-2.5 hover:bg-muted/30 transition-colors group">
-								<div class="w-7 flex items-center justify-center shrink-0">
-									{#if dl.status === 'downloading'}
-										<Loader2 class="size-3.5 animate-spin text-info" />
-									{:else if dl.status === 'processing'}
-										<Loader2 class="size-3.5 animate-spin text-success" />
-									{:else}
-										<Clock class="size-3.5 text-muted-foreground/40" />
-									{/if}
-								</div>
-								<div class="flex-1 min-w-0 pl-3">
-									<div class="flex items-center gap-2">
-										<p class="text-sm truncate">{dl.title || dl.url || 'Untitled'}</p>
-										{#if dl.artist}
-											<span class="text-xs text-muted-foreground/60 truncate shrink-0">{dl.artist}</span>
-										{/if}
-									</div>
-									{#if dl.status === 'downloading'}
-										<div class="flex items-center gap-2 mt-1">
-											<Progress value={dl.progress} class="h-1 flex-1" />
-											<span class="text-[10px] text-info tabular-nums shrink-0">{Math.round(dl.progress)}%</span>
-										</div>
-									{/if}
-								</div>
-								<div class="w-24 flex justify-center">
-									<Badge variant={platformColor(dl.platform)} class="text-[10px] shrink-0">
-										{platformLabel(dl.platform)}
-									</Badge>
-								</div>
-								<div class="w-24 flex justify-center">
-									{#if dl.status === 'downloading'}
-										<Badge variant="outline" class="text-[10px] text-info border-info/30">downloading</Badge>
-									{:else if dl.status === 'processing'}
-										<Badge variant="outline" class="text-[10px] text-success border-success/30">importing</Badge>
-									{:else}
-										<Badge variant="outline" class="text-[10px] text-muted-foreground/60">queued</Badge>
-									{/if}
-								</div>
-								<div class="w-8 flex justify-center">
-									<Button
-										variant="ghost"
-										size="icon-sm"
-										class="size-6 opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground"
-										onclick={() => oncancel(dl.id)}
-									>
-										<X class="size-3.5" />
-									</Button>
-								</div>
-							</div>
+							{@render activeRow(dl, true)}
 						{/each}
 					</div>
 					{#if group.downloads.length > 30}
@@ -254,22 +265,35 @@
 <!-- Completed / Recent -->
 {#if allCompletedDownloads.length > 0}
 	<div class="space-y-3">
-		<h2 class="text-sm font-semibold uppercase tracking-wider text-muted-foreground">
-			Recent
-		</h2>
+		<div class="flex items-center gap-3">
+			<h2 class="text-sm font-semibold uppercase tracking-wider text-muted-foreground">
+				Recent
+			</h2>
+			<div class="flex items-center gap-1.5">
+				{#if doneCount > 0}
+					<Badge variant="outline" class="text-[10px] text-success border-success/30">{doneCount} done</Badge>
+				{/if}
+				{#if failedCount > 0}
+					<Badge variant="outline" class="text-[10px] text-destructive border-destructive/30">{failedCount} failed</Badge>
+				{/if}
+			</div>
+		</div>
 		<div class="rounded-xl border border-border/60 overflow-hidden">
-			<div class="border-b border-border bg-muted/30 text-xs text-muted-foreground uppercase tracking-wider flex items-center px-4 py-2.5">
-				<div class="w-7"></div>
-				<div class="flex-1 pl-3">Title</div>
-				<div class="w-20 text-center hidden sm:block">Format</div>
-				<div class="w-24 text-center">Platform</div>
-				<div class="w-24 text-center">Status</div>
-				<div class="w-8"></div>
+			<div class="border-b border-border bg-muted/30 text-xs text-muted-foreground uppercase tracking-wider flex items-center gap-3 px-4 py-2.5">
+				<div class="w-9 shrink-0"></div>
+				<div class="flex-1">Title</div>
+				<div class="w-20 text-center hidden sm:block shrink-0">Format</div>
+				<div class="w-24 text-center shrink-0">Platform</div>
+				<div class="w-24 text-center shrink-0">Status</div>
+				<div class="w-16 shrink-0"></div>
 			</div>
 			<div class="divide-y divide-border/40">
 				{#each completedDownloads as dl (dl.id)}
-					<div class="flex items-center px-4 py-2.5 hover:bg-muted/30 transition-colors group">
-						<div class="w-7 flex items-center justify-center shrink-0">
+					<div
+						class="flex items-center gap-3 px-4 py-2.5 transition-colors group border-l-2
+							{dl.status === 'failed' ? 'border-destructive/50 bg-destructive/[0.04] hover:bg-destructive/[0.07]' : 'border-transparent hover:bg-muted/30'}"
+					>
+						<div class="size-9 rounded-md bg-muted/40 flex items-center justify-center shrink-0">
 							{#if dl.status === 'completed'}
 								<CheckCircle2 class="size-4 text-success" />
 							{:else if dl.status === 'failed'}
@@ -278,30 +302,30 @@
 								<X class="size-4 text-muted-foreground/30" />
 							{/if}
 						</div>
-						<div class="flex-1 min-w-0 pl-3">
-							<p class="text-sm truncate">{dl.title || dl.url || 'Untitled'}</p>
-							<div class="flex items-center gap-2 mt-0.5">
+						<div class="flex-1 min-w-0">
+							<div class="flex items-center gap-2">
+								<p class="text-sm truncate">{dl.title || dl.url || 'Untitled'}</p>
 								{#if dl.artist}
-									<span class="text-xs text-muted-foreground/60 truncate">{dl.artist}</span>
-								{/if}
-								{#if dl.status === 'failed' && dl.error_message}
-									<span class="text-xs text-destructive/80 truncate">{dl.error_message}</span>
+									<span class="text-xs text-muted-foreground/60 truncate shrink-0">{dl.artist}</span>
 								{/if}
 							</div>
+							{#if dl.status === 'failed' && dl.error_message}
+								<p class="text-xs text-destructive/80 truncate mt-0.5" title={dl.error_message}>{dl.error_message}</p>
+							{/if}
 						</div>
-						<div class="w-20 text-center hidden sm:block">
+						<div class="w-20 text-center hidden sm:block shrink-0">
 							{#if dl.status !== 'failed'}
 								<span class="text-[10px] text-muted-foreground/50 font-mono uppercase">{dl.format}</span>
 							{:else}
 								<span class="text-[10px] text-muted-foreground/30">--</span>
 							{/if}
 						</div>
-						<div class="w-24 flex justify-center">
+						<div class="w-24 flex justify-center shrink-0">
 							<Badge variant={platformColor(dl.platform)} class="text-[10px]">
 								{platformLabel(dl.platform)}
 							</Badge>
 						</div>
-						<div class="w-24 flex justify-center">
+						<div class="w-24 flex justify-center shrink-0">
 							<Badge
 								variant="outline"
 								class="text-[10px] capitalize
@@ -309,18 +333,19 @@
 									{dl.status === 'failed' ? 'text-destructive border-destructive/30' : ''}
 									{dl.status === 'cancelled' ? 'text-muted-foreground/50 border-border/40' : ''}"
 							>
-								{dl.status}
+								{dl.status === 'completed' ? 'done' : dl.status === 'failed' ? 'error' : dl.status}
 							</Badge>
 						</div>
-						<div class="w-8 flex justify-center">
+						<div class="w-16 flex justify-end shrink-0">
 							{#if dl.status === 'failed'}
 								<Button
-									variant="ghost"
-									size="icon-sm"
-									class="size-6 text-muted-foreground hover:text-foreground"
+									variant="outline"
+									size="sm"
+									class="h-6 px-2 gap-1 text-xs"
 									onclick={() => onretry(dl.id)}
 								>
 									<RotateCcw class="size-3" />
+									Retry
 								</Button>
 							{/if}
 						</div>

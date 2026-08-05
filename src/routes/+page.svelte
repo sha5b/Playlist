@@ -11,6 +11,7 @@
 	import AlbumCarousel from '$lib/components/home/AlbumCarousel.svelte';
 	import DiscoveryCard from '$lib/components/home/DiscoveryCard.svelte';
 	import GenreGrid from '$lib/components/home/GenreGrid.svelte';
+	import { scrollRestore } from '$lib/utils/scrollRestore';
 
 	let stats = $state<LibraryStats | null>(null);
 	let hasPlaylists = $state(false);
@@ -82,41 +83,43 @@
 	const isEmpty = $derived(!hasPlaylists && stats !== null && stats.total_tracks === 0);
 </script>
 
-<div class="flex-1 min-h-0 overflow-y-auto space-y-6 px-1">
+<div use:scrollRestore class="flex-1 min-h-0 overflow-y-auto px-1">
 	{#if isEmpty}
 		<WelcomeScreen onChanged={() => { loadStats(); loadPlaylists(); }} />
 	{:else}
-		<HomeGreeting {stats} />
+		<div class="mx-auto max-w-6xl space-y-7 pb-6">
+			<HomeGreeting {stats} />
 
-		<QuickAccessGrid />
+			<QuickAccessGrid />
 
-		<AlbumCarousel
-			title="Recently Added"
-			icon={Clock}
-			albums={recentlyAddedAlbums}
-			loading={discoveryLoading}
-		/>
-
-		{#if hasPlayHistory}
-			<DiscoveryCard
-				title="On Repeat"
-				icon={TrendingUp}
-				tracks={mostListened}
+			<AlbumCarousel
+				title="Recently Added"
+				icon={Clock}
+				albums={recentlyAddedAlbums}
 				loading={discoveryLoading}
+				href="/library/albums"
 			/>
-		{/if}
 
-		<DiscoveryCard
-			title="Rediscover"
-			icon={Shuffle}
-			tracks={randomMix}
-			loading={discoveryLoading}
-			onRefresh={refreshRandom}
-		/>
+			{#if hasPlayHistory}
+				<DiscoveryCard
+					title="On Repeat"
+					icon={TrendingUp}
+					tracks={mostListened}
+					loading={discoveryLoading}
+					href="/library/songs"
+				/>
+			{/if}
 
-		<GenreGrid />
+			<DiscoveryCard
+				title="Rediscover"
+				icon={Shuffle}
+				tracks={randomMix}
+				loading={discoveryLoading}
+				onRefresh={refreshRandom}
+				href="/library/songs"
+			/>
 
-		<!-- Bottom spacer for scroll comfort -->
-		<div class="h-4"></div>
+			<GenreGrid />
+		</div>
 	{/if}
 </div>

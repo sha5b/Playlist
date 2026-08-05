@@ -489,6 +489,7 @@ pub fn search(
                 website_url: None,
                 track_count: row.get(6)?,
                 has_enriched_discography: false,
+                fallback_cover_path: None,
             })
         })
         .map_err(|e| e.to_string())?

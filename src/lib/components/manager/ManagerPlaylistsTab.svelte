@@ -203,30 +203,27 @@
 						{platformLabel(selectedPlaylist.source_platform ?? 'other')}
 					</Badge>
 				</div>
-				<div class="flex items-center gap-2 text-xs text-muted-foreground flex-wrap">
-					<span>{selectedEntries.length} total</span>
+				<div class="flex items-center gap-1.5 flex-wrap">
+					<span class="text-xs text-muted-foreground">{selectedEntries.length} tracks</span>
 					{#if downloadedEntries.length > 0}
-						<span class="opacity-40">&middot;</span>
-						<span class="text-success">{downloadedEntries.length} downloaded</span>
+						<Badge variant="outline" class="text-[10px] text-success border-success/30">{downloadedEntries.length} downloaded</Badge>
 					{/if}
 					{#if downloadingEntries.length > 0}
-						<span class="opacity-40">&middot;</span>
-						<span class="text-info">{downloadingEntries.length} downloading</span>
+						<Badge variant="outline" class="text-[10px] text-info border-info/30 gap-1">
+							<Loader2 class="size-2.5 animate-spin" />
+							{downloadingEntries.length} downloading
+						</Badge>
 					{/if}
 					{#if queuedEntries.length > 0}
-						<span class="opacity-40">&middot;</span>
-						<span>{queuedEntries.length} queued</span>
+						<Badge variant="outline" class="text-[10px] text-muted-foreground/60">{queuedEntries.length} queued</Badge>
 					{/if}
 					{#if newEntries.length > 0}
-						<span class="opacity-40">&middot;</span>
-						<span class="text-info">{newEntries.length} new</span>
+						<Badge variant="outline" class="text-[10px] text-info border-info/30">{newEntries.length} new</Badge>
 					{/if}
 					{#if failedEntries.length > 0}
-						<span class="opacity-40">&middot;</span>
-						<span class="text-destructive">{failedEntries.length} failed</span>
+						<Badge variant="outline" class="text-[10px] text-destructive border-destructive/30">{failedEntries.length} failed</Badge>
 					{/if}
-					<span class="opacity-40">&middot;</span>
-					<span>Synced {timeAgo(selectedPlaylist.last_synced_at)}</span>
+					<span class="text-xs text-muted-foreground/60">&middot; Synced {timeAgo(selectedPlaylist.last_synced_at)}</span>
 				</div>
 				{#if selectedEntries.length > 0}
 					{@const pct = Math.floor((downloadedEntries.length / selectedEntries.length) * 100)}
