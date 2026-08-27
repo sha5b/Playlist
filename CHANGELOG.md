@@ -2,7 +2,7 @@
 
 All notable changes to Playlist are recorded in this file.
 
-## [Unreleased]
+## [0.10.0] - 2026-08-27
 
 ### Devices
 
