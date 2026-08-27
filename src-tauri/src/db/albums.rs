@@ -110,7 +110,7 @@ pub fn update_metadata_if_missing(
 pub fn get_albums(conn: &Connection, offset: i64, limit: i64, search: Option<&str>) -> Result<(Vec<Album>, i64), rusqlite::Error> {
     let (where_clause, pattern) = match search {
         Some(q) if !q.trim().is_empty() => {
-            ("HAVING al.title LIKE ?3 OR a.name LIKE ?3".to_string(), Some(format!("%{}%", q)))
+            ("HAVING al.title LIKE ?3 ESCAPE '\\' OR a.name LIKE ?3 ESCAPE '\\'".to_string(), Some(format!("%{}%", crate::db::escape_like(q))))
         }
         _ => (String::new(), None),
     };
@@ -119,7 +119,7 @@ pub fn get_albums(conn: &Connection, offset: i64, limit: i64, search: Option<&st
         "SELECT COUNT(*) FROM (
                 SELECT al.id FROM albums al
                 LEFT JOIN artists a ON al.artist_id = a.id
-                WHERE al.title LIKE ?1 OR a.name LIKE ?1
+                WHERE al.title LIKE ?1 ESCAPE '\\' OR a.name LIKE ?1 ESCAPE '\\'
             )".to_string()
     } else {
         "SELECT COUNT(*) FROM albums".to_string()

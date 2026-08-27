@@ -37,6 +37,7 @@ pub const SETTING_SCROBBLE_ENABLED: &str = "lastfm_scrobble_enabled";
 fn client() -> reqwest::Client {
     reqwest::Client::builder()
         .user_agent("Playlist/0.1.0")
+        .timeout(std::time::Duration::from_secs(10))
         .build()
         .unwrap_or_default()
 }
@@ -94,12 +95,23 @@ fn error_code(err: &str) -> Option<i64> {
     err.strip_prefix("lastfm:")?.split(':').next()?.parse().ok()
 }
 
+/// True when the build still carries the placeholder API secret — every signed
+/// call fails with error 13 ("Invalid method signature") in this state.
+pub fn secret_is_placeholder() -> bool {
+    LASTFM_API_SECRET == "REPLACE_WITH_REAL_LASTFM_API_SECRET"
+}
+
 /// True when the failure is transient (network, rate limit, service down)
 /// and the scrobble should stay queued for a later retry.
 fn is_retryable(err: &str) -> bool {
     match error_code(err) {
         // 11 = service offline, 16 = temporarily unavailable, 29 = rate limit
         Some(11) | Some(16) | Some(29) => true,
+        // 13 = invalid signature. With the placeholder secret EVERY signed call
+        // fails this way — keep the scrobbles queued (instead of deleting the
+        // user's play history one by one) so they submit once a real secret is
+        // baked into the build.
+        Some(13) if secret_is_placeholder() => true,
         // No lastfm error code → network / parse failure → retry later
         None => true,
         // Everything else (bad signature, invalid session, invalid params…) is permanent
@@ -111,6 +123,13 @@ fn is_retryable(err: &str) -> bool {
 
 /// auth.getToken → request token for the desktop auth flow.
 pub async fn get_token() -> Result<String, String> {
+    if secret_is_placeholder() {
+        return Err(
+            "Last.fm scrobbling is unavailable in this build: no API secret was compiled in \
+             (set LASTFM_API_KEY and LASTFM_API_SECRET at build time)"
+                .to_string(),
+        );
+    }
     let body = call_signed("auth.getToken", Vec::new()).await?;
     body.get("token")
         .and_then(|t| t.as_str())

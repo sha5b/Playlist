@@ -13,6 +13,7 @@ const USER_AGENT: &str = "Playlist/0.9.2 (https://github.com/sha5b/Playlist)";
 fn client() -> reqwest::Client {
     reqwest::Client::builder()
         .user_agent(USER_AGENT)
+        .timeout(std::time::Duration::from_secs(10))
         .build()
         .unwrap_or_default()
 }
@@ -92,6 +93,7 @@ struct ReleaseRef {
 
 #[derive(Debug, Deserialize)]
 struct ReleaseGroupRef {
+    id: Option<String>,
     #[serde(rename = "primary-type")]
     primary_type: Option<String>,
 }
@@ -173,27 +175,33 @@ pub async fn lookup_music_video_url(recording_mbid: &str) -> Option<String> {
     let detail: RecordingDetail = resp.json().await.ok()?;
 
     let relations = detail.relations?;
-    // Look for "streaming music" or "free streaming" relations pointing to video platforms
+    // Look for streaming/video relations pointing to video platforms.
+    // Real MusicBrainz relation types are "streaming" and "free streaming"
+    // ("streaming music" doesn't exist and never matched).
     for rel in &relations {
         let rtype = rel.relation_type.as_deref().unwrap_or("");
         let resource = rel.url.as_ref().and_then(|u| u.resource.as_deref()).unwrap_or("");
 
-        // MusicBrainz relation types for music videos:
-        // "streaming music" — links to YouTube, Vimeo, etc.
         // Check if the URL points to a video platform
         let is_video_url = resource.contains("youtube.com/watch")
             || resource.contains("youtu.be/")
             || resource.contains("vimeo.com/");
 
-        if is_video_url && (rtype == "streaming music" || rtype == "free streaming" || rtype == "streaming") {
+        if is_video_url && (rtype == "free streaming" || rtype == "streaming") {
             return Some(resource.to_string());
         }
     }
 
-    // Fallback: any YouTube/Vimeo URL in relations regardless of type
+    // Fallback: a YouTube link typed as a video/stream of THIS recording.
+    // Returning any untyped YouTube URL grabbed lyric videos and audio
+    // uploads, which then got persisted as the "official" music video.
     for rel in &relations {
+        let rtype = rel.relation_type.as_deref().unwrap_or("");
         let resource = rel.url.as_ref().and_then(|u| u.resource.as_deref()).unwrap_or("");
-        if resource.contains("youtube.com/watch") || resource.contains("youtu.be/") {
+        let is_video_url = resource.contains("youtube.com/watch") || resource.contains("youtu.be/");
+        if is_video_url
+            && matches!(rtype, "streaming" | "free streaming" | "video" | "lyric video" | "official video")
+        {
             return Some(resource.to_string());
         }
     }
@@ -319,6 +327,8 @@ pub struct TrackEnrichment {
     pub label: Option<String>,
     pub language: Option<String>,
     pub album_musicbrainz_id: Option<String>,
+    /// Release-group MBID for the album (what belongs in `albums.musicbrainz_id`)
+    pub album_release_group_mbid: Option<String>,
     pub album_type: Option<String>,
     pub album_release_date: Option<String>,
     pub artist_musicbrainz_id: Option<String>,
@@ -404,7 +414,10 @@ fn best_recording<'a>(recordings: &'a [RecordingHit], artist: Option<&str>) -> O
         return None;
     }
     if let Some(query_artist) = artist {
-        // Prefer a result whose artist matches the query
+        // Only accept results whose artist matches the query. Falling back to
+        // the first hit would attach ANOTHER artist's recording: wrong MBID,
+        // ISRC and release date get written permanently (fields only fill
+        // when NULL), and the wrong artist's data lands on the artist row.
         for rec in recordings {
             if let Some(ac) = rec.artist_credit.as_ref().and_then(|v| v.first()) {
                 if let Some(ref name) = ac.artist.name {
@@ -414,8 +427,9 @@ fn best_recording<'a>(recordings: &'a [RecordingHit], artist: Option<&str>) -> O
                 }
             }
         }
+        return None;
     }
-    // Fallback: first result (same as before, but only when no artist match found)
+    // No artist filter — first result is the best we can do
     Some(&recordings[0])
 }
 
@@ -425,6 +439,7 @@ fn best_release<'a>(releases: &'a [ReleaseHit], artist: Option<&str>) -> Option<
         return None;
     }
     if let Some(query_artist) = artist {
+        // See best_recording: never fall back to another artist's release.
         for rel in releases {
             if let Some(ac) = rel.artist_credit.as_ref().and_then(|v| v.first()) {
                 if let Some(ref name) = ac.artist.name {
@@ -434,12 +449,24 @@ fn best_release<'a>(releases: &'a [ReleaseHit], artist: Option<&str>) -> Option<
                 }
             }
         }
+        return None;
     }
     Some(&releases[0])
 }
 
-/// Search MusicBrainz for a recording and return enrichment data.
+/// Search MusicBrainz for a recording and return enrichment data, including
+/// the per-recording detail lookups (composer, website, purchase URLs, video).
 pub async fn enrich_track(title: &str, artist: Option<&str>) -> Result<TrackEnrichment, String> {
+    enrich_track_inner(title, artist, true).await
+}
+
+/// Search-only variant for bulk scans: skips the four rate-gated detail
+/// lookups (≈4.4s/track of gate time) whose results the scans never store.
+pub async fn enrich_track_search_only(title: &str, artist: Option<&str>) -> Result<TrackEnrichment, String> {
+    enrich_track_inner(title, artist, false).await
+}
+
+async fn enrich_track_inner(title: &str, artist: Option<&str>, include_details: bool) -> Result<TrackEnrichment, String> {
     // Use field-specific Lucene query when artist is known for better precision.
     // No phrase quotes — allows fuzzy word matching within each field.
     let query = if let Some(art) = artist {
@@ -505,7 +532,13 @@ pub async fn enrich_track(title: &str, artist: Option<&str>) -> Result<TrackEnri
             .or_else(|| releases.first())
     });
     if let Some(release) = picked_release {
+        // Keep the release id for the purchase-URL lookup, but expose the
+        // release-group id for the albums table (see enrich_album note).
         enrichment.album_musicbrainz_id = Some(release.id.clone());
+        enrichment.album_release_group_mbid = release
+            .release_group
+            .as_ref()
+            .and_then(|rg| rg.id.clone());
         enrichment.album_release_date = release.date.clone();
         enrichment.album_type = release.release_group.as_ref()
             .and_then(|rg| rg.primary_type.clone());
@@ -524,20 +557,24 @@ pub async fn enrich_track(title: &str, artist: Option<&str>) -> Result<TrackEnri
             .and_then(|y| y.parse::<i64>().ok());
     }
 
-    // Check for confirmed music video via MusicBrainz URL relations
-    enrichment.music_video_url = lookup_music_video_url(&hit.id).await;
+    // Detail lookups — one rate-gated MusicBrainz request each. Skipped by
+    // bulk scans, which don't store these fields.
+    if include_details {
+        // Check for confirmed music video via MusicBrainz URL relations
+        enrichment.music_video_url = lookup_music_video_url(&hit.id).await;
 
-    // Look up composer from artist relations
-    enrichment.composer = lookup_composer(&hit.id).await;
+        // Look up composer from artist relations
+        enrichment.composer = lookup_composer(&hit.id).await;
 
-    // Look up artist website if we have an artist MBID
-    if let Some(ref artist_mbid) = enrichment.artist_musicbrainz_id {
-        enrichment.artist_website_url = lookup_artist_website(artist_mbid).await;
-    }
+        // Look up artist website if we have an artist MBID
+        if let Some(ref artist_mbid) = enrichment.artist_musicbrainz_id {
+            enrichment.artist_website_url = lookup_artist_website(artist_mbid).await;
+        }
 
-    // Look up album purchase URL if we have a release MBID
-    if let Some(ref album_mbid) = enrichment.album_musicbrainz_id {
-        enrichment.album_purchase_url = lookup_album_purchase_url(album_mbid).await;
+        // Look up album purchase URL if we have a release MBID
+        if let Some(ref album_mbid) = enrichment.album_musicbrainz_id {
+            enrichment.album_purchase_url = lookup_album_purchase_url(album_mbid).await;
+        }
     }
 
     Ok(enrichment)
@@ -573,7 +610,12 @@ pub async fn enrich_album(title: &str, artist: Option<&str>) -> Result<AlbumEnri
         .ok_or_else(|| "No MusicBrainz results found".to_string())?;
 
     let mut enrichment = AlbumEnrichment {
-        musicbrainz_id: Some(hit.id.clone()),
+        // Store the RELEASE-GROUP mbid, not the release id — "missing albums"
+        // detection compares albums.musicbrainz_id against release-group ids
+        // from the discography, so a release id here never matches and the
+        // album would be re-downloaded forever.
+        musicbrainz_id: hit.release_group.as_ref().and_then(|rg| rg.id.clone())
+            .or_else(|| Some(hit.id.clone())),
         release_date: hit.date.clone(),
         album_type: hit.release_group.as_ref().and_then(|rg| rg.primary_type.clone()),
         total_tracks: hit.track_count,

@@ -329,9 +329,23 @@ pub fn run(conn: &Connection) -> Result<(), Box<dyn std::error::Error>> {
     for (i, migration) in MIGRATIONS.iter().enumerate() {
         let version = (i + 1) as i64;
         if version > current_version {
-            conn.execute_batch(migration)?;
-            conn.execute("INSERT INTO _migrations (version) VALUES (?1)", [version])?;
-            log::info!("Applied migration {}", version);
+            // Run each migration inside a transaction: a crash or failure
+            // halfway through a multi-statement batch would otherwise leave
+            // the schema half-migrated with no version recorded, and the next
+            // launch re-runs the batch and dies on "duplicate column name".
+            conn.execute_batch("BEGIN IMMEDIATE")?;
+            match conn.execute_batch(migration)
+                .and_then(|_| conn.execute("INSERT INTO _migrations (version) VALUES (?1)", [version]))
+            {
+                Ok(_) => {
+                    conn.execute_batch("COMMIT")?;
+                    log::info!("Applied migration {}", version);
+                }
+                Err(e) => {
+                    let _ = conn.execute_batch("ROLLBACK");
+                    return Err(e.into());
+                }
+            }
         }
     }
 

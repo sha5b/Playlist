@@ -46,7 +46,16 @@
 		const id = player.currentTrack?.id;
 		if (id) {
 			videoPhaseActive = true;
-			getTrack(id).then(t => { fullTrack = t; }).catch(e => { console.error('Failed to load track details:', e); fullTrack = null; });
+			getTrack(id)
+				.then((t) => {
+					// Guard against a stale response landing after the player
+					// already moved to a different track.
+					if (player.currentTrack?.id === id) fullTrack = t;
+				})
+				.catch((e) => {
+					console.error('Failed to load track details:', e);
+					if (player.currentTrack?.id === id) fullTrack = null;
+				});
 		} else {
 			fullTrack = null;
 		}
@@ -178,11 +187,30 @@
 						</h1>
 					</a>
 					<p class="text-lg text-muted-foreground mt-1 truncate">
-						{player.currentTrack?.artist_name ?? 'Unknown Artist'}
+						{#if player.currentTrack?.artist_id}
+							<a
+								href="/library/artists/{player.currentTrack.artist_id}"
+								class="hover:text-foreground hover:underline underline-offset-4 transition-colors"
+							>
+								{player.currentTrack.artist_name ?? 'Unknown Artist'}
+							</a>
+						{:else}
+							{player.currentTrack?.artist_name ?? 'Unknown Artist'}
+						{/if}
 					</p>
 					{#if player.currentTrack?.album_title}
 						<p class="text-sm text-muted-foreground/70 mt-0.5 truncate">
-							{player.currentTrack.album_title}
+							{#if player.currentTrack.album_id}
+								<a
+									href="/library/albums/{player.currentTrack.album_id}"
+									class="hover:text-foreground hover:underline underline-offset-4 transition-colors"
+									title="Open album"
+								>
+									{player.currentTrack.album_title}
+								</a>
+							{:else}
+								{player.currentTrack.album_title}
+							{/if}
 						</p>
 					{/if}
 

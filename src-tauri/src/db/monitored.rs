@@ -166,17 +166,32 @@ fn upsert_entries_body(
     // Fix stale ytsearch URLs: if we now have a direct URL for an entry that was
     // previously stored with a search query, update the source_url in-place so the
     // ON CONFLICT upsert matches correctly and the download uses the direct URL.
+    // Match the EXACT previous fallback URL (built from the same title/artist) —
+    // matching on title alone rewrites every same-titled entry in the playlist
+    // (common: "Intro", "Outro"), giving one track another track's URL.
     {
         let mut fix_stmt = conn.prepare(
             "UPDATE monitored_playlist_entries SET source_url = ?1
-             WHERE playlist_id = ?2 AND title = ?3 AND source_url LIKE 'ytsearch%'"
+             WHERE playlist_id = ?2 AND source_url = ?3",
         )?;
-        for (url, title, _artist, _dur, _thumb, _isrc) in entries.iter() {
+        for (url, title, artist, _dur, _thumb, _isrc) in entries.iter() {
             if !url.starts_with("ytsearch") {
-                if let Some(t) = title {
-                    let changed = fix_stmt.execute(params![url, playlist_id, t]).unwrap_or(0);
-                    if changed > 0 {
+                let Some(t) = title else { continue };
+                // Mirror map_entries' fallback construction exactly
+                let prev_search_url = match artist {
+                    Some(a) => format!("ytsearch5:{} - {}", a, t),
+                    None => format!("ytsearch5:{}", t),
+                };
+                match fix_stmt.execute(params![url, playlist_id, prev_search_url]) {
+                    Ok(changed) if changed > 0 => {
                         log::info!("Fixed stale search URL for '{}' -> {}", t, url);
+                    }
+                    Ok(_) => {}
+                    // A UNIQUE(playlist_id, source_url) violation means the direct
+                    // URL already exists on another entry — surface it instead of
+                    // silently leaving this entry stuck on a search URL forever.
+                    Err(e) => {
+                        log::warn!("Could not replace stale search URL for '{}': {}", t, e);
                     }
                 }
             }

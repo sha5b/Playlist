@@ -291,36 +291,30 @@ fn extract_meta_content(html: &str, property: &str) -> Option<String> {
         format!(r#"property='{}'"#, property),
         format!(r#"name='{}'"#, property),
     ];
-    
+
     for pattern in &patterns {
         if let Some(pos) = html.find(pattern.as_str()) {
-            // Find the content attribute nearby
-            let search_area = &html[pos..std::cmp::min(pos + 500, html.len())];
-            
-            // Try content="..." 
-            if let Some(content_pos) = search_area.find("content=\"") {
-                let start = content_pos + 9;
-                if let Some(end) = search_area[start..].find('"') {
-                    let content = &search_area[start..start + end];
-                    if !content.is_empty() {
-                        return Some(html_decode(content));
-                    }
-                }
-            }
-            
-            // Try content='...'
-            if let Some(content_pos) = search_area.find("content='") {
-                let start = content_pos + 9;
-                if let Some(end) = search_area[start..].find('\'') {
-                    let content = &search_area[start..start + end];
-                    if !content.is_empty() {
-                        return Some(html_decode(content));
+            // The content attribute may appear before OR after the property
+            // attribute — real pages use both orders. Search a window around
+            // the match (some before, more after for the closing quote).
+            let window_start = pos.saturating_sub(200);
+            let window_end = std::cmp::min(pos + 500, html.len());
+            let search_area = &html[window_start..window_end];
+
+            for quote in ['"', '\''] {
+                if let Some(content_pos) = search_area.find(&format!("content={}", quote)) {
+                    let start = content_pos + 9;
+                    if let Some(end) = search_area[start..].find(quote) {
+                        let content = &search_area[start..start + end];
+                        if !content.is_empty() {
+                            return Some(html_decode(content));
+                        }
                     }
                 }
             }
         }
     }
-    
+
     None
 }
 

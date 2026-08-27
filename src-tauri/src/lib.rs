@@ -331,6 +331,7 @@ pub fn run() {
             // Downloads
             commands::download_parse_url,
             commands::download_check_deps,
+            commands::download_default_dir,
             commands::download_ensure_deps,
             commands::download_start,
             commands::download_start_batch,

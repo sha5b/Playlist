@@ -89,7 +89,14 @@ pub fn read_tags_and_cover(path: &Path, cover_output_dir: &Path) -> Result<(TagD
 /// Extract cover art from an already-parsed TaggedFile (no second file read).
 fn extract_cover_from_tagged(tagged_file: &lofty::file::TaggedFile, source_path: &Path, output_dir: &Path) -> Option<String> {
     let tag = tagged_file.primary_tag().or_else(|| tagged_file.first_tag())?;
-    let picture = tag.pictures().first()?;
+
+    // Prefer the front cover: the first embedded picture is often a back
+    // cover, leaflet, or artist photo instead.
+    let picture = tag
+        .pictures()
+        .iter()
+        .find(|p| p.pic_type() == lofty::picture::PictureType::CoverFront)
+        .or_else(|| tag.pictures().first())?;
 
     let ext = match picture.mime_type() {
         Some(lofty::picture::MimeType::Png) => "png",

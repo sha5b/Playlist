@@ -208,7 +208,7 @@
 				<div class="bg-destructive/10 border border-destructive/30 text-destructive text-sm rounded-md p-3 mb-4 flex items-center gap-2">
 					<CircleX class="size-4 shrink-0" />
 					<span class="flex-1">Download tools failed to initialize: {depsStore.setupError}</span>
-					<Button variant="outline" size="sm" onclick={() => depsStore.init()}>
+					<Button variant="outline" size="sm" onclick={() => depsStore.init(true)}>
 						<RefreshCw class="size-3" />
 						Retry
 					</Button>

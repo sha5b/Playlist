@@ -333,7 +333,7 @@ async fn fetch_pathfinder_page(
     let body = resp.text().await.map_err(|e| format!("Failed to read body: {}", e))?;
 
     if !status.is_success() {
-        return Err(format!("HTTP {}: {}", status, &body[..body.len().min(300)]));
+        return Err(format!("HTTP {}: {}", status, body.chars().take(300).collect::<String>()));
     }
 
     serde_json::from_str(&body).map_err(|e| format!("JSON parse error: {}", e))
@@ -647,7 +647,7 @@ pub async fn fetch_playlist_entries(url: &str) -> Result<super::ytdlp::PlaylistF
 
                     let body = api_resp.text().await.unwrap_or_default();
                     if !status.is_success() {
-                        log::warn!("[spotify] v1 API HTTP {} at offset {}: {}", status, offset, &body[..body.len().min(200)]);
+                        log::warn!("[spotify] v1 API HTTP {} at offset {}: {}", status, offset, body.chars().take(200).collect::<String>());
                         break;
                     }
 

@@ -14,7 +14,6 @@ import type {
 	ScanMissingResult,
 	MetadataStats,
 	Download,
-	TrackMismatch,
 	TrackTagUpdate,
 	M3uImportResult,
 } from '$lib/types';
@@ -286,10 +285,6 @@ export async function setSetting(key: string, value: string): Promise<void> {
 	return invoke('settings_set', { key, value });
 }
 
-export async function getAllSettings(): Promise<[string, string][]> {
-	return invoke('settings_get_all');
-}
-
 // --- Folder watch / auto-import ---
 
 export interface WatchStatus {
@@ -417,20 +412,12 @@ export async function cleanupDuplicateTracks(): Promise<TrackCleanupResult> {
 
 // --- Mismatch Detection ---
 
-export async function detectAlbumMismatches(): Promise<TrackMismatch[]> {
-	return invoke('detect_album_mismatches');
-}
-
 // --- Album Download Status ---
 
 export interface AlbumDownloadStatus {
 	total_expected: number;
 	total_local: number;
 	status: 'complete' | 'partial' | 'none' | 'unknown';
-}
-
-export async function getAlbumDownloadStatus(albumId: number): Promise<AlbumDownloadStatus> {
-	return invoke('library_get_album_download_status', { albumId });
 }
 
 export async function getAlbumsDownloadStatus(albumIds: number[]): Promise<Record<string, AlbumDownloadStatus>> {

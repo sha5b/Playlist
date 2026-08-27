@@ -58,6 +58,13 @@
 		allCompletedDownloads.slice(completedPage * completedPageSize, (completedPage + 1) * completedPageSize)
 	);
 
+	// Clamp the page when the list shrinks (eviction, clear, restart) so the
+	// pager never sits on a blank page with a disabled Next button.
+	$effect(() => {
+		const maxPage = Math.max(0, completedTotalPages - 1);
+		if (completedPage > maxPage) completedPage = maxPage;
+	});
+
 	// Per-state counts for the section headers (window counts; downloading and
 	// converting are always retained in the window so those are exact).
 	const downloadingCount = $derived(activeDownloads.filter((d) => d.status === 'downloading').length);

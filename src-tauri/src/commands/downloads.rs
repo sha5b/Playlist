@@ -19,6 +19,54 @@ fn validate_download_params(format: &str, quality: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Resolve the effective format/quality for a new download: explicit argument,
+/// else the saved setting, else the built-in default. Validates the result so
+/// every entry point (single, batch, search) rejects bad values up front.
+fn resolve_format_quality(
+    db: &State<'_, Arc<DbPool>>,
+    format: Option<String>,
+    quality: Option<String>,
+) -> Result<(String, String), String> {
+    let (default_format, default_quality) = {
+        let conn = crate::db::lock(db)?;
+        let f = crate::db::settings::get_setting(&conn, "download_format")
+            .ok().flatten()
+            .unwrap_or_else(|| "mp3".to_string());
+        let q = crate::db::settings::get_setting(&conn, "download_quality")
+            .ok().flatten()
+            .unwrap_or_else(|| "best".to_string());
+        (f, q)
+    };
+    let fmt = format.unwrap_or(default_format);
+    let qual = quality.unwrap_or(default_quality);
+    validate_download_params(&fmt, &qual)?;
+    Ok((fmt, qual))
+}
+
+/// Convert a Spotify URL into a YouTube search URL with title/artist context.
+/// Returns the original cleaned URL for non-Spotify platforms, plus the
+/// platform name for the download row.
+async fn to_download_url(
+    url: &str,
+) -> Result<(String, Option<String>, Option<String>, String), String> {
+    let parsed = crate::download::url_parser::parse_url(url);
+    if parsed.platform == "spotify" {
+        log::info!("Converting Spotify URL to YouTube search: {}", url);
+        match crate::download::spotify::fetch_track_metadata(url).await {
+            Some((title, artist)) => {
+                let search_query = match artist {
+                    Some(ref a) => format!("{} - {}", a, title),
+                    None => title.clone(),
+                };
+                Ok((format!("ytsearch5:{}", search_query), Some(title), artist, parsed.platform))
+            }
+            None => Err("Failed to fetch Spotify track metadata".to_string()),
+        }
+    } else {
+        Ok((parsed.clean_url.clone(), None, None, parsed.platform))
+    }
+}
+
 // --- Downloads ---
 
 #[tauri::command]
@@ -40,6 +88,15 @@ pub async fn download_check_deps(
     Ok(crate::download::setup::check_deps(&bin_dir).await)
 }
 
+/// The OS music folder default used when no custom download dir is set
+/// (e.g. `~/Music/Playlist`). The settings page shows this as the active default.
+#[tauri::command]
+pub fn download_default_dir(app_handle: tauri::AppHandle) -> String {
+    crate::download::default_download_dir(&app_handle)
+        .to_string_lossy()
+        .to_string()
+}
+
 #[tauri::command]
 pub async fn download_ensure_deps(
     app_handle: tauri::AppHandle,
@@ -56,40 +113,10 @@ pub async fn download_start(
     format: Option<String>,
     quality: Option<String>,
 ) -> Result<Download, String> {
-    let parsed = crate::download::url_parser::parse_url(&url);
-    let (default_format, default_quality) = {
-        let conn = crate::db::lock(&db)?;
-        let f = crate::db::settings::get_setting(&conn, "download_format")
-            .ok().flatten()
-            .unwrap_or_else(|| "mp3".to_string());
-        let q = crate::db::settings::get_setting(&conn, "download_quality")
-            .ok().flatten()
-            .unwrap_or_else(|| "best".to_string());
-        (f, q)
-    };
-    let fmt = format.unwrap_or(default_format);
-    let qual = quality.unwrap_or(default_quality);
-    validate_download_params(&fmt, &qual)?;
+    let (fmt, qual) = resolve_format_quality(&db, format, quality)?;
 
     // For Spotify URLs, fetch metadata and convert to YouTube search
-    let (final_url, title, artist) = if parsed.platform == "spotify" {
-        log::info!("Converting Spotify URL to YouTube search: {}", url);
-        match crate::download::spotify::fetch_track_metadata(&url).await {
-            Some((track_title, track_artist)) => {
-                let search_query = match track_artist {
-                    Some(ref a) => format!("{} - {}", a, track_title),
-                    None => track_title.clone(),
-                };
-                let yt_url = format!("ytsearch5:{}", search_query);
-                (yt_url, Some(track_title), track_artist)
-            }
-            None => {
-                return Err("Failed to fetch Spotify track metadata".to_string());
-            }
-        }
-    } else {
-        (parsed.clean_url.clone(), None, None)
-    };
+    let (final_url, title, artist, platform) = to_download_url(&url).await?;
 
     let download = {
         let conn = crate::db::lock(&db)?;
@@ -98,7 +125,7 @@ pub async fn download_start(
             &final_url,
             title.as_deref(),
             artist.as_deref(),
-            &parsed.platform,
+            &platform,
             &fmt,
             &qual,
             None,
@@ -125,42 +152,17 @@ pub async fn download_start_batch(
     format: Option<String>,
     quality: Option<String>,
 ) -> Result<Vec<Download>, String> {
-    let (default_format, default_quality) = {
-        let conn = crate::db::lock(&db)?;
-        let f = crate::db::settings::get_setting(&conn, "download_format")
-            .ok().flatten()
-            .unwrap_or_else(|| "mp3".to_string());
-        let q = crate::db::settings::get_setting(&conn, "download_quality")
-            .ok().flatten()
-            .unwrap_or_else(|| "best".to_string());
-        (f, q)
-    };
-    let fmt = format.unwrap_or(default_format);
-    let qual = quality.unwrap_or(default_quality);
+    let (fmt, qual) = resolve_format_quality(&db, format, quality)?;
     let mut downloads = Vec::new();
 
     for url in &urls {
-        let parsed = crate::download::url_parser::parse_url(url);
-
         // For Spotify URLs, fetch metadata and convert to YouTube search
-        let (final_url, title, artist) = if parsed.platform == "spotify" {
-            log::info!("Converting Spotify URL to YouTube search: {}", url);
-            match crate::download::spotify::fetch_track_metadata(url).await {
-                Some((track_title, track_artist)) => {
-                    let search_query = match track_artist {
-                        Some(ref a) => format!("{} - {}", a, track_title),
-                        None => track_title.clone(),
-                    };
-                    let yt_url = format!("ytsearch5:{}", search_query);
-                    (yt_url, Some(track_title), track_artist)
-                }
-                None => {
-                    log::warn!("Failed to fetch Spotify track metadata for {}, skipping", url);
-                    continue;
-                }
+        let (final_url, title, artist, platform) = match to_download_url(url).await {
+            Ok(v) => v,
+            Err(e) => {
+                log::warn!("{} for {}, skipping", e, url);
+                continue;
             }
-        } else {
-            (parsed.clean_url.clone(), None, None)
         };
 
         let download = {
@@ -170,7 +172,7 @@ pub async fn download_start_batch(
                 &final_url,
                 title.as_deref(),
                 artist.as_deref(),
-                &parsed.platform,
+                &platform,
                 &fmt,
                 &qual,
                 None,
@@ -216,18 +218,7 @@ pub async fn download_search_and_start(
     quality: Option<String>,
 ) -> Result<Download, String> {
     let search_url = format!("ytsearch5:{}", query);
-    let (default_format, default_quality) = {
-        let conn = crate::db::lock(&db)?;
-        let f = crate::db::settings::get_setting(&conn, "download_format")
-            .ok().flatten()
-            .unwrap_or_else(|| "mp3".to_string());
-        let q = crate::db::settings::get_setting(&conn, "download_quality")
-            .ok().flatten()
-            .unwrap_or_else(|| "best".to_string());
-        (f, q)
-    };
-    let fmt = format.unwrap_or(default_format);
-    let qual = quality.unwrap_or(default_quality);
+    let (fmt, qual) = resolve_format_quality(&db, format, quality)?;
 
     let download = {
         let conn = crate::db::lock(&db)?;
@@ -263,18 +254,7 @@ pub async fn download_search_and_start_batch(
     format: Option<String>,
     quality: Option<String>,
 ) -> Result<Vec<Download>, String> {
-    let (default_format, default_quality) = {
-        let conn = crate::db::lock(&db)?;
-        let f = crate::db::settings::get_setting(&conn, "download_format")
-            .ok().flatten()
-            .unwrap_or_else(|| "mp3".to_string());
-        let q = crate::db::settings::get_setting(&conn, "download_quality")
-            .ok().flatten()
-            .unwrap_or_else(|| "best".to_string());
-        (f, q)
-    };
-    let fmt = format.unwrap_or(default_format);
-    let qual = quality.unwrap_or(default_quality);
+    let (fmt, qual) = resolve_format_quality(&db, format, quality)?;
     let mut downloads = Vec::new();
 
     for req in &queries {
@@ -427,24 +407,15 @@ pub async fn download_artist_missing(
         ).map_err(|e| e.to_string())?
     };
 
-    let (default_format, default_quality) = {
-        let conn = crate::db::lock(&db)?;
-        let f = crate::db::settings::get_setting(&conn, "download_format")
-            .ok().flatten()
-            .unwrap_or_else(|| "mp3".to_string());
-        let q = crate::db::settings::get_setting(&conn, "download_quality")
-            .ok().flatten()
-            .unwrap_or_else(|| "best".to_string());
-        (f, q)
-    };
+    let (default_format, default_quality) = resolve_format_quality(&db, None, None)?;
 
     let mut all_downloads = Vec::new();
 
     for mbid in &album_mbids {
-        // Rate limit for MusicBrainz
-        if !all_downloads.is_empty() {
-            tokio::time::sleep(std::time::Duration::from_millis(crate::metadata::musicbrainz::MB_RATE_LIMIT_MS)).await;
-        }
+        // Rate limit for MusicBrainz — every iteration makes a request, so
+        // the sleep must be unconditional (gating it on queued downloads let
+        // bursts of failed lookups hammer the API).
+        tokio::time::sleep(std::time::Duration::from_millis(crate::metadata::musicbrainz::MB_RATE_LIMIT_MS)).await;
 
         // Fetch the release group's primary release to get tracklist
         let detail_url = format!(
@@ -552,10 +523,14 @@ pub async fn download_artist_missing(
                 Some(&artist_name),
                 None,
             ).map_err(|e| e.to_string())?;
-            // Set the MusicBrainz ID on the album
+            // Set the MusicBrainz ID on the album. Store the RELEASE-GROUP mbid
+            // (the loop parameter), not the release id — "missing albums"
+            // detection compares against release-group MBIDs from the
+            // discography, so a release id here can never match and the album
+            // would be reported missing (and re-downloaded) forever.
             let _ = conn.execute(
                 "UPDATE albums SET musicbrainz_id = ?1 WHERE id = ?2 AND musicbrainz_id IS NULL",
-                params![release_id, aid],
+                params![mbid, aid],
             );
             // Store enriched tracklist
             let tracklist_json: Vec<serde_json::Value> = tracks.iter().map(|(title, disc, num, dur, _isrc, _mbid)| {

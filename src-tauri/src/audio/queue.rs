@@ -7,6 +7,11 @@ pub struct QueueTrack {
     pub title: String,
     pub artist_name: Option<String>,
     pub album_title: Option<String>,
+    /// Album/artist ids so the UI can link to their pages
+    #[serde(default)]
+    pub album_id: Option<i64>,
+    #[serde(default)]
+    pub artist_id: Option<i64>,
     pub duration_ms: Option<i64>,
     pub file_path: String,
     pub cover_art_path: Option<String>,
@@ -190,6 +195,12 @@ impl PlayQueue {
     /// Peek at the next track without advancing the position.
     /// If `wrap` is true, wraps around to the first track when at the end (for RepeatAll).
     pub fn peek_next(&self, wrap: bool) -> Option<&QueueTrack> {
+        // Mirror `next()`: when the current entry was removed while playing,
+        // the track at `position` IS the next track — peeking past it would
+        // make the engine preload (and crossfade into) the wrong track.
+        if self.stay_on_next {
+            return self.current();
+        }
         match self.position {
             Some(pos) if pos + 1 < self.order.len() => {
                 self.order.get(pos + 1).and_then(|&idx| self.tracks.get(idx))
@@ -259,6 +270,8 @@ mod tests {
     fn track(id: i64) -> QueueTrack {
         QueueTrack {
             id,
+            album_id: None,
+            artist_id: None,
             title: format!("Track {}", id),
             artist_name: None,
             album_title: None,

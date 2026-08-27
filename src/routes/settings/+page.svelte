@@ -18,6 +18,7 @@
 	import { toast } from 'svelte-sonner';
 	import * as AlertDialog from '$lib/components/ui/alert-dialog';
 	import { downloadStore } from '$lib/stores/downloads.svelte';
+	import { getDefaultDownloadDir } from '$lib/api/downloads';
 
 	import { getVersion } from '@tauri-apps/api/app';
 
@@ -27,6 +28,7 @@
 	getVersion().then((v) => { appVersion = v; }).catch(() => {});
 
 	let downloadDir = $state('');
+	let defaultDownloadDir = $state('');
 	let downloadFormat = $state('mp3');
 	let cookiesBrowser = $state('');
 	let defaultVolume = $state(75);
@@ -47,8 +49,12 @@
 
 	async function load() {
 		try {
-			const dir = await getSetting('download_dir');
+			const [dir, defaultDir] = await Promise.all([
+				getSetting('download_dir'),
+				getDefaultDownloadDir().catch(() => ''),
+			]);
 			if (dir) downloadDir = dir;
+			defaultDownloadDir = defaultDir;
 			const fmt = await getSetting('download_format');
 			if (fmt) downloadFormat = fmt;
 			const cookies = await getSetting('cookies_from_browser');
@@ -366,7 +372,7 @@
 			</label>
 			<div class="flex items-center gap-2">
 				<Input
-					value={downloadDir}
+					value={downloadDir || defaultDownloadDir}
 					placeholder="Default download location"
 					readonly
 					class="flex-1"
@@ -375,7 +381,28 @@
 					<FolderOpen class="size-4" />
 					Browse
 				</Button>
+				{#if downloadDir}
+					<Button
+						variant="ghost"
+						title="Reset to the default music folder"
+						onclick={async () => {
+							downloadDir = '';
+							await setSetting('download_dir', '');
+							toast.success('Using the default music folder', { description: defaultDownloadDir });
+						}}
+					>
+						<RotateCcw class="size-4" />
+						Reset
+					</Button>
+				{/if}
 			</div>
+			<p class="text-xs text-muted-foreground">
+				{#if downloadDir}
+					Custom folder — files are saved as Artist/Album/NN - Title
+				{:else}
+					Your OS music folder — files are saved as Artist/Album/NN - Title with full metadata
+				{/if}
+			</p>
 		</div>
 
 		<div class="space-y-2">

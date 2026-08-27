@@ -1,3 +1,11 @@
+
+/// Escape SQL LIKE wildcards in user input so `%`/`_` in a search string match
+/// literally. Every LIKE that interpolates user input must pair this with
+/// `ESCAPE '\'` in its query.
+pub fn escape_like(q: &str) -> String {
+    q.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")
+}
+
 pub mod albums;
 pub mod artists;
 pub mod devices;

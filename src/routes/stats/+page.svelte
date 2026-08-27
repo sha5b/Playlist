@@ -5,6 +5,7 @@
 	import * as Tabs from '$lib/components/ui/tabs';
 	import { Button } from '$lib/components/ui/button';
 	import CoverArt from '$lib/components/shared/CoverArt.svelte';
+	import { formatDurationLong } from '$lib/utils/format';
 	import { Play, Music, Clock, Users, Disc, BarChart3 } from 'lucide-svelte';
 
 	let overview = $state<StatsOverview | null>(null);
@@ -46,21 +47,11 @@
 		loadTop(period);
 	});
 
-	function formatListeningTime(ms: number): string {
-		const totalMinutes = Math.floor(ms / 60000);
-		const hours = Math.floor(totalMinutes / 60);
-		const minutes = totalMinutes % 60;
-		if (hours >= 24) {
-			const days = Math.floor(hours / 24);
-			return `${days}d ${hours % 24}h`;
-		}
-		if (hours > 0) return `${hours}h ${minutes}m`;
-		return `${minutes}m`;
-	}
-
 	function formatDayLabel(day: string): string {
-		const d = new Date(day + 'T00:00:00');
-		return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+		// Keys are UTC calendar dates (Rust's date(played_at)) — parse and
+		// format in UTC so labels never shift by a day near midnight.
+		const d = new Date(day + 'T00:00:00Z');
+		return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', timeZone: 'UTC' });
 	}
 
 	// Fill the last 90 days so gaps (days without plays) render as empty slots.
@@ -113,7 +104,7 @@
 					<Clock class="size-3.5" />
 					<span class="text-xs font-medium uppercase tracking-wider">Listening Time</span>
 				</div>
-				<p class="mt-2 text-2xl font-bold tabular-nums">{formatListeningTime(overview.total_listening_ms)}</p>
+				<p class="mt-2 text-2xl font-bold tabular-nums">{formatDurationLong(overview.total_listening_ms)}</p>
 			</div>
 			<div class="rounded-lg border border-border bg-card p-4">
 				<div class="flex items-center gap-2 text-muted-foreground">

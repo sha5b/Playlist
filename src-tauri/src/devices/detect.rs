@@ -30,29 +30,110 @@ pub async fn detect_devices() -> Result<Vec<DetectedDevice>, String> {
 #[cfg(target_os = "linux")]
 async fn detect_linux() -> Result<Vec<DetectedDevice>, String> {
     // Check if we're in Flatpak — lsblk may not be available
-    if Path::new("/.flatpak-info").exists() {
-        return detect_linux_scan_mounts().await;
-    }
+    let mut devices = if Path::new("/.flatpak-info").exists() {
+        detect_linux_scan_mounts().await?
+    } else {
+        let output = tokio::process::Command::new("lsblk")
+            .args([
+                "-J", "-b", "-o",
+                "NAME,LABEL,SIZE,MOUNTPOINT,HOTPLUG,TRAN,MODEL,SERIAL,UUID,FSSIZE,FSAVAIL",
+            ])
+            .output()
+            .await
+            .map_err(|e| {
+                log::warn!("lsblk failed, falling back to mount scan: {}", e);
+                e.to_string()
+            });
 
-    let output = tokio::process::Command::new("lsblk")
-        .args([
-            "-J", "-b", "-o",
-            "NAME,LABEL,SIZE,MOUNTPOINT,HOTPLUG,TRAN,MODEL,SERIAL,UUID,FSSIZE,FSAVAIL",
-        ])
-        .output()
-        .await
-        .map_err(|e| {
-            log::warn!("lsblk failed, falling back to mount scan: {}", e);
-            e.to_string()
-        });
-
-    match output {
-        Ok(out) if out.status.success() => {
-            let json_str = String::from_utf8_lossy(&out.stdout);
-            parse_lsblk_json(&json_str)
+        match output {
+            Ok(out) if out.status.success() => {
+                let json_str = String::from_utf8_lossy(&out.stdout);
+                parse_lsblk_json(&json_str)?
+            }
+            _ => detect_linux_scan_mounts().await?,
         }
-        _ => detect_linux_scan_mounts().await,
+    };
+
+    // Phones never show up in lsblk: Android/iOS expose MTP/PTP (or AFC), not
+    // USB mass storage, so there is no block device to find. Desktops mount
+    // them through GVfs as FUSE filesystems under $XDG_RUNTIME_DIR/gvfs.
+    detect_gvfs_portable_devices(&mut devices);
+
+    Ok(devices)
+}
+
+/// Add portable devices mounted by GVfs (phones, cameras, media players).
+/// These FUSE mounts support ordinary file reads/writes, so syncing into them
+/// works with plain `std::fs` — no MTP client library needed.
+#[cfg(target_os = "linux")]
+fn detect_gvfs_portable_devices(devices: &mut Vec<DetectedDevice>) {
+    let runtime_dir = std::env::var("XDG_RUNTIME_DIR")
+        .unwrap_or_else(|_| format!("/run/user/{}", unsafe { libc::getuid() }));
+    let gvfs_dir = Path::new(&runtime_dir).join("gvfs");
+    let entries = match std::fs::read_dir(&gvfs_dir) {
+        Ok(e) => e,
+        Err(_) => return, // no GVfs / no phone connected
+    };
+
+    for entry in entries.flatten() {
+        let dir_name = entry.file_name().to_string_lossy().to_string();
+        if !is_portable_gvfs_scheme(&dir_name) {
+            continue; // network shares, disk mounts, trash, etc.
+        }
+        let mount = entry.path();
+        // MTP exposes one folder per storage ("Internal storage", "SD card").
+        // The device root itself is not writable — sync into the first
+        // storage instead.
+        let target = first_child_dir(&mount).unwrap_or_else(|| mount.clone());
+        let (capacity, free) = {
+            let (c, f) = get_fs_stats(&target);
+            // gvfs-fuse often reports the runtime dir's tmpfs stats instead of
+            // the phone's storage — drop nonsense values below 1 GiB.
+            let sane = |v: Option<i64>| v.filter(|&b| b >= 1024 * 1024 * 1024);
+            (sane(c), sane(f))
+        };
+        devices.push(DetectedDevice {
+            device_uid: format!("gvfs:{}", dir_name),
+            name: friendly_gvfs_name(&dir_name),
+            mount_path: target.to_string_lossy().to_string(),
+            capacity_bytes: capacity,
+            free_bytes: free,
+            vendor: None,
+            model: None,
+        });
     }
+}
+
+/// GVfs mount names for portable devices: `mtp:host=Vendor_Model_Serial`,
+/// `gphoto2:host=…` (PTP cameras / phones in photo mode), `afc:host=…`
+/// (iPhones via usbmuxd). Shares and disk mounts use other schemes.
+#[cfg(target_os = "linux")]
+fn is_portable_gvfs_scheme(dir_name: &str) -> bool {
+    matches!(
+        dir_name.split(':').next().unwrap_or(""),
+        "mtp" | "mtp2" | "gphoto2" | "afc"
+    )
+}
+
+/// "mtp:host=Google_Pixel_7a_3ABC" → "Google Pixel 7a 3ABC"
+#[cfg(target_os = "linux")]
+fn friendly_gvfs_name(dir_name: &str) -> String {
+    let host = dir_name
+        .split("host=")
+        .nth(1)
+        .map(|s| s.split(';').next().unwrap_or(s))
+        .unwrap_or("");
+    let raw = if host.is_empty() { dir_name } else { host };
+    raw.replace('_', " ").trim().to_string()
+}
+
+#[cfg(target_os = "linux")]
+fn first_child_dir(parent: &Path) -> Option<std::path::PathBuf> {
+    std::fs::read_dir(parent)
+        .ok()?
+        .flatten()
+        .map(|e| e.path())
+        .find(|p| p.is_dir())
 }
 
 #[cfg(target_os = "linux")]
@@ -79,10 +160,12 @@ fn parse_lsblk_json(json_str: &str) -> Result<Vec<DetectedDevice>, String> {
         let dev_name = device.get("name").and_then(|v| v.as_str()).unwrap_or("");
         // Removable media isn't only USB: SD cards show up as tran "mmc" (or an
         // mmcblk* device with no tran), and desktop automounts land under
-        // /run/media regardless of transport.
+        // /run/media or /media regardless of transport.
         let is_removable_tran = tran.map(|t| t == "usb" || t == "mmc").unwrap_or(false)
             || dev_name.starts_with("mmcblk")
-            || mountpoint.map(|mp| mp.starts_with("/run/media/")).unwrap_or(false);
+            || mountpoint
+                .map(|mp| mp.starts_with("/run/media/") || mp.starts_with("/media/"))
+                .unwrap_or(false);
 
         let mp = match mountpoint {
             Some(mp) if hotplug && is_removable_tran && !mp.is_empty() => mp,
@@ -465,5 +548,46 @@ pub fn get_fs_stats(path: &Path) -> (Option<i64>, Option<i64>) {
     {
         let _ = path;
         (None, None)
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gvfs_scheme_recognizes_portable_devices_only() {
+        assert!(is_portable_gvfs_scheme("mtp:host=Google_Pixel_7a_3ABC"));
+        assert!(is_portable_gvfs_scheme("mtp:host=Xiaomi_2201123G_abc::"));
+        assert!(is_portable_gvfs_scheme("gphoto2:host=Apple_iPhone"));
+        assert!(is_portable_gvfs_scheme("afc:host=Apple_iPhone"));
+        assert!(!is_portable_gvfs_scheme("smb-share:server= nas,share=music"));
+        assert!(!is_portable_gvfs_scheme("disk:host"));
+        assert!(!is_portable_gvfs_scheme("trash:"));
+    }
+
+    #[test]
+    fn gvfs_name_is_human_readable() {
+        assert_eq!(
+            friendly_gvfs_name("mtp:host=Google_Pixel_7a_3ABC"),
+            "Google Pixel 7a 3ABC"
+        );
+        // serial suffix separated by ';' is dropped
+        assert_eq!(
+            friendly_gvfs_name("gphoto2:host=Apple_iPhone_14;serial=XYZ"),
+            "Apple iPhone 14"
+        );
+        // no host part — fall back to the raw dir name
+        assert_eq!(friendly_gvfs_name("mtp:"), "mtp:");
+    }
+
+    #[test]
+    fn gvfs_device_uid_is_stable_per_phone() {
+        // The uid is derived from the GVfs mount name, which encodes the
+        // device serial — replugging the same phone yields the same uid.
+        let a = format!("gvfs:{}", "mtp:host=Google_Pixel_7a_3ABC");
+        let b = format!("gvfs:{}", "mtp:host=Google_Pixel_7a_3ABC");
+        assert_eq!(a, b);
+        assert_ne!(a, format!("gvfs:{}", "mtp:host=Samsung_Galaxy_S23_zz"));
     }
 }

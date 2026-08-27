@@ -15,6 +15,7 @@ const LASTFM_BASE: &str = "https://ws.audioscrobbler.com/2.0/";
 fn client() -> reqwest::Client {
     reqwest::Client::builder()
         .user_agent("Playlist/0.1.0")
+        .timeout(std::time::Duration::from_secs(10))
         .build()
         .unwrap_or_default()
 }
@@ -51,7 +52,29 @@ struct Bio {
 
 #[derive(Debug, Deserialize)]
 struct TagsContainer {
-    tag: Option<Vec<LastfmTag>>,
+    /// Last.fm collapses a single-element collection to a bare object
+    /// (`"tag": {...}` instead of `"tag": [{...}]`), which fails to
+    /// deserialize as Vec and would fail the WHOLE response — accept both.
+    #[serde(default, deserialize_with = "deserialize_single_or_vec")]
+    tag: Vec<LastfmTag>,
+}
+
+fn deserialize_single_or_vec<'de, D>(deserializer: D) -> Result<Vec<LastfmTag>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(serde::Deserialize)]
+    #[serde(untagged)]
+    enum OneOrMany {
+        Many(Vec<LastfmTag>),
+        One(LastfmTag),
+        Null,
+    }
+    Ok(match OneOrMany::deserialize(deserializer)? {
+        OneOrMany::Many(v) => v,
+        OneOrMany::One(t) => vec![t],
+        OneOrMany::Null => Vec::new(),
+    })
 }
 
 #[derive(Debug, Deserialize)]
@@ -124,7 +147,7 @@ pub async fn get_album_info(album: &str, artist: &str) -> Result<LastfmAlbumData
     let info = resp.album.ok_or_else(|| "No Last.fm album data".to_string())?;
 
     let tags = info.tags
-        .and_then(|t| t.tag)
+        .map(|t| t.tag)
         .unwrap_or_default()
         .into_iter()
         .filter_map(|t| t.name)
@@ -187,7 +210,7 @@ pub async fn get_track_info(track: &str, artist: &str) -> Result<LastfmTrackData
     let info = resp.track.ok_or_else(|| "No Last.fm track data".to_string())?;
 
     let tags = info.tags
-        .and_then(|t| t.tag)
+        .map(|t| t.tag)
         .unwrap_or_default()
         .into_iter()
         .filter_map(|t| t.name)

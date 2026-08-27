@@ -31,20 +31,30 @@
 		} catch { return []; }
 	});
 
+	// Monotonic request id: a slow response for album A must not clobber the
+	// state after navigation to album B has already loaded.
+	let loadSeq = 0;
+	// Albums MusicBrainz couldn't match — don't re-run a full enrichment
+	// (network + DB writes) on every visit and after every library update.
+	const enrichTried = new Set<number>();
+
 	async function load(id: number) {
+		const seq = ++loadSeq;
 		loading = true;
 		try {
 			const [a, t] = await Promise.all([getAlbum(id), getAlbumTracks(id)]);
+			if (seq !== loadSeq) return;
 			album = a;
 			tracks = t;
-			// Auto-enrich if album hasn't been enriched yet
-			if (a && (!a.musicbrainz_id || !a.enriched_tracklist)) {
+			// Auto-enrich once per album per visit if not enriched yet
+			if (a && (!a.musicbrainz_id || !a.enriched_tracklist) && !enrichTried.has(a.id)) {
+				enrichTried.add(a.id);
 				autoEnrich(a);
 			}
 		} catch (e) {
 			toast.error('Failed to load album');
 		} finally {
-			loading = false;
+			if (seq === loadSeq) loading = false;
 		}
 	}
 
@@ -153,11 +163,18 @@
 
 	// Auto-refresh tracks when downloads complete (so placeholders disappear)
 	onMount(() => {
-		let cleanup: (() => void) | undefined;
+		let disposed = false;
+		let unlisten: (() => void) | undefined;
 		listen('library-updated', () => {
 			if (album) load(album.id);
-		}).then((unlisten) => { cleanup = unlisten; });
-		return () => cleanup?.();
+		}).then((fn) => {
+			if (disposed) fn();
+			else unlisten = fn;
+		});
+		return () => {
+			disposed = true;
+			unlisten?.();
+		};
 	});
 
 	const totalDuration = $derived(

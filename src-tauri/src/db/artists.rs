@@ -70,14 +70,14 @@ pub fn find_or_create(conn: &Connection, name: &str) -> Result<i64, rusqlite::Er
 pub fn get_artists(conn: &Connection, offset: i64, limit: i64, search: Option<&str>) -> Result<(Vec<Artist>, i64), rusqlite::Error> {
     let (having_clause, pattern) = match search {
         Some(q) if !q.trim().is_empty() => {
-            ("HAVING a.name LIKE ?3".to_string(), Some(format!("%{}%", q)))
+            ("HAVING a.name LIKE ?3 ESCAPE '\\'".to_string(), Some(format!("%{}%", crate::db::escape_like(q))))
         }
         _ => (String::new(), None),
     };
 
     let total: i64 = if let Some(ref p) = pattern {
         conn.query_row(
-            "SELECT COUNT(*) FROM artists WHERE name LIKE ?1",
+            "SELECT COUNT(*) FROM artists WHERE name LIKE ?1 ESCAPE '\\'",
             params![p],
             |row| row.get(0),
         )?

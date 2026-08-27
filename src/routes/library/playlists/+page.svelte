@@ -11,6 +11,7 @@
 	import type { Playlist } from '$lib/types';
 	import { toast } from 'svelte-sonner';
 	import { scrollRestore } from '$lib/utils/scrollRestore';
+	import { libraryStore } from '$lib/stores/library.svelte';
 
 	let playlists: Playlist[] = $state([]);
 	let loading = $state(true);
@@ -84,7 +85,10 @@
 		createOpen = true;
 	}
 
+	// Track the library version so imports/downloads in other tabs refresh
+	// this list too — otherwise counts and order stay stale until remount.
 	$effect(() => {
+		libraryStore.version;
 		load();
 	});
 </script>

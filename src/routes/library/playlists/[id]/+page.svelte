@@ -27,7 +27,12 @@
 	const playlistId = $derived(Number(page.params.id));
 	const totalPages = $derived(trackPage ? Math.ceil(trackPage.total / pageSize) : 0);
 
+	// Monotonic request id: a slow response for playlist A must not clobber
+	// the state after navigation to playlist B has already loaded.
+	let loadSeq = 0;
+
 	async function load(id: number) {
+		const seq = ++loadSeq;
 		loading = true;
 		// Reset so navigating between playlists shows the loading spinner
 		// instead of the previous playlist's data until the fetch resolves.
@@ -35,21 +40,26 @@
 		trackPage = null;
 		try {
 			const detail = await getPlaylist(id);
+			const tp = await getPlaylistTracks(id, 0, pageSize);
+			if (seq !== loadSeq) return;
 			if (detail) {
 				playlist = detail.playlist;
 			}
-			trackPage = await getPlaylistTracks(id, currentPage * pageSize, pageSize);
+			trackPage = tp;
 		} catch (e) {
 			toast.error('Failed to load playlist');
 		} finally {
-			loading = false;
+			if (seq === loadSeq) loading = false;
 		}
 	}
 
 	async function loadTracks() {
 		if (!playlist) return;
+		const seq = loadSeq;
 		try {
-			trackPage = await getPlaylistTracks(playlist.id, currentPage * pageSize, pageSize);
+			const tp = await getPlaylistTracks(playlist.id, currentPage * pageSize, pageSize);
+			if (seq !== loadSeq) return;
+			trackPage = tp;
 		} catch (e) {
 			console.error('Failed to load tracks:', e);
 		}
@@ -285,7 +295,22 @@
 		<!-- Track list -->
 		{#if trackPage}
 			<!-- Smart playlists are rule-based: no manual remove affordance -->
-			<TrackTable tracks={trackPage.tracks} ondelete={playlist.is_smart ? undefined : handleRemoveTrack} referrer={playlist ? { type: 'playlist', id: playlist.id, label: playlist.name } : undefined} />
+			<TrackTable
+				tracks={trackPage.tracks}
+				ondelete={playlist.is_smart ? undefined : handleRemoveTrack}
+				onplay={async (t) => {
+					// Row play must queue the WHOLE playlist, not just the
+					// visible 50-track page.
+					try {
+						const ids = await allTrackIds();
+						const idx = ids.indexOf(t.id);
+						player.playTracks(ids, idx >= 0 ? idx : 0);
+					} catch {
+						player.playTracks([t.id], 0);
+					}
+				}}
+				referrer={playlist ? { type: 'playlist', id: playlist.id, label: playlist.name } : undefined}
+			/>
 
 			{#if totalPages > 1}
 				<div class="flex items-center justify-center gap-3 shrink-0 pb-2">

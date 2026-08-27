@@ -23,6 +23,13 @@ finish-args:
   # XDG portals (file picker, background status, notifications)
   - --talk-name=org.freedesktop.portal.*
   - --talk-name=org.freedesktop.Notifications
+  # Downloads are saved into the user's music folder by default
+  - --filesystem=xdg-music
+  # Device sync: USB drives automount under /run/media (udisks), phones under
+  # the GVfs FUSE mount in the runtime dir (MTP/PTP/AFC)
+  - --filesystem=/run/media
+  - --filesystem=/media
+  - --filesystem=xdg-run/gvfs
   # Browser cookie access for yt-dlp (host browsers)
   - --filesystem=~/.config/google-chrome:ro
   - --filesystem=~/.config/chromium:ro

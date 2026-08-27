@@ -48,12 +48,18 @@
 		return track.lyrics.replace(/\[\d{2}:\d{2}(?:\.\d{2,3})?\]/g, '').trim();
 	});
 
+	// Monotonic request id: a slow response for track A must not clobber the
+	// state after navigation to track B has already loaded.
+	let loadSeq = 0;
+
 	async function load(id: number) {
+		const seq = ++loadSeq;
 		loading = true;
 		album = null;
 		artist = null;
 		try {
 			const t = await getTrack(id);
+			if (seq !== loadSeq) return;
 			track = t;
 			if (t) {
 				// Load album and artist in parallel
@@ -61,13 +67,14 @@
 					t.album_id ? getAlbum(t.album_id).catch(() => null) : null,
 					t.artist_id ? getArtist(t.artist_id).catch(() => null) : null,
 				]);
+				if (seq !== loadSeq) return;
 				album = albumResult;
 				artist = artistResult;
 			}
 		} catch (e) {
 			console.error('Failed to load track:', e);
 		} finally {
-			loading = false;
+			if (seq === loadSeq) loading = false;
 		}
 	}
 

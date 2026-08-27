@@ -299,9 +299,21 @@ async fn copy_file(src: &Path, dest: &Path) -> Result<(), String> {
         let _ = tokio::fs::remove_file(&tmp).await;
         return Err(format!("Copy failed: {}", e));
     }
-    tokio::fs::rename(&tmp, dest)
-        .await
-        .map_err(|e| format!("Finalize failed: {}", e))?;
+    finalize_temp(&tmp, dest).await
+}
+
+/// Move a fully-written temp file onto its final name. FUSE backends such as
+/// the GVfs MTP mount (phones) may not support rename — fall back to a plain
+/// copy so syncing to a phone still works, just without the atomic swap.
+async fn finalize_temp(tmp: &Path, dest: &Path) -> Result<(), String> {
+    if let Err(e) = tokio::fs::rename(tmp, dest).await {
+        if tokio::fs::copy(tmp, dest).await.is_ok() {
+            let _ = tokio::fs::remove_file(tmp).await;
+            return Ok(());
+        }
+        let _ = tokio::fs::remove_file(tmp).await;
+        return Err(format!("Finalize failed: {}", e));
+    }
     Ok(())
 }
 
@@ -397,12 +409,7 @@ async fn transcode_file(
         return Err(format!("ffmpeg error: {}", stderr));
     }
 
-    if let Err(e) = tokio::fs::rename(&tmp, dest).await {
-        let _ = tokio::fs::remove_file(&tmp).await;
-        return Err(format!("Finalize failed: {}", e));
-    }
-
-    Ok(())
+    finalize_temp(&tmp, dest).await
 }
 
 fn generate_m3u(

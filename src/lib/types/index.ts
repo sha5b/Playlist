@@ -171,6 +171,8 @@ export interface QueueTrack {
 	title: string;
 	artist_name: string | null;
 	album_title: string | null;
+	album_id?: number | null;
+	artist_id?: number | null;
 	duration_ms: number | null;
 	file_path: string;
 	cover_art_path: string | null;

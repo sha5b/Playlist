@@ -103,6 +103,9 @@ function flushEvents() {
 			if (data.status === 'cancelled') {
 				if (!removed.has(data.id) && isActive(existing[idx])) activeDelta--;
 				removed.add(data.id);
+				// Record it so a duplicate terminal event in a later batch
+				// can't double-decrement the badge.
+				terminalUnknown.add(data.id);
 			} else {
 				const wasActive = isActive(existing[idx]);
 				existing[idx] = mergeEvent(existing[idx], data);
@@ -114,12 +117,16 @@ function flushEvents() {
 			if (data.status === 'cancelled') {
 				if (isActive(cur)) activeDelta--;
 				newById.delete(data.id);
+				terminalUnknown.add(data.id);
 			} else {
 				newById.set(data.id, mergeEvent(cur, data));
 			}
 		} else if (data.status === 'queued' || data.status === 'downloading' || data.status === 'processing') {
 			newById.set(data.id, placeholderFromEvent(data));
 			activeDelta++;
+			// A re-queued id (e.g. retry) is tracked again — forget any old
+			// terminal count so a future out-of-window terminal still counts.
+			terminalUnknown.delete(data.id);
 			// The id may have been evicted from the window while still counted as
 			// active, so the local ++ can drift — re-sync with the backend.
 			sawUnknownActive = true;

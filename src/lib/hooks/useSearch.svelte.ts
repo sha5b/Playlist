@@ -22,6 +22,11 @@ export function useSearch(onSearch: () => Promise<void>, debounceMs = 250) {
 		query = value;
 	}
 
+	/** Cancel a pending debounced call (call from an $effect cleanup). */
+	function destroy() {
+		clearTimeout(debounceTimer);
+	}
+
 	return {
 		get query() {
 			return query;
@@ -32,5 +37,6 @@ export function useSearch(onSearch: () => Promise<void>, debounceMs = 250) {
 		handleSearch,
 		clearSearch,
 		setQuery,
+		destroy,
 	};
 }

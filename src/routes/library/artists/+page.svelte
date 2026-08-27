@@ -16,6 +16,11 @@
 
 	const search = useSearch(load);
 
+	// Cancel any pending debounced search when leaving the page
+	$effect(() => {
+		return () => search.destroy();
+	});
+
 	async function load() {
 		loading = true;
 		try {

@@ -27,7 +27,15 @@
 
 	const artistId = $derived(Number(page.params.id));
 
+	// Monotonic request id: a slow response for artist A must not clobber the
+	// state after navigation to artist B has already loaded.
+	let loadSeq = 0;
+	// Artists MusicBrainz couldn't match — don't re-run enrichment on every
+	// visit and after every library update.
+	const enrichTried = new Set<number>();
+
 	async function load(id: number) {
+		const seq = ++loadSeq;
 		loading = true;
 		try {
 			const [a, t, al] = await Promise.all([
@@ -35,6 +43,7 @@
 				getArtistTracks(id),
 				getArtistAlbums(id),
 			]);
+			if (seq !== loadSeq) return;
 			artist = a;
 			tracks = t;
 			albums = al;
@@ -53,12 +62,15 @@
 
 			// Load download statuses for local albums
 			if (al.length > 0) {
-				const ids = al.map((a) => a.id);
-				downloadStatuses = await getAlbumsDownloadStatus(ids);
+				const ids = al.map((x) => x.id);
+				const statuses = await getAlbumsDownloadStatus(ids);
+				if (seq !== loadSeq) return;
+				downloadStatuses = statuses;
 			}
 
-			// Auto-enrich if artist has no enriched discography
-			if (a && !a.has_enriched_discography) {
+			// Auto-enrich once per artist per visit if there's no discography
+			if (a && !a.has_enriched_discography && !enrichTried.has(a.id)) {
+				enrichTried.add(a.id);
 				autoEnrich(a);
 			} else if (a) {
 				// Load missing albums from already enriched data
@@ -67,7 +79,7 @@
 		} catch (e) {
 			toast.error('Failed to load artist');
 		} finally {
-			loading = false;
+			if (seq === loadSeq) loading = false;
 		}
 	}
 
@@ -158,7 +170,8 @@
 
 	// Auto-refresh when downloads complete
 	onMount(() => {
-		let cleanup: (() => void) | undefined;
+		let disposed = false;
+		let unlisten: (() => void) | undefined;
 		listen('library-updated', () => {
 			if (artist) {
 				getArtistTracks(artist.id).then((t) => { tracks = t; });
@@ -169,8 +182,14 @@
 					}
 				});
 			}
-		}).then((unlisten) => { cleanup = unlisten; });
-		return () => cleanup?.();
+		}).then((fn) => {
+			if (disposed) fn();
+			else unlisten = fn;
+		});
+		return () => {
+			disposed = true;
+			unlisten?.();
+		};
 	});
 </script>
 

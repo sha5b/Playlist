@@ -13,6 +13,11 @@ type EntryTuple = (String, Option<String>, Option<String>, Option<f64>, Option<S
 /// Map fetched playlist entries to the tuple format expected by `upsert_entries`.
 /// For DRM platforms (Spotify, etc.) entries may lack a direct URL; fall back to ytsearch.
 fn map_entries(entries: &[VideoInfo], label: &str) -> Vec<EntryTuple> {
+    // Fallback search URLs are keyed by "artist - title", so duplicate songs in
+    // a source playlist would all collide on one URL (UNIQUE(playlist_id,
+    // source_url)) and collapse into a single entry. Disambiguate repeats.
+    let mut search_url_seen: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
     entries
         .iter()
         .map(|e| {
@@ -25,8 +30,15 @@ fn map_entries(entries: &[VideoInfo], label: &str) -> Vec<EntryTuple> {
                         Some(a) => format!("{} - {}", a, best_title),
                         None => best_title.clone(),
                     };
-                    log::warn!("[{}] No webpage_url for '{}', falling back to search: ytsearch5:{}", label, best_title, query);
-                    format!("ytsearch5:{}", query)
+                    let seen = search_url_seen.entry(query.clone()).or_insert(0);
+                    *seen += 1;
+                    if *seen > 1 {
+                        log::warn!("[{}] No webpage_url for '{}' (duplicate #{}), falling back to search: ytsearch5:{} #{}", label, best_title, seen, query, seen);
+                        format!("ytsearch5:{} #{}", query, seen)
+                    } else {
+                        log::warn!("[{}] No webpage_url for '{}', falling back to search: ytsearch5:{}", label, best_title, query);
+                        format!("ytsearch5:{}", query)
+                    }
                 });
             log::info!("[{}] Entry '{}' -> URL: {}", label, best_title, url);
             // Normalize duration: some extractors (e.g. Spotify) return milliseconds

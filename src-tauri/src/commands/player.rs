@@ -9,7 +9,7 @@ use crate::db::DbPool;
 /// Build a QueueTrack from a track ID by reading from the database.
 fn track_from_db(conn: &rusqlite::Connection, id: i64) -> Result<QueueTrack, String> {
     let track = conn.query_row(
-        "SELECT t.id, t.title, a.name, al.title, t.duration_ms, t.file_path, t.cover_art_path, t.gain_db
+        "SELECT t.id, t.title, a.name, al.title, t.album_id, t.artist_id, t.duration_ms, t.file_path, t.cover_art_path, t.gain_db
          FROM tracks t
          LEFT JOIN artists a ON t.artist_id = a.id
          LEFT JOIN albums al ON t.album_id = al.id
@@ -21,10 +21,12 @@ fn track_from_db(conn: &rusqlite::Connection, id: i64) -> Result<QueueTrack, Str
                 title: row.get(1)?,
                 artist_name: row.get(2)?,
                 album_title: row.get(3)?,
-                duration_ms: row.get(4)?,
-                file_path: row.get(5)?,
-                cover_art_path: row.get(6)?,
-                gain_db: row.get(7)?,
+                album_id: row.get(4)?,
+                artist_id: row.get(5)?,
+                duration_ms: row.get(6)?,
+                file_path: row.get(7)?,
+                cover_art_path: row.get(8)?,
+                gain_db: row.get(9)?,
             })
         },
     )
@@ -97,7 +99,7 @@ pub fn player_play_tracks(
     // Batch-load all tracks in one query, then reorder to match requested order
     let placeholders: Vec<String> = (1..=track_ids.len()).map(|i| format!("?{}", i)).collect();
     let sql = format!(
-        "SELECT t.id, t.title, a.name, al.title, t.duration_ms, t.file_path, t.cover_art_path, t.gain_db
+        "SELECT t.id, t.title, a.name, al.title, t.album_id, t.artist_id, t.duration_ms, t.file_path, t.cover_art_path, t.gain_db
          FROM tracks t
          LEFT JOIN artists a ON t.artist_id = a.id
          LEFT JOIN albums al ON t.album_id = al.id
@@ -112,10 +114,12 @@ pub fn player_play_tracks(
             title: row.get(1)?,
             artist_name: row.get(2)?,
             album_title: row.get(3)?,
-            duration_ms: row.get(4)?,
-            file_path: row.get(5)?,
-            cover_art_path: row.get(6)?,
-            gain_db: row.get(7)?,
+            album_id: row.get(4)?,
+            artist_id: row.get(5)?,
+            duration_ms: row.get(6)?,
+            file_path: row.get(7)?,
+            cover_art_path: row.get(8)?,
+            gain_db: row.get(9)?,
         })
     }).map_err(|e| e.to_string())?;
     let loaded: std::collections::HashMap<i64, QueueTrack> = rows

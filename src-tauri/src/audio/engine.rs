@@ -467,6 +467,20 @@ impl AudioEngine {
                                         let q_pos = s.queue.position();
                                         emit(PlayerEvent::QueueUpdated { tracks: q_tracks, position: q_pos });
                                     }
+                                } else {
+                                    // Empty queue: stop any stale audio instead of
+                                    // leaving the replaced queue playing underneath.
+                                    sink.stop();
+                                    is_playing = false;
+                                    play_start = None;
+                                    {
+                                        let mut s = write_state(&shared);
+                                        s.playback.state = PlayerState::Stopped;
+                                        s.playback.current_track = None;
+                                        s.playback.position_ms = 0;
+                                        s.playback.duration_ms = 0;
+                                        emit(PlayerEvent::StateChanged(s.playback.clone()));
+                                    }
                                 }
                             } else {
                                 Self::play_current(&mut sink, &stream_handle, &shared, &emit, &mut current_duration_ms, &mut play_start, &mut accumulated_ms, &mut is_playing, ffmpeg_path.as_deref(), normalize);
@@ -755,7 +769,9 @@ impl AudioEngine {
                         PlayerCommand::SwitchDevice(device_name) => {
                             log::info!("[audio] SwitchDevice: {:?}", device_name);
                             finish_crossfade(&mut crossfade, &sink, &shared);
-                            explicit_device = device_name.clone();
+                            // Only record the explicit device AFTER a successful
+                            // switch — recording it up front permanently disabled
+                            // default-device auto-switching on failure.
                             let result = if let Some(ref name) = device_name {
                                 use cpal::traits::{DeviceTrait, HostTrait};
                                 let host = cpal::default_host();
@@ -774,6 +790,7 @@ impl AudioEngine {
 
                             match result {
                                 Ok((new_stream, new_handle)) => {
+                                    explicit_device = device_name.clone();
                                     // Resume playback on the new device instead of
                                     // killing it (the old code stopped playback and
                                     // left a track loaded that Resume couldn't restart).
@@ -1140,7 +1157,12 @@ impl AudioEngine {
         *sink = match Self::make_sink(stream_handle, vol) {
             Ok(s) => s,
             Err(e) => {
+                // The old stream is already gone and the old sink is stopped —
+                // reset the playing state so the UI doesn't claim playback
+                // until the next user command rebuilds a sink.
                 log::error!("[audio] {}", e);
+                *is_playing = false;
+                *play_start = None;
                 emit(PlayerEvent::Error(e));
                 return;
             }

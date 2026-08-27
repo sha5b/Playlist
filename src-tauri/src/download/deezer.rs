@@ -239,7 +239,7 @@ impl DeezerSource {
         output_dir: &Path,
         file_stem: &str,
         format: &str,
-        progress: &(dyn Fn(f64) + Send + Sync),
+        progress: Box<dyn Fn(f64) + Send + Sync>,
     ) -> Result<String, SourceError> {
         // Try FLAC first, then MP3 320
         let (quality, ext) = match format {
@@ -300,7 +300,7 @@ impl DeezerSource {
         output_dir: &Path,
         file_stem: &str,
         ext: &str,
-        progress: &(dyn Fn(f64) + Send + Sync),
+        progress: Box<dyn Fn(f64) + Send + Sync>,
     ) -> Result<String, SourceError> {
         let encrypted_data = resp
             .bytes()
@@ -313,31 +313,43 @@ impl DeezerSource {
         let output_path = output_dir.join(format!("{}.{}", file_stem, ext));
         let output_str = output_path.to_string_lossy().to_string();
 
-        // Decrypt in chunks: every 3rd 2048-byte chunk is encrypted
-        let mut output_file = std::fs::File::create(&output_path)
-            .map_err(|e| SourceError::Other(format!("Failed to create file: {}", e)))?;
+        // Decrypt + write a full track's worth of blocking file I/O — run it
+        // on the blocking pool so it can't stall the async runtime workers.
+        let decrypt_result = tokio::task::spawn_blocking({
+            let output_path = output_path.clone();
+            move || -> Result<(), SourceError> {
+                // Decrypt in chunks: every 3rd 2048-byte chunk is encrypted
+                let mut output_file = std::fs::File::create(&output_path)
+                    .map_err(|e| SourceError::Other(format!("Failed to create file: {}", e)))?;
 
-        let chunk_size = 2048;
-        let total_chunks = encrypted_data.len().div_ceil(chunk_size);
+                let chunk_size = 2048;
+                let total_chunks = encrypted_data.len().div_ceil(chunk_size);
 
-        for (i, chunk) in encrypted_data.chunks(chunk_size).enumerate() {
-            let mut chunk_data = chunk.to_vec();
+                for (i, chunk) in encrypted_data.chunks(chunk_size).enumerate() {
+                    let mut chunk_data = chunk.to_vec();
 
-            // Every 3rd chunk (0, 3, 6, ...) is Blowfish encrypted, but only if full size
-            if i % 3 == 0 && chunk_data.len() == chunk_size {
-                Self::decrypt_chunk(&mut chunk_data, &bf_key);
+                    // Every 3rd chunk (0, 3, 6, ...) is Blowfish encrypted, but only if full size
+                    if i % 3 == 0 && chunk_data.len() == chunk_size {
+                        Self::decrypt_chunk(&mut chunk_data, &bf_key);
+                    }
+
+                    output_file
+                        .write_all(&chunk_data)
+                        .map_err(|e| SourceError::Other(format!("Write error: {}", e)))?;
+
+                    if total_chunks > 0 {
+                        progress(60.0 + (i as f64 / total_chunks as f64) * 35.0);
+                    }
+                }
+                progress(95.0);
+                Ok(())
             }
+        })
+        .await
+        .map_err(|e| SourceError::Other(format!("Decrypt task failed: {}", e)))?;
 
-            output_file
-                .write_all(&chunk_data)
-                .map_err(|e| SourceError::Other(format!("Write error: {}", e)))?;
+        decrypt_result?;
 
-            if total_chunks > 0 {
-                progress(60.0 + (i as f64 / total_chunks as f64) * 35.0);
-            }
-        }
-
-        progress(95.0);
         log::info!("Deezer download complete: {}", output_str);
         Ok(output_str)
     }
@@ -510,7 +522,7 @@ impl AudioSource for DeezerSource {
         progress(10.0);
         let track_info = self.get_track_info(&api_token, &track_id).await?;
 
-        self.download_and_decrypt(&track_info, output_dir, file_stem, format, &*progress)
+        self.download_and_decrypt(&track_info, output_dir, file_stem, format, progress)
             .await
     }
 
@@ -528,7 +540,7 @@ impl AudioSource for DeezerSource {
         progress(10.0);
         let track_info = self.get_track_info(&api_token, &track_id).await?;
 
-        self.download_and_decrypt(&track_info, output_dir, file_stem, format, &*progress)
+        self.download_and_decrypt(&track_info, output_dir, file_stem, format, progress)
             .await
     }
 

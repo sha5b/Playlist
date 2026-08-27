@@ -1,12 +1,13 @@
 import { invoke } from '@tauri-apps/api/core';
-import type { Download, UrlInfo, DepsStatus } from '$lib/types';
-
-export async function parseUrl(url: string): Promise<UrlInfo> {
-	return invoke('download_parse_url', { url });
-}
+import type { Download, DepsStatus } from '$lib/types';
 
 export async function checkDeps(): Promise<DepsStatus> {
 	return invoke('download_check_deps');
+}
+
+/** Resolved default download dir (OS music folder, e.g. ~/Music/Playlist). */
+export async function getDefaultDownloadDir(): Promise<string> {
+	return invoke('download_default_dir');
 }
 
 export async function ensureDeps(): Promise<void> {
@@ -19,14 +20,6 @@ export async function startDownload(
 	quality?: string
 ): Promise<Download> {
 	return invoke('download_start', { url, format, quality });
-}
-
-export async function startBatchDownload(
-	urls: string[],
-	format?: string,
-	quality?: string
-): Promise<Download[]> {
-	return invoke('download_start_batch', { urls, format, quality });
 }
 
 export interface SearchDownloadRequest {
@@ -93,33 +86,3 @@ export async function clearHistory(): Promise<number> {
 	return invoke('download_clear_history');
 }
 
-// --- Download Sources ---
-
-export interface SourceStatus {
-	platform: string;
-	configured: boolean;
-	available: boolean;
-	max_quality: string;
-	error?: string;
-}
-
-export async function getSourcesStatus(): Promise<SourceStatus[]> {
-	return invoke('download_get_sources_status');
-}
-
-export async function setSourceCredentials(
-	platform: string,
-	credentials: Record<string, string>
-): Promise<void> {
-	return invoke('download_set_source_credentials', { platform, credentials });
-}
-
-export async function testSource(
-	platform: string
-): Promise<void> {
-	return invoke('download_test_source', { platform });
-}
-
-export async function refreshSources(): Promise<void> {
-	return invoke('download_refresh_sources');
-}

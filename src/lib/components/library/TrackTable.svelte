@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
-	import { Music, Clock, Hash, Play, ListPlus, ListStart, Trash2, MoreHorizontal, Download, ArrowUp, ArrowDown, Pencil } from 'lucide-svelte';
+	import { Music, Clock, Hash, Play, ListPlus, ListStart, Trash2, MoreHorizontal, Download, ArrowUp, ArrowDown, Pencil, Disc3, User } from 'lucide-svelte';
 	import { formatDuration } from '$lib/utils/format';
 	import CoverArt from '$lib/components/shared/CoverArt.svelte';
 	import TagEditorDialog from '$lib/components/library/TagEditorDialog.svelte';
@@ -276,11 +276,35 @@
 										</div>
 									</div>
 								</div>
-								<div class="w-40 px-4 text-sm text-muted-foreground truncate">
-									{track.artist_name ?? 'Unknown Artist'}
+								<div class="w-40 px-4 text-sm truncate">
+									{#if track.artist_id}
+										<a
+											href="/library/artists/{track.artist_id}"
+											class="text-muted-foreground hover:text-foreground hover:underline underline-offset-4 transition-colors"
+											onclick={(e) => e.stopPropagation()}
+											onkeydown={(e) => e.stopPropagation()}
+											title="Open artist"
+										>
+											{track.artist_name ?? 'Unknown Artist'}
+										</a>
+									{:else}
+										<span class="text-muted-foreground">{track.artist_name ?? 'Unknown Artist'}</span>
+									{/if}
 								</div>
-								<div class="w-40 px-4 text-sm text-muted-foreground truncate hidden lg:block">
-									{track.album_title ?? '--'}
+								<div class="w-40 px-4 text-sm truncate hidden lg:block">
+									{#if track.album_id}
+										<a
+											href="/library/albums/{track.album_id}"
+											class="text-muted-foreground hover:text-foreground hover:underline underline-offset-4 transition-colors"
+											onclick={(e) => e.stopPropagation()}
+											onkeydown={(e) => e.stopPropagation()}
+											title="Open album"
+										>
+											{track.album_title ?? '--'}
+										</a>
+									{:else}
+										<span class="text-muted-foreground">{track.album_title ?? '--'}</span>
+									{/if}
 								</div>
 								<div class="w-20 px-4 text-sm text-muted-foreground text-right tabular-nums">
 									{formatDuration(track.duration_ms)}
@@ -310,6 +334,18 @@
 													<ListPlus class="size-4" />
 													Add to Queue
 												</DropdownMenu.Item>
+												{#if track.album_id}
+													<DropdownMenu.Item onclick={() => goto(`/library/albums/${track.album_id}`)}>
+														<Disc3 class="size-4" />
+														Go to Album
+													</DropdownMenu.Item>
+												{/if}
+												{#if track.artist_id}
+													<DropdownMenu.Item onclick={() => goto(`/library/artists/${track.artist_id}`)}>
+														<User class="size-4" />
+														Go to Artist
+													</DropdownMenu.Item>
+												{/if}
 												<DropdownMenu.Separator />
 												<DropdownMenu.Item onclick={() => openTagEditor(track)}>
 													<Pencil class="size-4" />

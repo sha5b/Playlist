@@ -138,8 +138,13 @@ fn video_info_from_json(json: &serde_json::Value) -> VideoInfo {
             .filter(|d| !d.is_empty())
             .map(|d| {
                 if d.len() > 500 {
-                    // Find a valid char boundary at or before byte 497
-                    let end = d[..497].rfind(char::is_alphanumeric).map(|i| i + 1).unwrap_or(497);
+                    // Truncate at a valid char boundary at or before byte 497 —
+                    // byte-slicing mid-codepoint would panic on non-ASCII text.
+                    let mut end = 497.min(d.len());
+                    while end > 0 && !d.is_char_boundary(end) {
+                        end -= 1;
+                    }
+                    let end = d[..end].rfind(char::is_alphanumeric).map(|i| i + 1).unwrap_or(end);
                     format!("{}...", &d[..end])
                 } else {
                     d.to_string()

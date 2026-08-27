@@ -34,10 +34,10 @@ Svelte 5 runes (`$state`, `$derived`) are used throughout — stores live in `sr
 
 ### Backend Data Flow
 
-- **Database**: SQLite with WAL mode and FTS5 full-text search. Schema and migrations in `src-tauri/src/db/migrations.rs`. Connection pooling via `db/mod.rs` with a separate connection for downloads.
+- **Database**: SQLite with WAL mode and FTS5 full-text search. Schema and migrations in `src-tauri/src/db/migrations.rs` (each migration runs in a transaction). Connection pooling via `db/mod.rs` with a separate connection for downloads. `db/mod.rs` also hosts `escape_like` for safe LIKE searches.
 - **Audio engine** (`src-tauri/src/audio/engine.rs`): wraps rodio, manages a sink + queue. Emits events to the frontend via Tauri's event system.
-- **Download manager** (`src-tauri/src/download/mod.rs`): worker-thread based queue. Uses yt-dlp for extraction, ffmpeg for transcoding. Auto-installs both binaries on first use (`download/setup.rs`).
-- **Metadata enrichment**: MusicBrainz and Last.fm APIs (`src-tauri/src/metadata/`).
+- **Download manager** (`src-tauri/src/download/mod.rs`): worker-thread based queue. Uses yt-dlp for extraction, ffmpeg for transcoding. Auto-installs both binaries on first use (`download/setup.rs`). The pipeline itself lives in `download/pipeline.rs` (fast-path sources, smart search, fallbacks), post-download import/tagging/organization in `download/import.rs`, and search-query building/scoring in `download/search.rs`. Downloads default to the OS music folder (`download::default_download_dir`).
+- **Metadata enrichment**: MusicBrainz and Last.fm APIs (`src-tauri/src/metadata/`), driven by the commands in `src-tauri/src/commands/enrichment/` (track/album/artist enrichment, bulk scans, library maintenance).
 
 ### UI Components
 
@@ -45,7 +45,7 @@ Uses shadcn-svelte (in `src/lib/components/ui/`) with Tailwind CSS v4. App layou
 
 ### Key Patterns
 
-- The large `src-tauri/src/commands/mod.rs` file contains most IPC handlers (library, playlist, metadata, manager commands). Player commands are separate in `commands/player.rs`.
+- Library/player/download command handlers live in `src-tauri/src/commands/`, split by concern (`library/`, `enrichment/`, plus `downloads.rs`, `player.rs`, `manager.rs`, `stats.rs`, `watch.rs`, `devices.rs`, `lastfm.rs`). New commands must also be registered in the `.invoke_handler()` call in `lib.rs`.
 - TypeScript interfaces for data models are in `src/lib/types/`.
 - The app hides to system tray on window close rather than quitting (configured in `lib.rs`).
 - yt-dlp/ffmpeg binaries are resolved from app data directory or PATH (`download/setup.rs`).

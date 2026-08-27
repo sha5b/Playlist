@@ -14,10 +14,17 @@
 
 	$effect(() => {
 		updateMaximizedState();
+		let disposed = false;
 		appWindow.onResized(() => {
 			updateMaximizedState();
-		}).then(fn => { unlistenResize = fn; });
+		}).then(fn => {
+			// If cleanup already ran, unlisten immediately — otherwise the
+			// listener (and its Tauri event registration) would leak.
+			if (disposed) fn();
+			else unlistenResize = fn;
+		});
 		return () => {
+			disposed = true;
 			unlistenResize?.();
 			unlistenResize = null;
 		};

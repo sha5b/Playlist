@@ -23,6 +23,7 @@ struct DeezerArtist {
 fn client() -> reqwest::Client {
     reqwest::Client::builder()
         .user_agent("Playlist/0.1.0")
+        .timeout(std::time::Duration::from_secs(10))
         .build()
         .unwrap_or_default()
 }

@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { listen } from '@tauri-apps/api/event';
+	import { formatFileSize } from '$lib/utils/format';
 	import { Input } from '$lib/components/ui/input';
 	import { Button } from '$lib/components/ui/button';
 	import { Badge } from '$lib/components/ui/badge';
@@ -224,39 +225,46 @@
 		}
 	}
 
-	function formatBytes(bytes: number | null): string {
-		if (bytes == null) return 'Unknown';
-		if (bytes < 1024) return `${bytes} B`;
-		if (bytes < 1048576) return `${(bytes / 1024).toFixed(1)} KB`;
-		if (bytes < 1073741824) return `${(bytes / 1048576).toFixed(1)} MB`;
-		return `${(bytes / 1073741824).toFixed(1)} GB`;
-	}
-
 	// Auto-scan and poll while page is active
 	$effect(() => {
 		handleScanDevices();
 		const interval = setInterval(() => handleScanDevices(true), 5000);
 
+		// Delayed clear of the terminal progress message. The handle is
+		// tracked so a NEW sync starting within the 3s window cancels the
+		// clear — otherwise playlist A's leftover timer wipes playlist B's
+		// in-flight progress bar mid-"Sync all".
+		let progressClearTimer: ReturnType<typeof setTimeout> | undefined;
+
 		let unlistenSync: (() => void) | null = null;
 		listen<DeviceSyncProgress>('device-sync-progress', (event) => {
-			deviceSyncProgress = event.payload;
-			if (event.payload.status === 'done' || event.payload.status === 'error' || event.payload.status === 'cancelled') {
+			const p = event.payload;
+			const terminal = p.status === 'done' || p.status === 'error' || p.status === 'cancelled';
+			clearTimeout(progressClearTimer);
+			deviceSyncProgress = p;
+			if (terminal) {
 				if (selectedDevice) {
 					getDeviceDetail(selectedDevice.device.id).then((d) => { selectedDevice = d; });
 				}
-				if (event.payload.status === 'done') {
+				if (p.status === 'done') {
 					// Keep the list-view "Sync N" badge in step with the new state.
-					refreshDeviceDetail(event.payload.device_id);
+					refreshDeviceDetail(p.device_id);
 				}
-				setTimeout(() => { deviceSyncProgress = null; }, 3000);
+				progressClearTimer = setTimeout(() => { deviceSyncProgress = null; }, 3000);
 			}
 		}).then((fn) => { unlistenSync = fn; });
 
 		return () => {
 			clearInterval(interval);
+			clearTimeout(progressClearTimer);
 			unlistenSync?.();
 		};
 	});
+	// Phones/cameras mount via GVfs (MTP/PTP/AFC) — their device uid is
+	// prefixed "gvfs:" by the scanner.
+	function isPortableDevice(uid: string | undefined): boolean {
+		return !!uid?.startsWith('gvfs:');
+	}
 </script>
 
 <div class="flex-1 min-h-0 overflow-y-auto space-y-6">
@@ -280,7 +288,7 @@
 					<p class="text-sm text-muted-foreground mt-0.5">
 						{selectedDevice.device.mount_path ?? 'Not connected'}
 						{#if selectedDevice.device.capacity_bytes}
-							&middot; {formatBytes(selectedDevice.device.capacity_bytes)}
+							&middot; {formatFileSize(selectedDevice.device.capacity_bytes)}
 						{/if}
 					</p>
 				</div>
@@ -519,7 +527,11 @@
 							}}
 						>
 							<div class="rounded-full bg-muted p-2.5">
-								<HardDrive class="size-5 text-muted-foreground" />
+								{#if isPortableDevice(device.device_uid)}
+									<Smartphone class="size-5 text-muted-foreground" />
+								{:else}
+									<HardDrive class="size-5 text-muted-foreground" />
+								{/if}
 							</div>
 							<div class="flex-1 min-w-0">
 								<p class="font-medium truncate">{device.name}</p>
@@ -538,8 +550,8 @@
 							{/if}
 							<div class="text-right shrink-0">
 								{#if device.capacity_bytes}
-									<p class="text-sm tabular-nums">{formatBytes(device.free_bytes)} free</p>
-									<p class="text-xs text-muted-foreground tabular-nums">{formatBytes(device.capacity_bytes)} total</p>
+									<p class="text-sm tabular-nums">{formatFileSize(device.free_bytes)} free</p>
+									<p class="text-xs text-muted-foreground tabular-nums">{formatFileSize(device.capacity_bytes)} total</p>
 								{/if}
 							</div>
 							<ChevronRight class="size-4 text-muted-foreground shrink-0" />
