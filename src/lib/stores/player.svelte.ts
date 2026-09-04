@@ -79,6 +79,7 @@ let suppressSideEffectsUntil = 0;
 // --- Event listener setup ---
 let initialized = false;
 let unlisten: (() => void) | null = null;
+let initGeneration = 0;
 
 // Throttle progress updates to display refresh rate to avoid unnecessary re-renders
 let progressRafPending = false;
@@ -185,6 +186,7 @@ function handleEvent(event: PlayerEvent) {
 async function init() {
 	if (initialized) return;
 	initialized = true;
+	const generation = ++initGeneration;
 
 	// Register OS media session (media keys, overlay, lock screen)
 	initMediaSession({
@@ -194,8 +196,15 @@ async function init() {
 		seek: (seconds) => player.seek(seconds),
 	});
 
-	const fn = await listen<PlayerEvent>('player-event', (e) => handleEvent(e.payload));
-	if (!initialized) {
+	let fn: () => void;
+	try {
+		fn = await listen<PlayerEvent>('player-event', (e) => handleEvent(e.payload));
+	} catch (e) {
+		console.error('Failed to register player listener:', e);
+		if (generation === initGeneration) initialized = false;
+		return;
+	}
+	if (!initialized || generation !== initGeneration) {
 		// destroy() ran while listen() was resolving — remove immediately so a
 		// later init() doesn't stack a second handler.
 		fn();
@@ -205,6 +214,7 @@ async function init() {
 	// Fetch initial state
 	try {
 		const s = await playerApi.getState();
+		if (!initialized || generation !== initGeneration) return;
 		state = s.state;
 		currentTrack = s.current_track;
 		positionMs = s.position_ms;
@@ -215,6 +225,7 @@ async function init() {
 		queuePosition = s.queue_position;
 
 		const [tracks, pos] = await playerApi.getQueue();
+		if (!initialized || generation !== initGeneration) return;
 		queueTracks = tracks;
 		queuePosition = pos;
 
@@ -436,6 +447,7 @@ export const player = {
 	init,
 
 	destroy() {
+		initGeneration++;
 		if (unlisten) {
 			unlisten();
 			unlisten = null;

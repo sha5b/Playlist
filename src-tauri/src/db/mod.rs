@@ -84,6 +84,7 @@ pub fn merge_tags(conn: &Connection, track_id: i64, new_tags: &[String]) -> i64 
 }
 
 /// Apply MusicBrainz artist fields to an artist row, filling only NULL columns.
+#[allow(clippy::too_many_arguments)]
 pub fn apply_artist_enrichment(
     conn: &Connection,
     artist_id: i64,

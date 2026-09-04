@@ -119,6 +119,7 @@
 
 	onMount(() => {
 		loadStats();
+		let disposed = false;
 
 		const interval = setInterval(loadStats, 10000);
 
@@ -128,9 +129,13 @@
 				timestamp: Date.now(),
 			};
 			feed = [detail, ...feed].slice(0, maxFeed);
-		}).then((fn) => (unlistenDetail = fn));
+		}).then((fn) => {
+			if (disposed) fn();
+			else unlistenDetail = fn;
+		});
 
 		return () => {
+			disposed = true;
 			clearInterval(interval);
 			unlistenDetail?.();
 		};

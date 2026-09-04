@@ -46,14 +46,21 @@
 	// Folder watch auto-imports: notify the user when new tracks appear.
 	// (Library stores refresh via the separate 'library-updated' event.)
 	$effect(() => {
+		let disposed = false;
 		let unlisten: (() => void) | undefined;
 		listen<{ imported: number }>('watch-import', (event) => {
 			const n = event.payload.imported;
 			toast.success(`${n} track${n === 1 ? '' : 's'} imported`, {
 				description: 'New music found in a watched folder',
 			});
-		}).then((fn) => (unlisten = fn));
-		return () => unlisten?.();
+		}).then((fn) => {
+			if (disposed) fn();
+			else unlisten = fn;
+		}).catch((e) => console.error('Failed to listen for watched-folder imports:', e));
+		return () => {
+			disposed = true;
+			unlisten?.();
+		};
 	});
 
 	// --- OS file drag-and-drop import ---
@@ -83,6 +90,7 @@
 	}
 
 	$effect(() => {
+		let disposed = false;
 		let unlistenDragDrop: (() => void) | undefined;
 		getCurrentWebview()
 			.onDragDropEvent((event) => {
@@ -97,9 +105,15 @@
 					if (payload.paths.length > 0) void handleFileDrop(payload.paths);
 				}
 			})
-			.then((fn) => (unlistenDragDrop = fn))
+			.then((fn) => {
+				if (disposed) fn();
+				else unlistenDragDrop = fn;
+			})
 			.catch((e) => console.error('Failed to listen for drag-drop events:', e));
-		return () => unlistenDragDrop?.();
+		return () => {
+			disposed = true;
+			unlistenDragDrop?.();
+		};
 	});
 
 	function isEditableTarget(target: EventTarget | null): boolean {

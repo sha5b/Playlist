@@ -31,9 +31,11 @@ PAYLOAD=/tmp/playlist-payload
 rm -rf "$PAYLOAD"; mkdir -p "$PAYLOAD/icons"
 cp src-tauri/target/release/playlist "$PAYLOAD/"
 cp src-tauri/resources/com.playlist.app.desktop src-tauri/resources/com.playlist.app.metainfo.xml "$PAYLOAD/"
-for size in 32x32 48x48 64x64 128x128 256x256 512x512; do
+for size in 32x32 48x48 64x64 128x128 256x256; do
   cp "src-tauri/icons/${size}.png" "$PAYLOAD/icons/${size}.png"
 done
+# The source 512px icon is stored as icon.png; normalize its payload name for
+# the RPM spec's hicolor installation loop.
 cp src-tauri/icons/icon.png "$PAYLOAD/icons/512x512.png"
 cp src-tauri/icons/128x128@2x.png src-tauri/icons/com.playlist.app.svg "$PAYLOAD/icons/"
 tar -C /tmp -cf "$BUILD/SOURCES/payload.tar" playlist-payload

@@ -37,7 +37,7 @@ fn parse_integrated_lufs(stderr: &str) -> Option<f64> {
         let trimmed = line.trim();
         if let Some(rest) = trimmed.strip_prefix("I:") {
             if trimmed.contains("LUFS") {
-                if let Some(value) = rest.trim().split_whitespace().next() {
+                if let Some(value) = rest.split_whitespace().next() {
                     if let Ok(lufs) = value.parse::<f64>() {
                         return Some(lufs);
                     }

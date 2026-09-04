@@ -9,18 +9,33 @@ import { invalidateCache } from '$lib/api/library';
 let version = $state(0);
 let initialized = false;
 let unlisten: UnlistenFn | null = null;
+let initGeneration = 0;
 
 async function init() {
 	if (initialized) return;
 	initialized = true;
+	const generation = ++initGeneration;
 
-	unlisten = await listen('library-updated', () => {
-		invalidateCache();
-		version++;
-	});
+	let fn: UnlistenFn;
+	try {
+		fn = await listen('library-updated', () => {
+			invalidateCache();
+			version++;
+		});
+	} catch (e) {
+		console.error('Failed to register library listener:', e);
+		if (generation === initGeneration) initialized = false;
+		return;
+	}
+	if (!initialized || generation !== initGeneration) {
+		fn();
+		return;
+	}
+	unlisten = fn;
 }
 
 function destroy() {
+	initGeneration++;
 	if (unlisten) {
 		unlisten();
 		unlisten = null;

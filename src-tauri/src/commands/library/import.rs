@@ -63,7 +63,7 @@ pub fn import_audio_files(
         }
 
         // Read tags and cover art in a single file read
-        let (tag_data, cover_art_path) = match tags::read_tags_and_cover(file_path, &covers_dir) {
+        let (tag_data, cover_art_path) = match tags::read_tags_and_cover(file_path, covers_dir) {
             Ok((d, c)) => (d, c),
             Err(e) => {
                 log::warn!("Failed to read tags from {:?}: {}", file_path, e);
@@ -75,12 +75,12 @@ pub fn import_audio_files(
         let artist_id = tag_data
             .artist
             .as_ref()
-            .and_then(|name| crate::db::artists::find_or_create(&conn, name).ok());
+            .and_then(|name| crate::db::artists::find_or_create(conn, name).ok());
 
         // Find or create album
         let album_id = tag_data.album.as_ref().and_then(|title| {
             crate::db::albums::find_or_create(
-                &conn,
+                conn,
                 title,
                 artist_id,
                 tag_data.album_artist.as_deref(),
@@ -133,13 +133,13 @@ pub fn import_audio_files(
                 // real artist photo enrichment fetches later (fix A1).
                 if let Some(ref cover) = cover_art_path {
                     if let Some(aid) = album_id {
-                        let _ = crate::db::albums::update_cover_art_if_missing(&conn, aid, cover);
+                        let _ = crate::db::albums::update_cover_art_if_missing(conn, aid, cover);
                     }
                 }
                 // Propagate album metadata from tags
                 if let Some(aid) = album_id {
                     let _ = crate::db::albums::update_metadata_if_missing(
-                        &conn,
+                        conn,
                         aid,
                         total_tracks_val,
                         total_discs_val,
@@ -155,7 +155,7 @@ pub fn import_audio_files(
 
     // Batch FTS updates after all inserts
     for track_id in fts_ids {
-        let _ = crate::db::tracks::update_fts(&conn, track_id);
+        let _ = crate::db::tracks::update_fts(conn, track_id);
     }
 
     conn.execute_batch("COMMIT").map_err(|e| e.to_string())?;

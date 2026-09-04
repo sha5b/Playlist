@@ -156,10 +156,19 @@ pub fn upsert_entries(
     }
 }
 
+type IncomingMonitoredEntry = (
+    String,
+    Option<String>,
+    Option<String>,
+    Option<f64>,
+    Option<String>,
+    Option<String>,
+);
+
 fn upsert_entries_body(
     conn: &Connection,
     playlist_id: i64,
-    entries: &[(String, Option<String>, Option<String>, Option<f64>, Option<String>, Option<String>)],
+    entries: &[IncomingMonitoredEntry],
 ) -> Result<(i64, i64), rusqlite::Error> {
     let mut new_count = 0i64;
 

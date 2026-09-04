@@ -57,6 +57,16 @@
   </requires>
 
   <releases>
+    <release version="0.10.1" date="2026-09-04">
+      <description>
+        <p>Bug-fix release: safer library resets, atomic download completion, more accurate device sync and cleanup, responsive large download queues, and event-listener lifecycle fixes.</p>
+      </description>
+    </release>
+    <release version="0.10.0" date="2026-08-27">
+      <description>
+        <p>Phone detection and sync on Linux, downloads in the OS music folder, direct album and artist navigation, and broad fixes across downloads, playback, metadata, and library management.</p>
+      </description>
+    </release>
     <release version="0.9.2" date="2026-08-05">
       <description>
         <p>Linux fix: the package upgrade no longer removes the application launcher entry.</p>

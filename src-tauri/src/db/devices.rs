@@ -1,4 +1,4 @@
-use rusqlite::{params, Connection, Row};
+use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde::{Deserialize, Serialize};
 
 use super::tracks::{row_to_track, TRACK_COLUMNS};
@@ -49,6 +49,7 @@ pub struct DevicePlaylistLink {
     pub last_synced_at: Option<String>,
     pub total_tracks: i64,
     pub synced_tracks: i64,
+    pub pending_changes: i64,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -146,6 +147,31 @@ pub fn configure_device(
     output_bitrate: &str,
     generate_m3u: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let output_format = output_format.trim().to_ascii_lowercase();
+    if !matches!(output_format.as_str(), "original" | "mp3" | "opus" | "flac") {
+        return Err(format!("Unsupported device output format: {output_format}").into());
+    }
+    let music_path = std::path::Path::new(music_dir.trim());
+    if music_path.as_os_str().is_empty()
+        || music_path.is_absolute()
+        || music_path.components().any(|c| {
+            matches!(
+                c,
+                std::path::Component::ParentDir
+                    | std::path::Component::RootDir
+                    | std::path::Component::Prefix(_)
+            )
+        })
+    {
+        return Err("Music directory must be a relative path inside the device".into());
+    }
+    let output_bitrate = output_bitrate.trim();
+    if output_format != "original"
+        && output_format != "flac"
+        && (!matches!(output_bitrate, "128" | "192" | "256" | "320"))
+    {
+        return Err("Unsupported device output bitrate".into());
+    }
     // If the music dir changes, the recorded on-device paths no longer point at
     // the files the next sync will write — clear the sync history so stale
     // paths don't poison M3Us and everything re-syncs into the new directory.
@@ -156,17 +182,20 @@ pub fn configure_device(
             |row| row.get(0),
         )
         .ok();
-    conn.execute(
+    let changed = conn.execute(
         "UPDATE devices SET music_dir = ?1, output_format = ?2, output_bitrate = ?3, generate_m3u = ?4
          WHERE id = ?5",
-        params![music_dir, output_format, output_bitrate, generate_m3u as i64, device_id],
+        params![music_dir.trim(), output_format, output_bitrate, generate_m3u as i64, device_id],
     )?;
+    if changed == 0 {
+        return Err(format!("Device not found: {device_id}").into());
+    }
     let old_music_dir = old_music_dir.unwrap_or_else(|| "Music".to_string());
-    if old_music_dir != music_dir {
+    if old_music_dir != music_dir.trim() {
         let cleared = clear_device_sync_history(conn, device_id)?;
         log::info!(
             "Device {} music_dir changed ({:?} -> {:?}); cleared {} sync history rows",
-            device_id, old_music_dir, music_dir, cleared
+            device_id, old_music_dir, music_dir.trim(), cleared
         );
     }
     Ok(())
@@ -200,6 +229,11 @@ pub fn get_device_playlists(
     conn: &Connection,
     device_id: i64,
 ) -> Result<Vec<DevicePlaylistLink>, Box<dyn std::error::Error>> {
+    let output_format: String = conn.query_row(
+        "SELECT COALESCE(output_format, 'original') FROM devices WHERE id = ?1",
+        params![device_id],
+        |row| row.get(0),
+    )?;
     let mut stmt = conn.prepare(
         "SELECT dps.playlist_id, p.name, dps.enabled, dps.last_synced_at,
                 (SELECT COUNT(*) FROM playlist_tracks WHERE playlist_id = dps.playlist_id) as total_tracks,
@@ -208,7 +242,7 @@ pub fn get_device_playlists(
          JOIN playlists p ON p.id = dps.playlist_id
          WHERE dps.device_id = ?1",
     )?;
-    let links = stmt
+    let mut links = stmt
         .query_map(params![device_id], |row| {
             Ok(DevicePlaylistLink {
                 playlist_id: row.get(0)?,
@@ -217,9 +251,19 @@ pub fn get_device_playlists(
                 last_synced_at: row.get(3)?,
                 total_tracks: row.get(4)?,
                 synced_tracks: row.get(5)?,
+                pending_changes: 0,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
+    // A sync row is only current when it matches the device's requested format
+    // and the source file has not been replaced. A raw COUNT(*) made the UI say
+    // "Synced" after changing Opus back to Original, preventing re-sync entirely.
+    for link in &mut links {
+        let pending = get_unsynced_tracks(conn, device_id, link.playlist_id, &output_format)?;
+        let stale = get_stale_synced_tracks(conn, device_id, link.playlist_id)?;
+        link.synced_tracks = link.total_tracks.saturating_sub(pending.len() as i64);
+        link.pending_changes = (pending.len() + stale.len()) as i64;
+    }
     Ok(links)
 }
 
@@ -230,7 +274,7 @@ pub fn get_device_detail(
     let device = get_device_by_id(conn, device_id)?;
     let playlists = get_device_playlists(conn, device_id)?;
     let synced_track_count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM device_track_sync WHERE device_id = ?1",
+        "SELECT COUNT(DISTINCT track_id) FROM device_track_sync WHERE device_id = ?1",
         params![device_id],
         |row| row.get(0),
     )?;
@@ -280,6 +324,23 @@ pub fn is_file_already_on_device(
         |row| row.get(0),
     )?;
     Ok(exists)
+}
+
+pub fn get_synced_track_path(
+    conn: &Connection,
+    device_id: i64,
+    track_id: i64,
+    playlist_id: i64,
+) -> Result<Option<String>, Box<dyn std::error::Error>> {
+    let path = conn
+        .query_row(
+            "SELECT file_path_on_device FROM device_track_sync
+             WHERE device_id = ?1 AND track_id = ?2 AND playlist_id = ?3",
+            params![device_id, track_id, playlist_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(path)
 }
 
 /// Sync rows for (device, playlist) whose track is no longer in the playlist.
@@ -407,16 +468,16 @@ pub fn get_unsynced_tracks(
             Some(f) => f,
         };
         // What format would a sync produce right now?
-        let expected_format = if output_format == "original" {
+        let expected_format = if output_format.eq_ignore_ascii_case("original") {
             std::path::Path::new(&track.file_path)
                 .extension()
                 .and_then(|e| e.to_str())
                 .unwrap_or("mp3")
-                .to_string()
+                .to_ascii_lowercase()
         } else {
-            output_format.to_string()
+            output_format.to_ascii_lowercase()
         };
-        if synced_format != expected_format {
+        if !synced_format.eq_ignore_ascii_case(&expected_format) {
             tracks.push(track);
             continue;
         }
@@ -434,4 +495,83 @@ pub fn get_unsynced_tracks(
         }
     }
     Ok(tracks)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn device_db() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        crate::db::migrations::run(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO devices (id, device_uid, name, output_format)
+             VALUES (1, 'test-device', 'Test device', 'opus')",
+            [],
+        )
+        .unwrap();
+        conn.execute("INSERT INTO playlists (id, name) VALUES (1, 'Test')", [])
+            .unwrap();
+        conn.execute(
+            "INSERT INTO tracks (id, title, file_path, format)
+             VALUES (1, 'Song', '/music/Song.FLAC', 'opus')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO playlist_tracks (playlist_id, track_id, position) VALUES (1, 1, 0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO device_playlist_sync (device_id, playlist_id) VALUES (1, 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO device_track_sync
+             (device_id, track_id, playlist_id, file_path_on_device, format)
+             VALUES (1, 1, 1, 'Artist/Album/Song.opus', 'opus')",
+            [],
+        )
+        .unwrap();
+        conn
+    }
+
+    #[test]
+    fn changing_to_original_marks_transcoded_tracks_pending() {
+        let conn = device_db();
+        assert_eq!(get_device_playlists(&conn, 1).unwrap()[0].synced_tracks, 1);
+
+        configure_device(&conn, 1, "Music", "original", "320", true).unwrap();
+
+        let links = get_device_playlists(&conn, 1).unwrap();
+        assert_eq!(links[0].synced_tracks, 0);
+        assert_eq!(links[0].pending_changes, 1);
+        let pending = get_unsynced_tracks(&conn, 1, 1, "original").unwrap();
+        assert_eq!(pending.len(), 1);
+        // The real extension, not stale track.format metadata, is expected.
+        assert_eq!(pending[0].file_path, "/music/Song.FLAC");
+    }
+
+    #[test]
+    fn device_configuration_rejects_paths_outside_mount_and_unknown_formats() {
+        let conn = device_db();
+        assert!(configure_device(&conn, 1, "../Music", "original", "320", true).is_err());
+        assert!(configure_device(&conn, 1, "/Music", "original", "320", true).is_err());
+        assert!(configure_device(&conn, 1, "Music", "aac", "320", true).is_err());
+    }
+
+    #[test]
+    fn removed_tracks_remain_pending_until_device_reconciliation() {
+        let conn = device_db();
+        conn.execute("DELETE FROM playlist_tracks WHERE playlist_id = 1", [])
+            .unwrap();
+
+        let link = &get_device_playlists(&conn, 1).unwrap()[0];
+        assert_eq!(link.total_tracks, 0);
+        assert_eq!(link.synced_tracks, 0);
+        assert_eq!(link.pending_changes, 1);
+    }
 }

@@ -5,6 +5,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use rusqlite::OptionalExtension;
 use tauri::Emitter;
 
 use crate::db::DbPool;
@@ -440,22 +441,25 @@ pub(super) async fn run_download(
 
                 if let Some(track) = library_match {
                     log::info!("Download {} matched existing library track {} ('{}')", download_id, track.id, track.title);
-                    let entry_id = if let Ok(conn) = db.lock() {
-                        let _ = conn.execute_batch("BEGIN");
-                        let _ = crate::db::downloads::update_download_file(&conn, download_id, &track.file_path, Some(track.id));
-                        let _ = crate::db::downloads::update_download_status(&conn, download_id, "completed", None);
-                        let eid: Option<i64> = conn.query_row(
-                            "SELECT id FROM monitored_playlist_entries WHERE download_id = ?1",
-                            rusqlite::params![download_id],
-                            |row| row.get(0),
-                        ).ok();
-                        if let Some(eid) = eid {
-                            let _ = crate::db::monitored::update_entry_status(&conn, eid, "downloaded", Some(download_id), Some(track.id));
+                    let entry_id = match db.lock() {
+                        Ok(conn) => match complete_download_records(
+                            &conn,
+                            download_id,
+                            &track.file_path,
+                            Some(track.id),
+                        ) {
+                            Ok(eid) => eid,
+                            Err(e) => {
+                                drop(conn);
+                                fail_download(&db, &app_handle, download_id, &e);
+                                return;
+                            }
+                        },
+                        Err(e) => {
+                            let message = format!("Failed to lock database: {e}");
+                            fail_download(&db, &app_handle, download_id, &message);
+                            return;
                         }
-                        let _ = conn.execute_batch("COMMIT");
-                        eid
-                    } else {
-                        None
                     };
                     emit_event(&app_handle, download_id, "completed", 100.0, None, None, None, Some(track.title.clone()));
                     if let Some(eid) = entry_id {
@@ -843,45 +847,25 @@ async fn handle_download_success(
     };
 
     // Batch all post-completion DB updates in a single lock scope
-    let entry_id = if let Ok(conn) = db.lock() {
-        let _ = conn.execute_batch("BEGIN");
-        let _ = crate::db::downloads::update_download_file(
+    let entry_id = match db.lock() {
+        Ok(conn) => match complete_download_records(
             &conn,
             download_id,
             &file_path,
             track_id,
-        );
-        let _ = crate::db::downloads::update_download_status(
-            &conn,
-            download_id,
-            "completed",
-            None,
-        );
-        let eid: Option<i64> = conn.query_row(
-            "SELECT id FROM monitored_playlist_entries WHERE download_id = ?1",
-            rusqlite::params![download_id],
-            |row| row.get(0),
-        ).ok();
-        if let Some(eid) = eid {
-            let _ = crate::db::monitored::update_entry_status(
-                &conn, eid, "downloaded", Some(download_id), track_id,
-            );
-            // Auto-add downloaded track to the library playlist
-            if let Some(tid) = track_id {
-                // Find the playlist_id for this entry
-                if let Ok(playlist_id) = conn.query_row(
-                    "SELECT playlist_id FROM monitored_playlist_entries WHERE id = ?1",
-                    rusqlite::params![eid],
-                    |row| row.get::<_, i64>(0),
-                ) {
-                    let _ = crate::db::playlists::add_track_to_playlist(&conn, playlist_id, tid);
-                }
+        ) {
+            Ok(eid) => eid,
+            Err(e) => {
+                drop(conn);
+                fail_download(db, app_handle, download_id, &e);
+                return;
             }
+        },
+        Err(e) => {
+            let message = format!("Failed to lock database: {e}");
+            fail_download(db, app_handle, download_id, &message);
+            return;
         }
-        let _ = conn.execute_batch("COMMIT");
-        eid
-    } else {
-        None
     };
     let _ = app_handle.emit(
         "download-event",
@@ -905,6 +889,68 @@ async fn handle_download_success(
             "manager-entry-updated",
             serde_json::json!({ "entry_id": eid, "status": "downloaded" }),
         );
+    }
+}
+
+fn complete_download_records(
+    conn: &rusqlite::Connection,
+    download_id: i64,
+    file_path: &str,
+    track_id: Option<i64>,
+) -> Result<Option<i64>, String> {
+    conn.execute_batch("BEGIN IMMEDIATE")
+        .map_err(|e| e.to_string())?;
+    let result: Result<Option<i64>, String> = (|| {
+        crate::db::downloads::update_download_file(conn, download_id, file_path, track_id)
+            .map_err(|e| e.to_string())?;
+        crate::db::downloads::update_download_status(conn, download_id, "completed", None)
+            .map_err(|e| e.to_string())?;
+        let entry_id: Option<i64> = conn
+            .query_row(
+                "SELECT id FROM monitored_playlist_entries WHERE download_id = ?1",
+                rusqlite::params![download_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        if let Some(entry_id) = entry_id {
+            crate::db::monitored::update_entry_status(
+                conn,
+                entry_id,
+                "downloaded",
+                Some(download_id),
+                track_id,
+            )
+            .map_err(|e| e.to_string())?;
+            if let Some(track_id) = track_id {
+                let playlist_id: i64 = conn
+                    .query_row(
+                        "SELECT playlist_id FROM monitored_playlist_entries WHERE id = ?1",
+                        rusqlite::params![entry_id],
+                        |row| row.get(0),
+                    )
+                    .map_err(|e| e.to_string())?;
+                crate::db::playlists::add_track_to_playlist(conn, playlist_id, track_id)
+                    .map_err(|e| e.to_string())?;
+            }
+        }
+        Ok(entry_id)
+    })();
+
+    match result {
+        Ok(entry_id) => {
+            match conn.execute_batch("COMMIT") {
+                Ok(()) => Ok(entry_id),
+                Err(e) => {
+                    let _ = conn.execute_batch("ROLLBACK");
+                    Err(format!("Failed to commit completed download: {e}"))
+                }
+            }
+        }
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            Err(format!("Failed to finalize download: {e}"))
+        }
     }
 }
 

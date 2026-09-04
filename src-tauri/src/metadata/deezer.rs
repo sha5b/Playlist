@@ -51,9 +51,12 @@ pub async fn get_artist_image_url(name: &str) -> Option<String> {
     // Prefer xl > big > medium. Deezer serves a generic placeholder for
     // artists without a photo — its URL contains "/artist//" (empty id
     // segment), so skip those.
-    let url = [&best.picture_xl, &best.picture_big, &best.picture_medium]
+    [
+        best.picture_xl.clone(),
+        best.picture_big.clone(),
+        best.picture_medium.clone(),
+    ]
         .into_iter()
-        .filter_map(|u| u.clone())
-        .find(|u| !u.is_empty() && !u.contains("/artist//"));
-    url
+        .flatten()
+        .find(|u| !u.is_empty() && !u.contains("/artist//"))
 }

@@ -69,7 +69,26 @@ async fn run_sync(
         return Err("Device mount path does not exist — is it connected?".to_string());
     }
 
-    let music_dir = PathBuf::from(mount_path).join(&device.music_dir);
+    let music_subdir = Path::new(&device.music_dir);
+    if music_subdir.as_os_str().is_empty()
+        || music_subdir.is_absolute()
+        || music_subdir.components().any(|c| {
+            matches!(
+                c,
+                std::path::Component::ParentDir
+                    | std::path::Component::RootDir
+                    | std::path::Component::Prefix(_)
+            )
+        })
+    {
+        return Err("Invalid device music directory".to_string());
+    }
+    let target_format = device.output_format.to_ascii_lowercase();
+    if !matches!(target_format.as_str(), "original" | "mp3" | "opus" | "flac") {
+        return Err(format!("Unsupported device output format: {target_format}"));
+    }
+
+    let music_dir = PathBuf::from(mount_path).join(music_subdir);
     std::fs::create_dir_all(&music_dir)
         .map_err(|e| format!("Failed to create music directory on device: {}", e))?;
 
@@ -136,18 +155,25 @@ async fn run_sync(
             continue;
         }
 
-        let source_format = track.format.as_deref().unwrap_or("unknown");
-        let needs_conversion = device.output_format != "original" && source_format != device.output_format;
+        // The file extension is authoritative for sync. Database format metadata
+        // can be stale after a file replacement, and must never cause a file to be
+        // transcoded or merely renamed to the wrong container.
+        let source_format = source_path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("mp3")
+            .to_ascii_lowercase();
+        let needs_conversion = target_format != "original" && source_format != target_format;
 
         let status = if needs_conversion { "converting" } else { "copying" };
         // 1-based: this is the track currently being processed ("1 of N", not "0 of N")
         emit_progress(app_handle, device_id, playlist_id, i as i64 + 1, total, &track.title, status, None);
 
         // Build destination path: Artist/Album/TrackNum - Title.ext
-        let dest_ext = if device.output_format == "original" {
-            source_path.extension().and_then(|e| e.to_str()).unwrap_or("mp3")
+        let dest_ext = if target_format == "original" {
+            source_format.as_str()
         } else {
-            &device.output_format
+            target_format.as_str()
         };
 
         let artist_name = sanitize_filename(
@@ -194,10 +220,16 @@ async fn run_sync(
                 && dest_path.exists()
         };
 
+        let previous_path = {
+            let conn = crate::db::lock(&db)?;
+            db_devices::get_synced_track_path(&conn, device_id, track.id, playlist_id)
+                .map_err(|e| format!("Failed to read sync history: {e}"))?
+        };
+
         let result = if already_on_device {
             Ok(())
         } else if needs_conversion {
-            transcode_file(source_path, &dest_path, &device.output_format, &device.output_bitrate, ffmpeg_path.as_deref()).await
+            transcode_file(source_path, &dest_path, &target_format, &device.output_bitrate, ffmpeg_path.as_deref()).await
         } else {
             copy_file(source_path, &dest_path).await
         };
@@ -217,7 +249,7 @@ async fn run_sync(
                     }
                 }
                 let conn = crate::db::lock(&db)?;
-                let _ = db_devices::record_synced_track(
+                db_devices::record_synced_track(
                     &conn,
                     device_id,
                     track.id,
@@ -226,7 +258,27 @@ async fn run_sync(
                     dest_ext,
                     source_size,
                     None,
-                );
+                )
+                .map_err(|e| format!("Failed to record synced track: {e}"))?;
+                // Changing the output format changes the destination filename.
+                // Once no playlist references the old path, remove it so switching
+                // from Opus to Original doesn't leave a duplicate Opus library behind.
+                if let Some(old_path) = previous_path.filter(|p| p != &relative_path) {
+                    let still_referenced = db_devices::is_device_file_referenced(
+                        &conn,
+                        device_id,
+                        &old_path,
+                    )
+                    .unwrap_or(true);
+                    if !still_referenced {
+                        let old_abs = music_dir.join(&old_path);
+                        if let Err(e) = std::fs::remove_file(&old_abs) {
+                            if e.kind() != std::io::ErrorKind::NotFound {
+                                log::warn!("Failed to remove superseded file {:?}: {}", old_abs, e);
+                            }
+                        }
+                    }
+                }
                 synced += 1;
             }
             Err(e) => {
@@ -264,20 +316,30 @@ async fn run_sync(
         }
     }
 
-    // Generate M3U playlist if enabled
+    // Generate M3U playlist if enabled. If disabled (or the playlist became
+    // empty), remove an older generated file so the device isn't left with a
+    // stale playlist pointing at deleted or superseded tracks.
     if device.generate_m3u {
         emit_progress(app_handle, device_id, playlist_id, total, total, "", "generating_playlist", None);
 
         let conn = crate::db::lock(&db)?;
-        if let Err(e) = generate_m3u(&conn, device_id, playlist_id, &music_dir) {
-            log::error!("Failed to generate M3U: {}", e);
-        }
+        generate_m3u(&conn, device_id, playlist_id, &music_dir)
+            .map_err(|e| format!("Failed to generate M3U: {e}"))?;
+    } else {
+        let conn = crate::db::lock(&db)?;
+        remove_m3u(&conn, playlist_id, &music_dir)
+            .map_err(|e| format!("Failed to remove disabled M3U: {e}"))?;
     }
 
     // Update sync timestamp
     {
         let conn = crate::db::lock(&db)?;
-        let _ = db_devices::update_playlist_sync_time(&conn, device_id, playlist_id);
+        db_devices::update_playlist_sync_time(&conn, device_id, playlist_id)
+            .map_err(|e| format!("Failed to update sync time: {e}"))?;
+    }
+
+    if failed > 0 {
+        return Err(format!("{} track{} failed to sync", failed, if failed == 1 { "" } else { "s" }));
     }
 
     emit_progress(app_handle, device_id, playlist_id, total, total, "", "done", None);
@@ -443,12 +505,17 @@ fn generate_m3u(
         })?
         .collect::<Result<Vec<_>, _>>()?;
 
-    if entries.is_empty() {
-        return Ok(());
-    }
-
     let m3u_filename = sanitize_filename(&playlist_name) + ".m3u";
     let m3u_path = music_dir.join(&m3u_filename);
+
+    if entries.is_empty() {
+        if let Err(e) = std::fs::remove_file(&m3u_path) {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                return Err(e.into());
+            }
+        }
+        return Ok(());
+    }
 
     let mut content = String::from("#EXTM3U\n");
     for (file_path, title, duration_ms) in &entries {
@@ -461,6 +528,25 @@ fn generate_m3u(
     std::fs::write(&m3u_path, content)?;
     log::info!("Generated M3U playlist: {:?}", m3u_path);
 
+    Ok(())
+}
+
+fn remove_m3u(
+    conn: &Connection,
+    playlist_id: i64,
+    music_dir: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let playlist_name: String = conn.query_row(
+        "SELECT name FROM playlists WHERE id = ?1",
+        [playlist_id],
+        |row| row.get(0),
+    )?;
+    let path = music_dir.join(sanitize_filename(&playlist_name) + ".m3u");
+    if let Err(e) = std::fs::remove_file(path) {
+        if e.kind() != std::io::ErrorKind::NotFound {
+            return Err(e.into());
+        }
+    }
     Ok(())
 }
 

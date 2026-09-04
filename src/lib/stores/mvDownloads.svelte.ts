@@ -10,12 +10,14 @@ interface MvDownload {
 let active: MvDownload[] = $state([]);
 let unlisten: UnlistenFn | null = null;
 let initialized = false;
+let initGeneration = 0;
 
 async function init() {
 	if (initialized) return;
 	initialized = true;
+	const generation = ++initGeneration;
 	try {
-		unlisten = await listen<{ track_id: number; percent: number }>(
+		const fn = await listen<{ track_id: number; percent: number }>(
 			'music-video-download-progress',
 			(event) => {
 				const idx = active.findIndex((d) => d.trackId === event.payload.track_id);
@@ -24,9 +26,14 @@ async function init() {
 				}
 			},
 		);
+		if (!initialized || generation !== initGeneration) {
+			fn();
+			return;
+		}
+		unlisten = fn;
 	} catch (e) {
 		console.error('Failed to register MV download listener:', e);
-		initialized = false;
+		if (generation === initGeneration) initialized = false;
 	}
 }
 
@@ -56,6 +63,7 @@ function getProgress(trackId: number): number {
 }
 
 function destroy() {
+	initGeneration++;
 	if (unlisten) {
 		unlisten();
 		unlisten = null;

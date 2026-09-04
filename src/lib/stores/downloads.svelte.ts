@@ -16,11 +16,13 @@ let activeCount = $state(0);
 let initialized = false;
 let unlisten: UnlistenFn | null = null;
 let initialFetchDone = false;
+let initGeneration = 0;
 
 // Incoming events are buffered and flushed in one batch so a burst of thousands of
 // "queued" events collapses into a single reactive update instead of thousands.
 let eventQueue: DownloadEvent[] = [];
 let flushScheduled = false;
+let flushTimer: ReturnType<typeof setTimeout> | null = null;
 
 function placeholderFromEvent(data: DownloadEvent): Download {
 	return {
@@ -79,11 +81,12 @@ function boundList(list: Download[]): Download[] {
 function scheduleFlush() {
 	if (flushScheduled) return;
 	flushScheduled = true;
-	setTimeout(flushEvents, 60);
+	flushTimer = setTimeout(flushEvents, 60);
 }
 
 function flushEvents() {
 	flushScheduled = false;
+	flushTimer = null;
 	if (eventQueue.length === 0) return;
 	const batch = eventQueue;
 	eventQueue = [];
@@ -155,11 +158,13 @@ const terminalUnknown = new Set<number>();
 // Debounced authoritative re-sync with the backend after out-of-window
 // terminal events (the local delta is a best guess).
 let refreshScheduled = false;
+let refreshTimer: ReturnType<typeof setTimeout> | null = null;
 function scheduleRefresh() {
 	if (refreshScheduled) return;
 	refreshScheduled = true;
-	setTimeout(async () => {
+	refreshTimer = setTimeout(async () => {
 		refreshScheduled = false;
+		refreshTimer = null;
 		terminalUnknown.clear();
 		await downloadStore.refresh();
 	}, 2000);
@@ -168,6 +173,7 @@ function scheduleRefresh() {
 async function init() {
 	if (initialized) return;
 	initialized = true;
+	const generation = ++initGeneration;
 	initialFetchDone = false;
 	eventQueue = [];
 
@@ -177,18 +183,24 @@ async function init() {
 	}
 
 	try {
-		unlisten = await listen<DownloadEvent>('download-event', (event) => {
+		const fn = await listen<DownloadEvent>('download-event', (event) => {
 			eventQueue.push(event.payload);
 			if (initialFetchDone) scheduleFlush();
 		});
+		if (!initialized || generation !== initGeneration) {
+			fn();
+			return;
+		}
+		unlisten = fn;
 	} catch (e) {
 		console.error('Failed to register download listener:', e);
-		initialized = false;
+		if (generation === initGeneration) initialized = false;
 		return;
 	}
 
 	try {
 		const active = await getActiveDownloads();
+		if (!initialized || generation !== initGeneration) return;
 		activeCount = active.length;
 		downloads = boundList(active);
 	} catch {
@@ -196,11 +208,23 @@ async function init() {
 	}
 
 	// Replay any events that arrived during the fetch.
-	initialFetchDone = true;
-	scheduleFlush();
+	if (initialized && generation === initGeneration) {
+		initialFetchDone = true;
+		scheduleFlush();
+	}
 }
 
 function destroy() {
+	initGeneration++;
+	if (flushTimer) clearTimeout(flushTimer);
+	if (refreshTimer) clearTimeout(refreshTimer);
+	flushTimer = null;
+	refreshTimer = null;
+	flushScheduled = false;
+	refreshScheduled = false;
+	eventQueue = [];
+	terminalUnknown.clear();
+	initialFetchDone = false;
 	if (unlisten) {
 		unlisten();
 		unlisten = null;

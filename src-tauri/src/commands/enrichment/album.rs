@@ -340,7 +340,8 @@ pub fn detect_album_mismatches(
 
     for (album_id, album_title, album_genre, album_artist) in &album_rows {
         // Get all tracks for this album
-        let track_rows: Vec<(i64, String, Option<String>, Option<String>, Option<String>, i64)> = conn.prepare(
+        type AlbumTrackRow = (i64, String, Option<String>, Option<String>, Option<String>, i64);
+        let track_rows: Vec<AlbumTrackRow> = conn.prepare(
             "SELECT t.id, t.title, t.genre, COALESCE(ar.name, t.album_artist), t.tags, COALESCE(t.metadata_completeness, 0)
              FROM tracks t
              LEFT JOIN artists ar ON ar.id = t.artist_id

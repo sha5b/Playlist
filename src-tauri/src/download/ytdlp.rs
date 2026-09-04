@@ -132,7 +132,7 @@ fn video_info_from_json(json: &serde_json::Value) -> VideoInfo {
         album: json["album"].as_str().map(|s| s.to_string()),
         genre: json["genre"].as_str().map(|s| s.to_string()),
         release_year: json["release_year"].as_str()
-            .or_else(|| json["release_date"].as_str().and_then(|d| if d.len() >= 4 { Some(d) } else { None }))
+            .or_else(|| json["release_date"].as_str().filter(|d| d.len() >= 4))
             .map(|s| s.get(..4).unwrap_or(s).to_string()),
         description: json["description"].as_str()
             .filter(|d| !d.is_empty())
@@ -236,7 +236,7 @@ pub async fn search_music_tracks(
         })
         // Search pages sometimes include non-track entries (artist/album pages)
         // that resolve to /browse/ URLs — keep only playable watch URLs.
-        .filter(|v| v.webpage_url.as_deref().map_or(false, |u| u.contains("watch")))
+        .filter(|v| v.webpage_url.as_deref().is_some_and(|u| u.contains("watch")))
         .collect();
 
     Ok(results)

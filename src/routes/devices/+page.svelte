@@ -48,18 +48,18 @@
 	let syncingAll = $state(false);
 	let deviceDetails = $state<Map<number, DeviceDetail>>(new Map());
 
-	// Computed: total unsynced tracks across all linked playlists
-	let totalUnsynced = $derived(
+	// Includes new/replaced tracks and stale files that need removing.
+	let totalPendingChanges = $derived(
 		selectedDevice
 			? selectedDevice.playlists
 					.filter((p) => p.enabled)
-					.reduce((sum, p) => sum + Math.max(0, p.total_tracks - p.synced_tracks), 0)
+					.reduce((sum, p) => sum + p.pending_changes, 0)
 			: 0
 	);
 
-	let playlistsWithUnsynced = $derived(
+	let playlistsWithChanges = $derived(
 		selectedDevice
-			? selectedDevice.playlists.filter((p) => p.enabled && p.synced_tracks < p.total_tracks)
+			? selectedDevice.playlists.filter((p) => p.enabled && p.pending_changes > 0)
 			: []
 	);
 
@@ -114,10 +114,24 @@
 		const d = selectedDevice.device;
 		try {
 			await configureDevice(d.id, d.music_dir, d.output_format, d.output_bitrate, d.generate_m3u);
+			selectedDevice = await getDeviceDetail(d.id);
+			deviceDetails.set(d.id, selectedDevice);
+			deviceDetails = new Map(deviceDetails);
 			toast.success('Device settings saved');
 		} catch (e) {
 			toast.error('Failed to save settings', { description: String(e) });
 		}
+	}
+
+	async function saveVisibleDeviceSettings(): Promise<DeviceDetail> {
+		if (!selectedDevice) throw new Error('No device selected');
+		const d = selectedDevice.device;
+		await configureDevice(d.id, d.music_dir, d.output_format, d.output_bitrate, d.generate_m3u);
+		const detail = await getDeviceDetail(d.id);
+		selectedDevice = detail;
+		deviceDetails.set(d.id, detail);
+		deviceDetails = new Map(deviceDetails);
+		return detail;
 	}
 
 	async function togglePlaylistSync(playlistId: number, linked: boolean) {
@@ -141,6 +155,9 @@
 	async function handleSyncPlaylist(playlistId: number) {
 		if (!selectedDevice) return;
 		try {
+			// Sync exactly what the settings panel currently shows. Previously an
+			// unsaved "Original" selection still used the old stored Opus setting.
+			await saveVisibleDeviceSettings();
 			await syncDevice(selectedDevice.device.id, playlistId);
 			toast.success('Playlist synced');
 		} catch (e) {
@@ -153,10 +170,16 @@
 	}
 
 	async function handleSyncAll() {
-		if (!selectedDevice || playlistsWithUnsynced.length === 0) return;
+		if (!selectedDevice) return;
 		syncingAll = true;
 		try {
-			for (const pl of playlistsWithUnsynced) {
+			const detail = await saveVisibleDeviceSettings();
+			const pending = detail.playlists.filter((p) => p.enabled && p.pending_changes > 0);
+			if (pending.length === 0) {
+				toast.success('Everything is already synced');
+				return;
+			}
+			for (const pl of pending) {
 				// Syncs run sequentially; each call resolves when that playlist finishes.
 				await syncDevice(selectedDevice.device.id, pl.playlist_id);
 			}
@@ -195,7 +218,7 @@
 		if (!detail) return 0;
 		return detail.playlists
 			.filter((p) => p.enabled)
-			.reduce((sum, p) => sum + Math.max(0, p.total_tracks - p.synced_tracks), 0);
+			.reduce((sum, p) => sum + p.pending_changes, 0);
 	}
 
 	async function refreshDeviceDetail(deviceId: number) {
@@ -210,7 +233,7 @@
 		e.stopPropagation();
 		const detail = deviceDetails.get(deviceId);
 		if (!detail) return;
-		const unsynced = detail.playlists.filter((p) => p.enabled && p.synced_tracks < p.total_tracks);
+		const unsynced = detail.playlists.filter((p) => p.enabled && p.pending_changes > 0);
 		try {
 			for (const pl of unsynced) {
 				await syncDevice(deviceId, pl.playlist_id);
@@ -236,6 +259,7 @@
 		// in-flight progress bar mid-"Sync all".
 		let progressClearTimer: ReturnType<typeof setTimeout> | undefined;
 
+		let disposed = false;
 		let unlistenSync: (() => void) | null = null;
 		listen<DeviceSyncProgress>('device-sync-progress', (event) => {
 			const p = event.payload;
@@ -252,9 +276,13 @@
 				}
 				progressClearTimer = setTimeout(() => { deviceSyncProgress = null; }, 3000);
 			}
-		}).then((fn) => { unlistenSync = fn; });
+		}).then((fn) => {
+			if (disposed) fn();
+			else unlistenSync = fn;
+		});
 
 		return () => {
+			disposed = true;
 			clearInterval(interval);
 			clearTimeout(progressClearTimer);
 			unlistenSync?.();
@@ -298,7 +326,7 @@
 			</div>
 
 			<!-- Sync banner (like manager's "X new tracks" banner) -->
-			{#if totalUnsynced > 0}
+			{#if totalPendingChanges > 0}
 				<div class="flex items-center gap-4 rounded-xl bg-primary/8 border border-primary/20 px-5 py-3.5">
 					<div class="flex items-center gap-3 flex-1 min-w-0">
 						<div class="flex items-center justify-center size-10 rounded-full bg-primary/15 shrink-0">
@@ -306,10 +334,10 @@
 						</div>
 						<div>
 							<p class="text-sm font-medium">
-								{totalUnsynced} track{totalUnsynced !== 1 ? 's' : ''} to sync
+								{totalPendingChanges} change{totalPendingChanges !== 1 ? 's' : ''} to sync
 							</p>
 							<p class="text-xs text-muted-foreground mt-0.5">
-								Across {playlistsWithUnsynced.length} playlist{playlistsWithUnsynced.length !== 1 ? 's' : ''}
+								Across {playlistsWithChanges.length} playlist{playlistsWithChanges.length !== 1 ? 's' : ''}
 							</p>
 						</div>
 					</div>
@@ -382,7 +410,7 @@
 					<div class="space-y-1">
 						{#each localPlaylists as pl}
 							{@const linked = selectedDevice.playlists.find((p) => p.playlist_id === pl.id)}
-							{@const unsynced = linked ? Math.max(0, linked.total_tracks - linked.synced_tracks) : 0}
+							{@const pendingChanges = linked?.pending_changes ?? 0}
 							<div class="flex items-center justify-between p-2.5 rounded-md hover:bg-muted/50 transition-colors">
 								<!-- svelte-ignore a11y_click_events_have_key_events -->
 							<!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -399,7 +427,7 @@
 										<span class="text-xs text-muted-foreground tabular-nums">
 											{linked.synced_tracks}/{linked.total_tracks} synced
 										</span>
-										{#if unsynced > 0}
+									{#if pendingChanges > 0}
 											<Button
 												variant="outline"
 												size="sm"
@@ -408,7 +436,7 @@
 												class="gap-1.5 h-7"
 											>
 												<FolderSync class="size-3" />
-												Sync {unsynced} new
+											Sync {pendingChanges} change{pendingChanges !== 1 ? 's' : ''}
 											</Button>
 										{:else}
 											<Badge variant="secondary" class="text-xs gap-1">
@@ -437,7 +465,7 @@
 					</div>
 					<div class="space-y-1.5">
 						<label for="output-format" class="text-xs text-muted-foreground">Output Format</label>
-						<select id="output-format" bind:value={selectedDevice.device.output_format}
+						<select id="output-format" bind:value={selectedDevice.device.output_format} onchange={handleConfigureDevice}
 							class="flex h-8 w-full rounded-md border border-input bg-background px-3 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
 							<option value="original">Original (no conversion)</option>
 							<option value="mp3">MP3</option>

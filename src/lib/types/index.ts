@@ -358,6 +358,7 @@ export interface DevicePlaylistLink {
 	last_synced_at: string | null;
 	total_tracks: number;
 	synced_tracks: number;
+	pending_changes: number;
 }
 
 export interface DeviceDetail {

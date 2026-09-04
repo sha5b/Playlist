@@ -16,47 +16,96 @@ let initialized = false;
 let unlistenProgress: UnlistenFn | null = null;
 let unlistenComplete: UnlistenFn | null = null;
 let unlistenAutoEnrich: UnlistenFn | null = null;
+let initGeneration = 0;
 
 async function init() {
 	if (initialized) return;
 	initialized = true;
+	const generation = ++initGeneration;
 
-	unlistenProgress = await listen<MetadataScanProgress>('metadata-scan-progress', (event) => {
-		scanning = true;
-		progress = event.payload;
-	});
+	let progressListener: UnlistenFn;
+	try {
+		progressListener = await listen<MetadataScanProgress>('metadata-scan-progress', (event) => {
+			scanning = true;
+			progress = event.payload;
+		});
+	} catch (e) {
+		console.error('Failed to register metadata progress listener:', e);
+		if (generation === initGeneration) initialized = false;
+		return;
+	}
+	if (!initialized || generation !== initGeneration) {
+		progressListener();
+		return;
+	}
+	unlistenProgress = progressListener;
 
-	unlistenComplete = await listen<{ enriched: number; failed: number; completeness_avg: number }>(
-		'metadata-scan-complete',
-		(event) => {
-			scanning = false;
-			progress = null;
-			lastResult = event.payload;
-		}
-	);
-
-	unlistenAutoEnrich = await listen<{ phase: string; current?: number; total?: number; title?: string }>(
-		'auto-enrich-progress',
-		(event) => {
-			const p = event.payload;
-			if (p.phase === 'complete') {
-				autoEnriching = false;
-				autoPhase = '';
-				autoCurrent = 0;
-				autoTotal = 0;
-				autoTitle = '';
-			} else {
-				autoEnriching = true;
-				autoPhase = p.phase;
-				autoCurrent = p.current ?? 0;
-				autoTotal = p.total ?? 0;
-				autoTitle = p.title ?? '';
+	let completeListener: UnlistenFn;
+	try {
+		completeListener = await listen<{ enriched: number; failed: number; completeness_avg: number }>(
+			'metadata-scan-complete',
+			(event) => {
+				scanning = false;
+				progress = null;
+				lastResult = event.payload;
 			}
+		);
+	} catch (e) {
+		console.error('Failed to register metadata completion listener:', e);
+		if (generation === initGeneration) {
+			progressListener();
+			unlistenProgress = null;
+			initialized = false;
 		}
-	);
+		return;
+	}
+	if (!initialized || generation !== initGeneration) {
+		completeListener();
+		return;
+	}
+	unlistenComplete = completeListener;
+
+	let autoEnrichListener: UnlistenFn;
+	try {
+		autoEnrichListener = await listen<{ phase: string; current?: number; total?: number; title?: string }>(
+			'auto-enrich-progress',
+			(event) => {
+				const p = event.payload;
+				if (p.phase === 'complete') {
+					autoEnriching = false;
+					autoPhase = '';
+					autoCurrent = 0;
+					autoTotal = 0;
+					autoTitle = '';
+				} else {
+					autoEnriching = true;
+					autoPhase = p.phase;
+					autoCurrent = p.current ?? 0;
+					autoTotal = p.total ?? 0;
+					autoTitle = p.title ?? '';
+				}
+			}
+		);
+	} catch (e) {
+		console.error('Failed to register auto-enrichment listener:', e);
+		if (generation === initGeneration) {
+			progressListener();
+			completeListener();
+			unlistenProgress = null;
+			unlistenComplete = null;
+			initialized = false;
+		}
+		return;
+	}
+	if (!initialized || generation !== initGeneration) {
+		autoEnrichListener();
+		return;
+	}
+	unlistenAutoEnrich = autoEnrichListener;
 }
 
 function destroy() {
+	initGeneration++;
 	unlistenProgress?.();
 	unlistenComplete?.();
 	unlistenAutoEnrich?.();

@@ -117,13 +117,15 @@
 	// svelte-dnd-action dispatches custom DOM events, handled via action wrapper
 	function dndzoneWrapper(node: HTMLElement, options: Parameters<typeof dndzone>[1]) {
 		const instance = dndzone(node, options);
-		node.addEventListener('consider', ((e: Event) => handleConsider(e as CustomEvent)) as EventListener);
-		node.addEventListener('finalize', ((e: Event) => handleFinalize(e as CustomEvent)) as EventListener);
+		const onConsider = ((e: Event) => handleConsider(e as CustomEvent)) as EventListener;
+		const onFinalize = ((e: Event) => handleFinalize(e as CustomEvent)) as EventListener;
+		node.addEventListener('consider', onConsider);
+		node.addEventListener('finalize', onFinalize);
 		return {
 			update: (newOptions: Parameters<typeof dndzone>[1]) => instance.update?.(newOptions),
 			destroy: () => {
-				node.removeEventListener('consider', handleConsider as EventListener);
-				node.removeEventListener('finalize', handleFinalize as EventListener);
+				node.removeEventListener('consider', onConsider);
+				node.removeEventListener('finalize', onFinalize);
 				instance.destroy?.();
 			},
 		};

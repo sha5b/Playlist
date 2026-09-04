@@ -2,6 +2,18 @@
 
 All notable changes to Playlist are recorded in this file.
 
+## [0.10.1] - 2026-09-04
+
+### Fixed
+
+- Resetting the library with file deletion enabled now removes only files recorded as Playlist downloads. It no longer risks deleting unrelated music from the configured download folder, and the database reset is transactional.
+- Device sync now validates its destination and output settings, detects format and source-file changes accurately, removes superseded files and stale playlists, and reports database, M3U, and partial-track failures instead of silently claiming success.
+- Device sync status now includes removals as pending changes, so deleting the last track from a synced playlist still offers a sync that cleans up the device.
+- Download completion updates are atomic; a database error can no longer leave download, monitored-playlist, and library-playlist records disagreeing.
+- Large download queues keep a bounded UI window and batch event updates, preventing long playlist imports from freezing the interface or leaving the active-download badge stale.
+- Async Tauri event listeners and delayed callbacks are cleaned up reliably during navigation or frontend reloads, preventing duplicate handlers, stale state updates, and leaked queue drag listeners.
+- Device sync uses the settings currently shown in the UI, including changes back to Original format, and refreshes its status after saving or syncing.
+
 ## [0.10.0] - 2026-08-27
 
 ### Devices

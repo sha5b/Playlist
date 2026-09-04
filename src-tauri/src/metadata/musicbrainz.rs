@@ -502,7 +502,7 @@ async fn enrich_track_inner(title: &str, artist: Option<&str>, include_details: 
     // Genre and tags from MusicBrainz tags
     if let Some(tags) = &hit.tags {
         let mut sorted: Vec<_> = tags.iter().filter(|t| t.name.is_some()).collect();
-        sorted.sort_by(|a, b| b.count.unwrap_or(0).cmp(&a.count.unwrap_or(0)));
+        sorted.sort_by_key(|tag| std::cmp::Reverse(tag.count.unwrap_or(0)));
         if let Some(top) = sorted.first() {
             enrichment.genre = top.name.clone();
         }
@@ -630,7 +630,7 @@ pub async fn enrich_album(title: &str, artist: Option<&str>) -> Result<AlbumEnri
     // Genre from tags
     if let Some(tags) = &hit.tags {
         let mut sorted: Vec<_> = tags.iter().filter(|t| t.name.is_some()).collect();
-        sorted.sort_by(|a, b| b.count.unwrap_or(0).cmp(&a.count.unwrap_or(0)));
+        sorted.sort_by_key(|tag| std::cmp::Reverse(tag.count.unwrap_or(0)));
         if let Some(top) = sorted.first() {
             enrichment.genre = top.name.clone();
         }
